@@ -1202,6 +1202,24 @@ const pickupOverlapProblem = (
   return null;
 };
 
+/**
+ * Pickup with each column's title and board title as the boards read now, so a client can show
+ * them without reading the boards. They are not refreshed if a column is renamed later.
+ */
+const titledPickup = (
+  pickup: FactoryPickup,
+  boards: ReadonlyArray<FactoryOnboardingBoard>,
+): FactoryPickup => ({
+  ...pickup,
+  columns: pickup.columns.map(({ boardId, columnId }) => {
+    const board = boards.find((candidate) => candidate.boardId === boardId);
+    const title = board?.readyColumns.find((ready) => ready.id === columnId)?.title;
+    return board === undefined || title === undefined
+      ? { boardId, columnId }
+      : { boardId, columnId, title, boardTitle: board.title };
+  }),
+});
+
 /** The part of pickup that decides which tickets a manager may take, for overlap. */
 const pickupScope = (pickup: FactoryPickup) =>
   [
@@ -1751,7 +1769,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         yield* writeConfigRow(scopeKey, encodeOverride(input.override));
         return yield* configView(input.projectId);
       }),
-    ).pipe(Effect.flatMap(withStalePreferences));
+    ).pipe(
+      // The managers feed carries the environment cap.
+      Effect.tap(() => (input.scope === "environment" ? publish : Effect.void)),
+      Effect.flatMap(withStalePreferences),
+    );
 
   const decodeManager = Effect.fnUntraced(function* (row: ManagerRow) {
     return yield* decodeManagerValue({
@@ -1809,7 +1831,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     return yield* Effect.forEach(rows, decodeManager);
   });
   const managersEvent = Effect.fnUntraced(function* () {
-    return { managers: yield* currentManagers() } satisfies FactoryManagersEvent;
+    return {
+      managers: yield* currentManagers(),
+      environmentConcurrencyCap: (yield* environmentConfig()).config.concurrencyCap,
+    } satisfies FactoryManagersEvent;
   });
 
   const listManagers: FactoryServiceShape["listManagers"] = (input) =>
@@ -2214,6 +2239,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         const asked = new Map(proposal.rules.map((question) => [question.id, question.question]));
         const result = {
           ...input.result,
+          pickup: titledPickup(input.result.pickup, boards),
           rules: input.result.rules.map((rule) => ({
             ...rule,
             question: asked.get(rule.id) ?? rule.question,
@@ -2421,6 +2447,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             const asked = new Map(stored.rules.map((rule) => [rule.id, rule.question]));
             const result = {
               ...input.result,
+              pickup: titledPickup(input.result.pickup, boards),
               baseBranch: stored.baseBranch,
               rules: input.result.rules.map((rule) => ({
                 ...rule,
@@ -5237,7 +5264,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           }),
         );
         if ("done" in prepared) {
-          if (prepared.changed) yield* publishDrafts;
+          // An applied factory change may set the environment cap the managers feed carries.
+          if (prepared.changed) yield* Effect.andThen(publishDrafts, publish);
           return prepared.done;
         }
         const { row } = prepared;

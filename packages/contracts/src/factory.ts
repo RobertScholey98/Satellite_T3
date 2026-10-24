@@ -325,7 +325,13 @@ export const FactoryProjectRule = Schema.Struct({
 });
 export type FactoryProjectRule = typeof FactoryProjectRule.Type;
 
-export const FactoryPickupColumn = Schema.Struct({ boardId: Id, columnId: Id });
+export const FactoryPickupColumn = Schema.Struct({
+  boardId: Id,
+  columnId: Id,
+  /** The column's and its board's titles when the server last saved the pickup. */
+  title: Schema.optional(Schema.String),
+  boardTitle: Schema.optional(Schema.String),
+});
 export type FactoryPickupColumn = typeof FactoryPickupColumn.Type;
 
 const PickupLabels = Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(200))).check(
@@ -484,7 +490,11 @@ export const FactoryManagersSubscribeInput = Schema.Struct({});
 export type FactoryManagersSubscribeInput = typeof FactoryManagersSubscribeInput.Type;
 
 /** The environment's current managers, sent whole: there is at most one per project. */
-export const FactoryManagersEvent = Schema.Struct({ managers: Schema.Array(FactoryManager) });
+export const FactoryManagersEvent = Schema.Struct({
+  managers: Schema.Array(FactoryManager),
+  /** The environment's cap; a manager runs to the lower of it and its own. */
+  environmentConcurrencyCap: Schema.optional(ConcurrencyCap),
+});
 export type FactoryManagersEvent = typeof FactoryManagersEvent.Type;
 
 /** `requestId` keys the creation, so a repeated request returns the same manager. */

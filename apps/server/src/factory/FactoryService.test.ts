@@ -53,6 +53,7 @@ import {
   makeManagerService,
   PROPOSAL,
   RESULT,
+  SAVED_RESULT,
   create,
   managerRowCount,
   FACTORY,
@@ -472,7 +473,11 @@ describe("FactoryService managers", () => {
         const created = yield* create(service);
         yield* Fiber.join(fiber);
 
-        assert.deepStrictEqual(events, [{ managers: [] }, { managers: [created] }]);
+        const cap = (yield* service.getConfig({})).environment.concurrencyCap;
+        assert.deepStrictEqual(events, [
+          { managers: [], environmentConcurrencyCap: cap },
+          { managers: [created], environmentConcurrencyCap: cap },
+        ]);
       }),
     ),
   );
@@ -752,7 +757,7 @@ describe("FactoryService onboarding", () => {
         };
         const approved = yield* approve("approve-5", reworded);
         assert.strictEqual(approved.state, "ready");
-        assert.deepStrictEqual(approved.onboardingResult, RESULT);
+        assert.deepStrictEqual(approved.onboardingResult, SAVED_RESULT);
         assert.isNull(approved.onboardingProposal);
         assert.deepStrictEqual(yield* approve("approve-5", reworded), approved);
 

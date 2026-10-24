@@ -520,6 +520,15 @@ export const RESULT: FactoryOnboardingResult = {
   concurrencyCap: 1,
 };
 
+/** RESULT as the server saves it, with the titles of its pickup column from `board`. */
+export const SAVED_RESULT: FactoryOnboardingResult = {
+  ...RESULT,
+  pickup: {
+    ...RESULT.pickup,
+    columns: [{ boardId: "board-1", columnId: READY, title: "Ready", boardTitle: "Roadmap" }],
+  },
+};
+
 export const create = (service: Service, requestId = "create-1", name = "Ada") =>
   service.createManager({ requestId, projectId: PROJECT_ID, name });
 

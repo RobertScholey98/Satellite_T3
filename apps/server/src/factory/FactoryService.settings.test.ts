@@ -3,17 +3,22 @@ import {
   FactoryManagersUpdateSettingsInput,
   type FactoryOnboardingResult,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
 import {
+  EPOCH,
   FACTORY,
   IN_PROGRESS,
   READY,
   RESULT,
+  SAVED_RESULT,
   SONNET,
   activeManager,
   approve,
@@ -121,12 +126,22 @@ describe("FactoryService manager settings", () => {
         for (const concurrencyCap of [0, 21])
           assert.isTrue(
             Option.isNone(
-              decode({ requestId: "r", managerId: "m", result: { ...RESULT, concurrencyCap } }),
+              decode({
+                requestId: "r",
+                managerId: "m",
+                result: { ...RESULT, concurrencyCap },
+                expectedUpdatedAt: EPOCH,
+              }),
             ),
           );
+        assert.isTrue(
+          Option.isSome(
+            decode({ requestId: "r", managerId: "m", result: RESULT, expectedUpdatedAt: EPOCH }),
+          ),
+        );
         assert.deepStrictEqual(
           (yield* factory.service.listManagers({}))[0]!.onboardingResult,
-          RESULT,
+          SAVED_RESULT,
         );
       }),
     ),
@@ -231,8 +246,8 @@ describe("FactoryService manager settings", () => {
         assert.strictEqual(saved.state, "active");
         assert.deepStrictEqual(saved.modelSelection, SONNET);
         assert.deepStrictEqual(saved.onboardingResult, {
-          ...RESULT,
-          pickup: { ...RESULT.pickup, guidance: "Bugs only." },
+          ...SAVED_RESULT,
+          pickup: { ...SAVED_RESULT.pickup, guidance: "Bugs only." },
           rules: [
             { id: "small-tickets", question: "Which tickets count as small?", answer: "Two files" },
           ],
@@ -285,6 +300,33 @@ describe("FactoryService manager settings", () => {
 
         yield* factory.service.updateConfig({ scope: "environment", config: FACTORY });
         assert.isFalse((yield* factory.service.status(manager.id)).capacityFree);
+      }),
+    ),
+  );
+
+  it.effect("pushes a new environment cap to the managers feed", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        yield* settledManager(factory);
+        const caps: Array<number | undefined> = [];
+        const subscribed = yield* Deferred.make<void>();
+        const fiber = yield* factory.service.subscribeManagers({}).pipe(
+          Stream.take(2),
+          Stream.runForEach((event) =>
+            Effect.sync(() => caps.push(event.environmentConcurrencyCap)).pipe(
+              Effect.andThen(Deferred.succeed(subscribed, undefined)),
+            ),
+          ),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(subscribed);
+        yield* factory.service.updateConfig({
+          scope: "environment",
+          config: { ...FACTORY, concurrencyCap: 3 },
+        });
+        yield* Fiber.join(fiber);
+        assert.deepStrictEqual(caps, [FACTORY.concurrencyCap, 3]);
       }),
     ),
   );
