@@ -208,7 +208,9 @@ export const FactoryGitIdentity = Schema.Union([
 export type FactoryGitIdentity = typeof FactoryGitIdentity.Type;
 
 const PickupGuidance = TrimmedString.check(Schema.isMaxLength(4000));
-const ConcurrencyCap = PositiveInt.check(Schema.isLessThanOrEqualTo(20));
+/** The most assignments one cap may allow, for the environment and for a manager. */
+export const FACTORY_CONCURRENCY_CAP_MAX = 20;
+const ConcurrencyCap = PositiveInt.check(Schema.isLessThanOrEqualTo(FACTORY_CONCURRENCY_CAP_MAX));
 const RecoveryAllowance = NonNegativeInt.check(Schema.isLessThanOrEqualTo(10));
 const TeamPresets = Schema.Array(FactoryTeamPreset);
 
@@ -544,6 +546,8 @@ export const FactoryManagersUpdateSettingsInput = Schema.Struct({
   managerId: Id,
   result: FactoryOnboardingResult,
   modelSelection: Schema.optional(ModelSelection),
+  /** The manager's `updatedAt` the settings were read at; a later change refuses the save. */
+  expectedUpdatedAt: Schema.String,
 });
 export type FactoryManagersUpdateSettingsInput = typeof FactoryManagersUpdateSettingsInput.Type;
 

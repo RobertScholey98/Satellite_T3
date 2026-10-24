@@ -843,7 +843,6 @@ const shownModel = (model: ModelSelection | null) =>
 const settingsChanges = (
   before: FactoryOnboardingResult,
   after: FactoryOnboardingResult,
-  models: { readonly before: ModelSelection | null; readonly after: ModelSelection | null },
   boards: ReadonlyArray<FactoryOnboardingBoard>,
 ) => {
   const changes: string[] = [];
@@ -884,7 +883,6 @@ const settingsChanges = (
     const old = before.rules.find((candidate) => candidate.id === rule.id);
     if (old !== undefined) line(`rule "${rule.question}"`, quoted(old.answer), quoted(rule.answer));
   }
-  line("model", shownModel(models.before), shownModel(models.after));
   return changes;
 };
 
@@ -1203,6 +1201,20 @@ const pickupOverlapProblem = (
   }
   return null;
 };
+
+/** The part of pickup that decides which tickets a manager may take, for overlap. */
+const pickupScope = (pickup: FactoryPickup) =>
+  [
+    pickup.enabled ? "on" : "off",
+    pickup.columns
+      .map((column) => `${column.boardId}/${column.columnId}`)
+      .toSorted()
+      .join(","),
+    pickup.labels
+      .map((label) => label.toLowerCase())
+      .toSorted()
+      .join(","),
+  ].join("|");
 
 /** What a result is checked against besides itself. */
 interface ResultContext {
@@ -2383,13 +2395,21 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             const manager = yield* readManager(input.managerId);
             const stateProblem = settingsStateProblem(manager);
             if (stateProblem !== null) return yield* error("conflict", stateProblem);
+            if (manager.updatedAt !== input.expectedUpdatedAt)
+              return yield* error(
+                "conflict",
+                "These settings changed since you opened them; reload and try again.",
+              );
             const stored = manager.onboardingResult!;
+            // Overlap is checked only when this save changes pickup, so two managers that already
+            // overlap can still change everything else.
+            const pickupChanged = pickupScope(stored.pickup) !== pickupScope(input.result.pickup);
             // The manager's questions stay its own; only the answers are the user's to change.
             const problem = onboardingResultProblem(input.result, {
               questions: stored.rules,
               boards,
               teamIds,
-              others: yield* otherPickups(manager),
+              others: pickupChanged ? yield* otherPickups(manager) : [],
             });
             if (problem !== null) return yield* error("invalid", problem);
             const model = input.modelSelection ?? manager.modelSelection;
@@ -2407,12 +2427,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                 question: asked.get(rule.id) ?? rule.question,
               })),
             };
-            const changes = settingsChanges(
-              stored,
-              result,
-              { before: manager.modelSelection, after: model },
-              boards,
-            );
+            const changes = settingsChanges(stored, result, boards);
             // Pickup turned on waits for the user's start, as after approval; turned off before
             // it started, there is nothing left to start.
             const state =
@@ -2425,40 +2440,50 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                 onboarding_result_json=${encodeResult(result)},
                 model_selection_json=${model === null ? null : encodeModel(model)},
                 updated_at=${yield* now} WHERE id=${manager.id}`;
-            if (changes.length > 0)
-              yield* writeLog(manager.id, null, "wake", "settings", { changes });
             return {
               manager: yield* rememberManager(input.requestId, input, manager.id),
-              modelChanged:
-                model !== null &&
-                (manager.modelSelection === null ||
-                  modelKey(manager.modelSelection) !== modelKey(model)),
-              changed: changes.length > 0,
+              previousModel: manager.modelSelection,
+              changes,
             } as const;
           }),
         );
         if ("replay" in saved) return saved.replay;
-        const { manager } = saved;
+        const { manager, previousModel } = saved;
         yield* publish;
         const threadId = manager.threadId;
-        // The model applies from the thread's next turn, which the wake below starts.
-        if (saved.modelChanged && threadId !== null && manager.modelSelection !== null)
-          yield* deps
-            .setThreadModel({
-              threadId,
-              commandId: CommandId.make(`factory-manager-model:${threadId}:${input.requestId}`),
-              modelSelection: manager.modelSelection,
-            })
-            .pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning("Could not switch the manager's thread model", {
-                  managerId: manager.id,
-                  cause: cause.message,
-                }),
-              ),
-            );
-        if (saved.changed)
-          yield* deliverWakes(manager).pipe(
+        const model = manager.modelSelection;
+        const changes = [...saved.changes];
+        // The model switches before the wake is written, so the wake's turn runs on it.
+        if (
+          model !== null &&
+          (previousModel === null || modelKey(previousModel) !== modelKey(model))
+        ) {
+          const applied =
+            threadId === null ||
+            (yield* deps
+              .setThreadModel({
+                threadId,
+                commandId: CommandId.make(`factory-manager-model:${threadId}:${input.requestId}`),
+                modelSelection: model,
+              })
+              .pipe(
+                Effect.as(true),
+                Effect.catch((cause) =>
+                  Effect.logWarning("Could not switch the manager's thread model", {
+                    managerId: manager.id,
+                    cause: cause.message,
+                  }).pipe(Effect.as(false)),
+                ),
+              ));
+          changes.push(
+            applied
+              ? `model: ${shownModel(previousModel)} → ${shownModel(model)}`
+              : `model: the change to ${shownModel(model)} failed to apply; this thread still runs on ${shownModel(previousModel)}`,
+          );
+        }
+        if (changes.length > 0)
+          yield* lock(writeLog(manager.id, null, "wake", "settings", { changes })).pipe(
+            Effect.andThen(deliverWakes(manager)),
             Effect.catch((cause) =>
               Effect.logWarning("Could not tell a manager its settings changed", {
                 managerId: manager.id,

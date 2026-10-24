@@ -6,6 +6,8 @@ import {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
+import { TestClock } from "effect/testing";
 
 import {
   FACTORY,
@@ -36,18 +38,27 @@ const settledManager = (factory: Factory, tickets: ReadonlyArray<number> = []) =
     return yield* setupDone(factory, yield* activeManager(factory));
   });
 
+const openedAt = (factory: Factory, managerId: string) =>
+  factory.service
+    .listManagers({})
+    .pipe(Effect.map((managers) => managers.find((entry) => entry.id === managerId)!.updatedAt));
+
 let requests = 0;
+/** A save from settings opened just now, as the card sends it. */
 const update = (
   factory: Factory,
   managerId: string,
   result: FactoryOnboardingResult,
   extra: Partial<FactoryManagersUpdateSettingsInput> = {},
 ) =>
-  factory.service.updateSettings({
-    requestId: `settings-${(requests += 1)}`,
-    managerId,
-    result,
-    ...extra,
+  Effect.gen(function* () {
+    return yield* factory.service.updateSettings({
+      requestId: `settings-${(requests += 1)}`,
+      managerId,
+      result,
+      expectedUpdatedAt: yield* openedAt(factory, managerId),
+      ...extra,
+    });
   });
 
 /** The second manager in the project, approved with `result`. */
@@ -341,6 +352,108 @@ describe("FactoryService manager settings", () => {
         });
         const paused = yield* update(factory, manager.id, RESULT).pipe(Effect.flip);
         assert.deepStrictEqual([paused.reason, paused.message], ["conflict", "Resume Ada first."]);
+      }),
+    ),
+  );
+});
+
+describe("FactoryService manager settings, saved over time", () => {
+  it.effect(
+    "lets managers that already overlap change the rest, but not keep overlapping pickup",
+    () =>
+      withDatabase(
+        Effect.gen(function* () {
+          const factory = yield* makeFactory;
+          yield* settledManager(factory);
+          const bea = yield* secondManager(
+            factory,
+            withResult({ pickup: { ...RESULT.pickup, enabled: false } }),
+          );
+          // Saved before the overlap check existed: both pick up from Ready with any label.
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE factory_managers SET onboarding_result_json=${JSON.stringify(RESULT)}
+            WHERE id=${bea.id}`;
+
+          const capped = yield* update(factory, bea.id, withResult({ concurrencyCap: 2 }));
+          assert.strictEqual(capped.onboardingResult!.concurrencyCap, 2);
+          const relabelled = yield* update(
+            factory,
+            bea.id,
+            withResult({ pickup: { ...RESULT.pickup, labels: ["bug"] }, concurrencyCap: 2 }),
+          ).pipe(Effect.flip);
+          assert.deepStrictEqual([relabelled.reason, relabelled.message], ["invalid", OVERLAP]);
+        }),
+      ),
+  );
+
+  it.effect("refuses a save made from settings that changed since they were opened", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { manager } = yield* settledManager(factory);
+        const opened = yield* openedAt(factory, manager.id);
+        yield* TestClock.adjust("1 minute");
+        yield* update(factory, manager.id, withResult({ concurrencyCap: 2 }));
+
+        const stale = yield* factory.service
+          .updateSettings({
+            requestId: "stale",
+            managerId: manager.id,
+            result: withResult({ concurrencyCap: 3 }),
+            expectedUpdatedAt: opened,
+          })
+          .pipe(Effect.flip);
+        assert.deepStrictEqual(
+          [stale.reason, stale.message],
+          ["conflict", "These settings changed since you opened them; reload and try again."],
+        );
+        assert.strictEqual(
+          (yield* factory.service.listManagers({}))[0]!.onboardingResult!.concurrencyCap,
+          2,
+        );
+      }),
+    ),
+  );
+
+  it.effect("answers a repeated request with the first result and wakes the manager once", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { manager, sentBefore } = yield* settledManager(factory);
+        const input = {
+          requestId: "settings-again",
+          managerId: manager.id,
+          result: withResult({ concurrencyCap: 2 }),
+          expectedUpdatedAt: yield* openedAt(factory, manager.id),
+        };
+        const first = yield* factory.service.updateSettings(input);
+        yield* TestClock.adjust("1 minute");
+        const again = yield* factory.service.updateSettings(input);
+        assert.deepStrictEqual(again, first);
+        assert.strictEqual(factory.sentMessages.length, sentBefore + 1);
+      }),
+    ),
+  );
+
+  it.effect("tells the manager when its new model failed to apply", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { manager, sentBefore } = yield* settledManager(factory);
+        factory.controls.modelFailures = 1;
+        const saved = yield* update(factory, manager.id, RESULT, { modelSelection: SONNET });
+        assert.deepStrictEqual(saved.modelSelection, SONNET);
+        assert.deepStrictEqual(factory.modelChanges, []);
+        assert.deepStrictEqual(
+          factory.sentMessages.slice(sentBefore).map((message) => message.text),
+          [
+            [
+              "The user changed your settings:",
+              `- model: the change to ${SONNET.model} (${SONNET.instanceId}) failed to apply; this thread still runs on ${manager.modelSelection!.model} (${manager.modelSelection!.instanceId})`,
+              "Use them from now on.",
+            ].join("\n"),
+          ],
+        );
       }),
     ),
   );

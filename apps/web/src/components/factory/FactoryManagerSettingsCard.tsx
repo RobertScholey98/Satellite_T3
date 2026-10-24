@@ -87,6 +87,8 @@ function ManagerSettings(props: {
   const providers = useEnvironmentProviders().get(environmentId);
   const [environment, setEnvironment] = useState<FactoryConfig | null>(null);
   const [draft, setDraft] = useState<ManagerSettingsDraft | null>(null);
+  // The version the form was opened at, so a save over a change made meanwhile is refused.
+  const [openedAt, setOpenedAt] = useState(manager.updatedAt);
   const [newPath, setNewPath] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -144,6 +146,7 @@ function ManagerSettings(props: {
   const edit = () => {
     setError(null);
     setNewPath("");
+    setOpenedAt(manager.updatedAt);
     setDraft(managerSettingsDraft(result, manager.modelSelection));
   };
   const save = async (next: ManagerSettingsDraft) => {
@@ -157,6 +160,7 @@ function ManagerSettings(props: {
       environmentId,
       input: {
         requestId: randomUUID(),
+        expectedUpdatedAt: openedAt,
         managerId: manager.id,
         result: managerSettingsResult(result, next),
         ...(modelChanged && next.model !== null ? { modelSelection: next.model } : {}),
