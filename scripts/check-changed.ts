@@ -13,8 +13,13 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
+import { readFileList, readUpstreamBase } from "./rebrand.ts";
 
 const root = NodePath.resolve(import.meta.dirname, "..");
+// Run the workspace's vp entry with this Node instead of spawning `vp`. On
+// Windows node_modules/.bin only has a `vp.cmd` shim, which Node refuses to
+// spawn without a shell, and a shell would split changed paths on spaces.
+const VP = NodePath.join(root, "node_modules", "vite-plus", "bin", "vp");
 const CODE = /\.[cm]?[jt]sx?$/;
 
 const git = (...args: Array<string>) =>
@@ -76,37 +81,68 @@ const graphql = ["apps/server", "packages/source-control-github"].filter((dir) =
   files.some((file) => file.startsWith(`${dir}/`)),
 );
 
+// CI's "Check rebrand" step, for a change to a listed file or to the list.
+const REBRAND_LIST = "scripts/rebrand-files.txt";
+const rebrandListed = new Set(readFileList(NodePath.join(root, REBRAND_LIST)));
+const runRebrand = files.some((file) => file === REBRAND_LIST || rebrandListed.has(file));
+// --verify reads the list's upstream base commit. It is in main's history, so
+// only a shallow or partial clone lacks it. CI fetches it; this script stays
+// offline and fails with the fetch command rather than skip the check.
+const upstreamBase = runRebrand ? readUpstreamBase(NodePath.join(root, REBRAND_LIST)) : undefined;
+const missingUpstreamBase =
+  upstreamBase !== undefined &&
+  NodeChildProcess.spawnSync("git", ["cat-file", "-e", `${upstreamBase}^{commit}`], { cwd: root })
+    .status !== 0;
+
 const filters = (names: ReadonlyArray<string>) => names.flatMap((name) => ["--filter", name]);
+const vp = (name: string, args: ReadonlyArray<string>) => ({
+  name: `vp ${name}`,
+  args: [VP, ...args],
+});
 const steps = [
-  present.length > 0 && {
-    name: "format",
-    args: ["fmt", "--check", "--no-error-on-unmatched-pattern", ...present],
-  },
-  code.length > 0 && { name: "lint", args: ["lint", ...code] },
-  runKnip && { name: "knip", args: ["run", "knip:check"] },
-  ...graphql.map((dir) => ({
-    name: `graphql (${dir})`,
-    args: ["run", "--filter", `./${dir}`, "generate", "--check"],
-  })),
-  affected.length > 0 && {
-    name: `typecheck (${affected.length} packages)`,
-    args: ["run", "--cache", "--concurrency-limit", "4", ...filters(affected), "typecheck"],
-  },
+  present.length > 0 &&
+    vp("format", ["fmt", "--check", "--no-error-on-unmatched-pattern", ...present]),
+  code.length > 0 && vp("lint", ["lint", ...code]),
+  runKnip && vp("knip", ["run", "knip:check"]),
+  ...graphql.map((dir) =>
+    vp(`graphql (${dir})`, ["run", "--filter", `./${dir}`, "generate", "--check"]),
+  ),
+  affected.length > 0 &&
+    vp(`typecheck (${affected.length} packages)`, [
+      "run",
+      "--cache",
+      "--concurrency-limit",
+      "4",
+      ...filters(affected),
+      "typecheck",
+    ]),
   // From the repo root, the root vite.config.ts hands each file to its package's config.
-  tests.size > 0 && {
-    name: `test (${tests.size} files)`,
-    args: ["test", "run", "--passWithNoTests", ...tests],
-  },
+  tests.size > 0 &&
+    vp(`test (${tests.size} files)`, ["test", "run", "--passWithNoTests", ...tests]),
+  runRebrand && { name: "rebrand --check", args: ["scripts/rebrand.ts", "--check"] },
+  runRebrand &&
+    !missingUpstreamBase && { name: "rebrand --verify", args: ["scripts/rebrand.ts", "--verify"] },
 ].filter((step) => step !== false);
 
 console.log(`check:changed: ${files.length} files since ${base.slice(0, 12)}`);
 const results = steps.map((step) => {
-  console.log(`\n> vp ${step.name}`);
+  console.log(`\n> ${step.name}`);
   const started = performance.now();
-  const { status } = NodeChildProcess.spawnSync("vp", step.args, { cwd: root, stdio: "inherit" });
+  const { status, error } = NodeChildProcess.spawnSync(process.execPath, step.args, {
+    cwd: root,
+    stdio: "inherit",
+  });
+  if (error) console.error(`check:changed: ${error.message}`);
   const seconds = ((performance.now() - started) / 1000).toFixed(1);
   return { name: step.name, ok: status === 0, seconds };
 });
+if (missingUpstreamBase) {
+  console.error(
+    `\n> rebrand --verify\ncheck:changed: upstream base ${upstreamBase} is not in this clone. Fetch it and rerun:\n` +
+      `  git fetch --no-tags --depth=1 origin ${upstreamBase}`,
+  );
+  results.push({ name: "rebrand --verify", ok: false, seconds: "0.0" });
+}
 
 console.log("\ncheck:changed summary");
 for (const result of results) {
