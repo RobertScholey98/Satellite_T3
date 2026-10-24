@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 
 import { requestConfirmDialog } from "~/confirmDialog";
@@ -15,6 +15,10 @@ import { Spinner } from "../ui/spinner";
 import { FACTORY_MERGE_STATUS_LABEL, type FactoryMergeRow } from "./factoryMergeLogic";
 import { FACTORY_CARD_CLASS } from "./FactoryThreadStack";
 import { useFactoryMergeRows } from "./factoryWorkspaceState";
+
+// A merge queue or a host that lags can leave the next sync reading the pull request as before, and
+// a sync that reads nothing new does not replace the snapshot.
+const MERGE_HOLD_MS = 2 * 60_000;
 
 /** The open pull requests of a manager's teams, in merge order; nothing while there are none. */
 export function FactoryMergeCard(props: {
@@ -47,10 +51,15 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
     row.projectId,
   );
   // The host's answer comes before the sync that marks the pull request merged, so the row holds
-  // until that sync replaces the snapshot it merged from: then it leaves the card, or offers Merge
-  // again if the host still reports it open.
+  // until a sync replaces the snapshot it merged from, or for MERGE_HOLD_MS if none does. Then it
+  // leaves the card, or offers Merge again if the host still reports it open.
   const [mergedFrom, setMergedFrom] = useState<string | null>(null);
   const merging = mergedFrom !== null && mergedFrom === row.syncedAt;
+  useEffect(() => {
+    if (!merging) return;
+    const timeout = setTimeout(() => setMergedFrom(null), MERGE_HOLD_MS);
+    return () => clearTimeout(timeout);
+  }, [merging]);
   // The same merge as the pull request list's quick action, with the repository's method.
   const { actionPending, perform } = usePullRequestActionRunner({
     environmentId: props.environmentId,
