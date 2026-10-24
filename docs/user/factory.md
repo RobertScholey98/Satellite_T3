@@ -8,21 +8,47 @@ you can read it, answer its questions and take it over at any time.
 ## Setting it up
 
 Open **Factory** from the bottom of the sidebar, or choose **Open factory** in the command palette.
-**Configuration** holds every factory setting. The first time, it offers a starting point: a model
-pool from your enabled Claude and Codex models and one **Standard** team of an implementer, a
-reviewer and a verifier. Nothing is saved until you press **Save**.
+**Configuration** holds every factory setting. The first time, it offers a starter set: a model
+pool from your enabled Claude and Codex models, implementer, reviewer and verifier workers, a
+default lead and manager, and one **Standard** team.
 
-- **Pickup** sets how many assignments may run at once. Whether a manager picks up tickets on its
-  own, from which columns, and with what guidance is set per manager during onboarding.
-- **Models** is the pool every factory thread must start on, with the manager's model, the lead's
-  model by ticket size, and an allow-list per worker role.
-- **Teams** lists the presets the manager chooses from. A preset has a name, when to use it, its
-  members with a count each, and how the team works together. A project can add its own presets
-  or replace an environment preset by name. Ask the manager in its thread for a custom team; it may
-  ask you to save one as a preset.
-- **Role skills** shows where each role's instructions come from. Put a file at
-  `.satellite/factory/roles/<role>.md` in the project to customise a role there.
-- **Behaviour** sets the recovery allowance per assignment and how often team digests refresh.
+- **Model pool** is the list of models the factory may use at all, and the recovery allowance per
+  assignment. A model you add on another machine that this one can't run shows as unavailable here
+  and is skipped.
+- **Workers** are the building blocks of teams: a name, models, and a description of what the
+  worker is and does. **Leads** and **Managers** follow a fixed protocol, so they report, hand back
+  and hold retros the same way; what you write for them is added on top.
+- **Teams** combine one lead with workers, each with a count. Adding a worker or lead to a team
+  copies it, so you can rewrite a member's description for that team alone. Editing the worker
+  later doesn't change the team. **May edit protected paths** lets a team change files the project
+  protects, for teams whose job is the workflow itself.
+- A model list runs its first available model in order. Turn on **Dynamic** to let the lead pick
+  per task for a member, or the manager per ticket for a team's lead. An empty list means any model
+  in the pool.
+- The environment's **concurrency cap**, the digest interval and the git identity stay on this
+  machine. A manager also has its own cap, set when you approve its onboarding; work starts only
+  when both have room.
+
+The factory config is a folder of Markdown files under `factory/` in Satellite's data directory,
+one per worker, lead, manager and team. You can edit them by hand; Settings shows any file it
+couldn't read. Configuration lists them as they are on the machine running the factory, including
+when you connect to a remote one.
+
+## Sharing your factory
+
+**Config repo** keeps the factory folder in a Git repository you own, so the same workers and teams
+follow you between machines. Connect it with a repository URL this machine can already push to;
+Satellite uses the machine's own Git credentials and never stores a token. Nothing syncs on its
+own: changes stay local until you **Push**, **Pull** brings in the repository's changes, and
+**Check** shows whether there is anything to pull. When a file changed in both places, choose
+**Keep mine** or **Take theirs** for it. **Discard local changes** returns to the last pull and keeps
+a backup.
+
+**Share** exports the whole config, or chosen teams, as a `.satellite-factory.zip` with no secrets
+or machine settings. Importing one shows each worker, lead, manager and team as new, the same, or
+different from yours; keep yours, take theirs, or keep both. Models the import needs that your pool
+lacks are added only if you tick them. **Replace** swaps your config for the import and backs up
+yours first.
 
 ## Creating a manager
 
@@ -79,14 +105,14 @@ column lives only in Satellite; nothing reaches GitHub or Azure DevOps until you
 Open a card to edit it, then **Approve** or drag it to a Ready column to file the ticket there.
 **Dismiss** hides a draft behind the **Dismissed** filter, where **Restore** brings it back.
 
-Drafts about the factory itself are tinted and never go to a board. When one proposes a setting or
-a team preset, **Apply** shows the change and makes it; it refuses if the setting changed since the
-retro. **Discuss with manager** opens the manager's thread with the finding ready to send.
+Drafts about the factory itself are tinted and never go to a board. When one proposes a setting, a
+team, or a worker, lead or manager, **Apply** shows the whole change and makes it; it refuses if
+that setting or file changed since the retro. **Discuss with manager** opens the manager's thread with the finding ready to send.
 
 ## Dashboard
 
 **Factory**, **Dashboard** lists each manager with its state and running count, the number of
 Retro triage cards per project, and team stats: tasks finished per team with median tokens, cost,
-agent time and wall time, plus recoveries and review rounds. Select a team to see its finished
+agent time and wall time, plus recoveries and what each team member used, its helpers included. Select a team to see its finished
 assignments with their outcome and the retro's verdict. Token totals across providers are
 approximate, and the stats never include the digests.

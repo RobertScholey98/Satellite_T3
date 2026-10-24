@@ -9,6 +9,7 @@ import { PlusIcon, XIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { randomUUID } from "~/lib/utils";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -28,6 +29,8 @@ import { SettingsRow, SettingsSection } from "../settings/settingsLayout";
 import { FactoryCountField } from "./FactoryCountField";
 import { FactoryDefinitionActions, confirmFactoryDelete } from "./FactoryDefinitionActions";
 import { useFactoryDefinitions } from "./factoryDefinitionsState";
+import { factoryEnvironment } from "./factoryState";
+import { factoryTeamDeleteMessage } from "./factoryTeamDelete";
 import { FactoryModelListEditor } from "./FactoryModelListEditor";
 import type { FactoryModelOption } from "./FactoryPageConfig";
 import {
@@ -60,13 +63,19 @@ export function FactoryTeamsFileSection({
   readonly modelOptions: ReadonlyArray<FactoryModelOption>;
 }) {
   const { view, loadError, save, remove } = useFactoryDefinitions(environmentId);
+  const teamUses = useAtomCommand(factoryEnvironment.teamUses, { reportFailure: false });
   const [request, setRequest] = useState<TeamRequest | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const disabled = !canEdit || view === null;
 
   const deleteTeam = async (id: string, name: string) => {
+    const uses = await teamUses({ environmentId, input: { teamId: id } });
     const confirmed = await confirmFactoryDelete(
-      `Delete the team ${name}? Its lead and member copies go with it. Workers and leads stay.`,
+      factoryTeamDeleteMessage({
+        name,
+        uses: uses._tag === "Success" ? uses.value : null,
+        lastTeam: view !== null && view.teams.length === 1 && view.teams[0]!.id === id,
+      }),
     );
     if (confirmed) setDeleteError(await remove("team", id));
   };

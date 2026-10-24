@@ -13,6 +13,7 @@ import {
   describeFactoryModelRefs,
   factoryModelRefFromOption,
   factoryModelRefKey,
+  factoryStarterPool,
 } from "./factoryModelRefs";
 import type { FactoryModelOption } from "./FactoryPageConfig";
 
@@ -30,7 +31,7 @@ export function FactoryPoolSection({
   readonly canEdit: boolean;
   readonly modelOptions: ReadonlyArray<FactoryModelOption>;
 }) {
-  const { view, loadError, saveSettings } = useFactoryDefinitions(environmentId);
+  const { view, loadError, saveSettings, createStarter } = useFactoryDefinitions(environmentId);
   const [draft, setDraft] = useState<FactoryConfigSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +52,20 @@ export function FactoryPoolSection({
     setError(failure);
     if (failure === null) setDraft(null);
   };
+
+  const startStarter = async () => {
+    setSaving(true);
+    setError(null);
+    const failure = await createStarter(factoryStarterPool(modelOptions));
+    setSaving(false);
+    setError(failure);
+  };
+  // The starter set only fills a config that has nothing at all, as the server also checks.
+  const empty =
+    view !== null &&
+    !view.configured &&
+    view.workers.length + view.leads.length + view.managers.length + view.teams.length === 0 &&
+    view.problems.length === 0;
 
   const pooled = new Set(settings?.modelPool.map(factoryModelRefKey));
   const addable = modelOptions.filter(
@@ -84,7 +99,18 @@ export function FactoryPoolSection({
       {view !== null && !view.configured ? (
         <SettingsRow
           title="Nothing saved yet"
-          description="This environment has no factory config yet. Saving a setting, worker, lead, manager or team creates it."
+          description={
+            empty
+              ? "This environment has no factory config yet. Start from the starter set: this environment's Claude and Codex models as the pool, an implementer, a reviewer and a verifier, a default lead and manager, and one Standard team. Or build it by hand: saving a setting, worker, lead, manager or team creates the config."
+              : "This environment has no factory.yaml yet. Saving a setting, worker, lead, manager or team creates it."
+          }
+          control={
+            empty ? (
+              <Button size="xs" disabled={!canEdit || saving} onClick={() => void startStarter()}>
+                Use starter set
+              </Button>
+            ) : undefined
+          }
         />
       ) : null}
       {error !== null ? <SettingsRow title="Could not save" description={error} /> : null}

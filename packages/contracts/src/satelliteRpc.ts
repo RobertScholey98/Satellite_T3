@@ -28,7 +28,9 @@ import {
   WsFactoryConfigImportApplyRpc,
   WsFactoryDefinitionsSaveRpc,
   WsFactoryDefinitionsRemoveRpc,
+  WsFactoryDefinitionsTeamUsesRpc,
   WsFactoryConfigSaveSettingsRpc,
+  WsFactoryConfigCreateStarterRpc,
   WsFactoryDraftsApplyRpc,
   WsFactoryDraftsApproveRpc,
   WsFactoryDraftsDismissRpc,
@@ -139,7 +141,9 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   WsFactoryConfigImportApplyRpc,
   WsFactoryDefinitionsSaveRpc,
   WsFactoryDefinitionsRemoveRpc,
+  WsFactoryDefinitionsTeamUsesRpc,
   WsFactoryConfigSaveSettingsRpc,
+  WsFactoryConfigCreateStarterRpc,
 );
 
 type SatelliteWsRpc = RpcGroup.Rpcs<typeof WsSatelliteRpcGroup>;
@@ -187,4 +191,5 @@ export const SATELLITE_CLIENT_GUARDED_RPC_SCOPES = {
   [FACTORY_WS_METHODS.factoryDefinitionsSave]: AuthSettingsWriteScope,
   [FACTORY_WS_METHODS.factoryDefinitionsRemove]: AuthSettingsWriteScope,
   [FACTORY_WS_METHODS.factoryConfigSaveSettings]: AuthSettingsWriteScope,
+  [FACTORY_WS_METHODS.factoryConfigCreateStarter]: AuthSettingsWriteScope,
 } as const satisfies Partial<Readonly<Record<SatelliteWsRpcMethod, AuthEnvironmentScope>>>;

@@ -6,7 +6,6 @@ import { userEvent } from "vite-plus/test/browser";
 const state = vi.hoisted(() => ({
   getConfig: vi.fn(),
   updateConfig: vi.fn(),
-  getStats: vi.fn(),
   listBoards: vi.fn(),
 }));
 
@@ -20,9 +19,7 @@ vi.mock(import("../../state/use-atom-command"), async (original) => {
         ? state.getConfig
         : command === factoryEnvironment.updateConfig
           ? state.updateConfig
-          : command === factoryEnvironment.getStats
-            ? state.getStats
-            : state.listBoards) as never,
+          : state.listBoards) as never,
   };
 });
 // The real rows read settings permissions from live environment state; this suite is about the
@@ -81,10 +78,6 @@ const view: FactoryConfigView = { environment: saved, effective: saved, configur
 function setup() {
   state.getConfig.mockReset().mockResolvedValue({ _tag: "Success", value: view });
   state.updateConfig.mockReset().mockResolvedValue({ _tag: "Success", value: view });
-  state.getStats.mockReset().mockResolvedValue({
-    _tag: "Success",
-    value: { teams: [], assignments: [] },
-  });
   state.listBoards.mockReset().mockResolvedValue({
     _tag: "Success",
     value: [{ id: "board", projectId: "project", title: "Board" }],

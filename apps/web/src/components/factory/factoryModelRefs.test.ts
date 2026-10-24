@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   describeFactoryModelRefs,
   factoryModelRefFromOption,
+  factoryStarterPool,
   moveFactoryModelRef,
   resolveFactoryModelRef,
   summarizeFactoryModelList,
@@ -70,5 +71,13 @@ describe("factory model refs", () => {
     expect(summarizeFactoryModelList({ dynamic: true, models: [OPUS, GPT] }, OPTIONS)).toBe(
       "Claude (work) · Opus 5.5, codex/gpt-6 · picked per task",
     );
+  });
+});
+
+describe("factoryStarterPool", () => {
+  it("pools the Claude and Codex models once each, leaving other drivers out", () => {
+    expect(
+      factoryStarterPool([...OPTIONS, option("codex", "codex", "gpt-5.5", "Codex · GPT-5.5")]),
+    ).toEqual([ref("claudeAgent", "claude-opus-5-5"), ref("codex", "gpt-5.5")]);
   });
 });

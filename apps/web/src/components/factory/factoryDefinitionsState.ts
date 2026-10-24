@@ -6,6 +6,7 @@ import type {
   FactoryDefinitionKind,
   FactoryDefinitionSaveInput,
   FactoryDefinitionsView,
+  FactoryModelRef,
 } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
@@ -50,6 +51,9 @@ export function useFactoryDefinitions(environmentId: EnvironmentId) {
     reportFailure: false,
   });
   const saveFactorySettings = useAtomCommand(factoryEnvironment.saveFactorySettings, {
+    reportFailure: false,
+  });
+  const createFactoryStarter = useAtomCommand(factoryEnvironment.createFactoryStarter, {
     reportFailure: false,
   });
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -103,5 +107,15 @@ export function useFactoryDefinitions(environmentId: EnvironmentId) {
     return null;
   };
 
-  return { view, loadError, save, remove, saveSettings, refresh, setView };
+  /** Writes the starter set to an empty config, running on `modelPool`. */
+  const createStarter = async (
+    modelPool: ReadonlyArray<FactoryModelRef>,
+  ): Promise<FactoryDefinitionsWriteResult> => {
+    const result = await createFactoryStarter({ environmentId, input: { modelPool } });
+    if (result._tag !== "Success") return failureMessage(result) ?? "Cancelled.";
+    setView(result.value);
+    return null;
+  };
+
+  return { view, loadError, save, remove, saveSettings, createStarter, refresh, setView };
 }

@@ -78,6 +78,8 @@ export function createFactoryEnvironmentAtoms<R, E>(
     applyConfigImport: command("config:import-apply", WS_METHODS.factoryConfigImportApply),
     saveDefinition: command("definitions:save", WS_METHODS.factoryDefinitionsSave),
     removeDefinition: command("definitions:remove", WS_METHODS.factoryDefinitionsRemove),
+    teamUses: command("definitions:team-uses", WS_METHODS.factoryDefinitionsTeamUses),
     saveFactorySettings: command("config:save-settings", WS_METHODS.factoryConfigSaveSettings),
+    createFactoryStarter: command("config:create-starter", WS_METHODS.factoryConfigCreateStarter),
   };
 }

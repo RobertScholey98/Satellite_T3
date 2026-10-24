@@ -1,7 +1,11 @@
 import {
+  FACTORY_CONFIG_FORMAT_VERSION,
+  type FactoryDefinitions,
   type FactoryLeadDefinition,
   type FactoryManagerDefinition,
   type FactoryModelList,
+  type FactoryModelRef,
+  type FactoryTeamDefinition,
   type FactoryWorkerDefinition,
   FactoryWorkerRole,
 } from "@t3tools/contracts";
@@ -42,3 +46,35 @@ export const defaultManager = (
   models: overrides.models ?? { dynamic: false, models: [] },
   instructions: (overrides.instructions ?? "").trim(),
 });
+
+/** One of each starter worker under the default lead, as the old starting preset was. */
+const standardTeam = (
+  lead: FactoryLeadDefinition,
+  workers: ReadonlyArray<FactoryWorkerDefinition>,
+): FactoryTeamDefinition => ({
+  id: "standard",
+  name: "Standard",
+  useWhen: "Most tickets",
+  workflow:
+    "The implementer builds the change, the reviewer reviews the pull request, and the verifier checks the result against the ticket before the lead claims it done.",
+  mayEditProtectedPaths: false,
+  createdBy: "user",
+  lead,
+  members: workers.map((worker) => ({ ...worker, count: 1 })),
+});
+
+/**
+ * A fresh factory config to start from: the starter workers, default lead and manager, and the
+ * Standard team, all running on whatever the pool holds.
+ */
+export const starterSet = (modelPool: ReadonlyArray<FactoryModelRef>): FactoryDefinitions => {
+  const workers = STARTER_WORKER_ROLES.map((role) => starterWorker(role));
+  const lead = defaultLead();
+  return {
+    settings: { version: FACTORY_CONFIG_FORMAT_VERSION, modelPool, recoveryAllowance: 1 },
+    workers,
+    leads: [lead],
+    managers: [defaultManager()],
+    teams: [standardTeam(lead, workers)],
+  };
+};

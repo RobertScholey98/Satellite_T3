@@ -1,12 +1,10 @@
 import {
   FactoryOperationError,
   type FactoryConfigSettings,
-  type FactoryDefinitionKind,
   type FactoryDefinitionRemoveInput,
   type FactoryDefinitionSaveInput,
   type FactoryDefinitionSaveResult,
   type FactoryDefinitionsView,
-  type FactoryModelList,
   type FactoryModelRef,
   type FactoryTeamMemberDefinition,
 } from "@t3tools/contracts";
@@ -16,7 +14,9 @@ import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
 
 import { definitionIdFromName } from "./definitionFiles.ts";
-import { FactoryConfigStore } from "./FactoryConfigStore.ts";
+import { definitionProblem, takenDefinitionIds, teamProblem } from "./definitionRules.ts";
+import { FactoryConfigStore, unmigratedConfigMessage } from "./FactoryConfigStore.ts";
+import { starterSet } from "./starterDefinitions.ts";
 
 /** Saves and removes definitions on behalf of the user, as Settings does. */
 export class FactoryDefinitionsEditor extends Context.Service<
@@ -35,73 +35,28 @@ export class FactoryDefinitionsEditor extends Context.Service<
     readonly saveSettings: (
       settings: FactoryConfigSettings,
     ) => Effect.Effect<FactoryDefinitionsView, FactoryOperationError>;
+    /** A fresh install's starting point, written only while the config has nothing at all. */
+    readonly createStarter: (
+      modelPool: ReadonlyArray<FactoryModelRef>,
+    ) => Effect.Effect<FactoryDefinitionsView, FactoryOperationError>;
   }
 >()("t3/factory/config/definitionsEditor/FactoryDefinitionsEditor") {}
 
-const KIND_DIRECTORY: Record<FactoryDefinitionKind, string> = {
-  worker: "workers",
-  lead: "leads",
-  manager: "managers",
-  team: "teams",
-};
-
 const invalid = (message: string) => new FactoryOperationError({ reason: "invalid", message });
 
-const modelKey = (ref: FactoryModelRef) => `${ref.driver}/${ref.model}`;
-
-/** Each model list the definition holds, with how to name its owner in a message. */
-const modelListsOf = (
-  input: FactoryDefinitionSaveInput,
-): ReadonlyArray<{ readonly owner: string; readonly list: FactoryModelList }> =>
-  input.kind === "team"
-    ? [
-        { owner: "the team's lead", list: input.definition.lead.models },
-        ...input.definition.members.map((member) => ({
-          owner: `the member "${member.name}"`,
-          list: member.models,
-        })),
-      ]
-    : [{ owner: `this ${input.kind}`, list: input.definition.models }];
-
-/**
- * Ids in use for a kind, counting files that failed to decode: a new definition must never take
- * the id of a broken file and overwrite it.
- */
-const takenIds = (view: FactoryDefinitionsView, kind: FactoryDefinitionKind) => {
-  const loaded = {
-    worker: view.workers,
-    lead: view.leads,
-    manager: view.managers,
-    team: view.teams,
-  };
-  const ids = new Set<string>(loaded[kind].map((definition) => definition.id));
-  const prefix = `${KIND_DIRECTORY[kind]}/`;
-  for (const problem of view.problems) {
-    if (!problem.path.startsWith(prefix)) continue;
-    const id = problem.path.slice(prefix.length).split("/")[0]!.replace(/\.md$/, "");
-    if (id.length > 0) ids.add(id);
-  }
-  return ids;
-};
-
+/** The shared definition rules, then what only a save from Settings can get wrong. */
 const validate = (input: FactoryDefinitionSaveInput, view: FactoryDefinitionsView) => {
-  const pool = new Set(view.settings.modelPool.map(modelKey));
-  for (const { owner, list } of modelListsOf(input)) {
-    const missing = list.models.find((model) => !pool.has(modelKey(model)));
-    if (missing !== undefined)
-      return invalid(
-        `${modelKey(missing)} is not in the model pool. Add it to the pool first, or remove it from ${owner}.`,
-      );
-  }
+  const pool = view.settings.modelPool;
+  const problem =
+    input.kind === "team"
+      ? teamProblem(
+          { lead: input.definition.lead, members: withMemberIds(input.definition.members) },
+          pool,
+        )
+      : definitionProblem(input.kind, input.definition, pool);
+  if (problem !== null) return invalid(problem);
   if (input.kind !== "team") return null;
-  if (input.definition.members.length === 0) return invalid("A team needs at least one member.");
-  const names = new Set<string>();
-  for (const member of input.definition.members) {
-    // A lead delegates by member name, so two members with one name would be ambiguous.
-    if (names.has(member.name))
-      return invalid(`Two members are named "${member.name}". Give each member its own name.`);
-    names.add(member.name);
-  }
+  // Settings sends the ids of members it loaded; a new member has none yet.
   const ids = input.definition.members.flatMap((member) => (member.id ? [member.id] : []));
   if (new Set(ids).size !== ids.length) return invalid("Two members share an id.");
   return null;
@@ -137,7 +92,7 @@ const make = Effect.gen(function* () {
     const view = yield* store.read;
     const problem = validate(input, view);
     if (problem !== null) return yield* problem;
-    const taken = takenIds(view, input.kind);
+    const taken = takenDefinitionIds(view, input.kind);
     if (input.id !== undefined && !taken.has(input.id))
       return yield* new FactoryOperationError({
         reason: "not-found",
@@ -169,7 +124,8 @@ const make = Effect.gen(function* () {
   const remove = Effect.fn("FactoryDefinitionsEditor.remove")(function* (
     input: FactoryDefinitionRemoveInput,
   ) {
-    // TODO(#101): warn with every manager whose onboarding result lists a team before removing it.
+    // Removing a team a manager's result lists stays allowed; Settings first names those
+    // managers, from `FactoryTeamUses`, so the user decides knowing who loses it.
     yield* markConfigured(yield* store.read);
     yield* store.remove(input.kind, input.id);
     return yield* store.read;
@@ -182,7 +138,38 @@ const make = Effect.gen(function* () {
     return yield* store.read;
   }, serialized);
 
-  return FactoryDefinitionsEditor.of({ save, remove, saveSettings });
+  const createStarter = Effect.fn("FactoryDefinitionsEditor.createStarter")(function* (
+    modelPool: ReadonlyArray<FactoryModelRef>,
+  ) {
+    // Writing `factory.yaml` now would mark the config set up and skip the failed migration.
+    const failure = yield* store.migrationFailure;
+    if (failure !== null)
+      return yield* new FactoryOperationError({
+        reason: "unavailable",
+        message: unmigratedConfigMessage(failure),
+      });
+    const view = yield* store.read;
+    // A file that failed to load is still a definition someone wrote.
+    const empty =
+      !view.configured &&
+      view.workers.length + view.leads.length + view.managers.length + view.teams.length === 0 &&
+      view.problems.length === 0;
+    if (!empty)
+      return yield* new FactoryOperationError({
+        reason: "conflict",
+        message: "The factory config already exists.",
+      });
+    const starter = starterSet(modelPool);
+    for (const worker of starter.workers) yield* store.writeWorker(worker);
+    for (const lead of starter.leads) yield* store.writeLead(lead);
+    for (const manager of starter.managers) yield* store.writeManager(manager);
+    for (const team of starter.teams) yield* store.writeTeam(team);
+    // Last, so a start that stops part way is still not configured and can be retried.
+    yield* store.writeSettings(starter.settings);
+    return yield* store.read;
+  }, serialized);
+
+  return FactoryDefinitionsEditor.of({ save, remove, saveSettings, createStarter });
 });
 
 export const layer = Layer.effect(FactoryDefinitionsEditor, make);

@@ -17,6 +17,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { FactoryV1 } from "../migrations/FactoryV1.ts";
+import { DEFAULT_ROLE_SKILLS } from "../roles/index.ts";
 import * as FactoryDefinitionsEditor from "./definitionsEditor.ts";
 import * as FactoryConfigStore from "./FactoryConfigStore.ts";
 import { migrateFactoryConfigFromDatabase } from "./migrateFromDatabase.ts";
@@ -147,6 +148,20 @@ it.layer(NodeServices.layer)("FactoryDefinitionsEditor", (it) => {
     }),
   );
 
+  it.effect("refuses member names that differ only in case, since a lead delegates by name", () =>
+    Effect.gen(function* () {
+      const editor = yield* setup;
+      const refused = yield* editor
+        .save(team([member("Reviewer"), member("reviewer")]))
+        .pipe(Effect.flip);
+      assert.deepInclude(refused, {
+        reason: "invalid",
+        message: 'Two members are named "reviewer". Give each member its own name.',
+      });
+      assert.deepStrictEqual((yield* editor.remove({ kind: "team", id: "web-ui" })).teams, []);
+    }),
+  );
+
   it.effect("removes a definition", () =>
     Effect.gen(function* () {
       const editor = yield* setup;
@@ -209,3 +224,62 @@ it.effect("a save on an unconfigured store is never migrated over at the next st
     ),
   ),
 );
+
+it.layer(NodeServices.layer)("FactoryDefinitionsEditor starter set", (it) => {
+  it.effect("writes the starter set on an empty config, then refuses a second one", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-factory-starter-" });
+      const editor = yield* FactoryDefinitionsEditor.FactoryDefinitionsEditor.pipe(
+        Effect.provide(
+          FactoryDefinitionsEditor.layer.pipe(Layer.provide(FactoryConfigStore.layerAt(directory))),
+        ),
+      );
+
+      const view = yield* editor.createStarter([opus, codex]);
+
+      const pool = { dynamic: true, models: [] };
+      const lead = { id: "default", name: "Default lead", models: pool, instructions: "" };
+      const workers = (["implementer", "reviewer", "verifier"] as const).map((role) => ({
+        id: role,
+        name: `${role[0]!.toUpperCase()}${role.slice(1)}`,
+        models: pool,
+        description: DEFAULT_ROLE_SKILLS[role].trim(),
+      }));
+      assert.deepStrictEqual(view, {
+        configured: true,
+        settings: { version: 1, modelPool: [opus, codex], recoveryAllowance: 1 },
+        workers,
+        leads: [lead],
+        managers: [
+          {
+            id: "default",
+            name: "Default manager",
+            models: { dynamic: false, models: [] },
+            instructions: "",
+          },
+        ],
+        teams: [
+          {
+            id: "standard",
+            name: "Standard",
+            useWhen: "Most tickets",
+            workflow:
+              "The implementer builds the change, the reviewer reviews the pull request, and the verifier checks the result against the ticket before the lead claims it done.",
+            mayEditProtectedPaths: false,
+            createdBy: "user",
+            lead,
+            members: workers.map((worker) => ({ ...worker, count: 1 })),
+          },
+        ],
+        problems: [],
+      });
+
+      const again = yield* editor.createStarter([opus]).pipe(Effect.flip);
+      assert.deepInclude(again, {
+        reason: "conflict",
+        message: "The factory config already exists.",
+      });
+    }),
+  );
+});

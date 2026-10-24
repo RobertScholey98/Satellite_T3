@@ -21,6 +21,7 @@ import {
   FactoryConfigRepoResolveInput,
   FactoryConfigRepoStatus,
   FactoryConfigSettings,
+  FactoryModelRef,
   FactoryDefinitionId,
   FactoryDefinitionRemoveInput,
   FactoryDefinitionSaveInput,
@@ -83,7 +84,9 @@ export const FACTORY_WS_METHODS = {
   factoryConfigImportApply: "factory.config.importApply",
   factoryDefinitionsSave: "factory.definitions.save",
   factoryDefinitionsRemove: "factory.definitions.remove",
+  factoryDefinitionsTeamUses: "factory.definitions.teamUses",
   factoryConfigSaveSettings: "factory.config.saveSettings",
+  factoryConfigCreateStarter: "factory.config.createStarter",
 } as const;
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -1465,6 +1468,43 @@ export const WsFactoryDefinitionsRemoveRpc = Rpc.make(FACTORY_WS_METHODS.factory
   success: FactoryDefinitionsView,
   error: FactoryRpcError,
 });
+export const FactoryTeamUsesInput = Schema.Struct({ teamId: FactoryDefinitionId });
+export type FactoryTeamUsesInput = typeof FactoryTeamUsesInput.Type;
+
+/**
+ * The managers whose onboarding result names a team among the teams they may staff. A manager
+ * with no team list may staff every team, so it is never listed: removing a team leaves it able
+ * to work. Retired managers are left out.
+ */
+export const FactoryTeamUses = Schema.Struct({
+  managers: Schema.Array(
+    Schema.Struct({ managerId: Id, name: Schema.String, projectTitle: Schema.String }),
+  ),
+});
+export type FactoryTeamUses = typeof FactoryTeamUses.Type;
+
+export const WsFactoryDefinitionsTeamUsesRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryDefinitionsTeamUses,
+  {
+    payload: FactoryTeamUsesInput,
+    success: FactoryTeamUses,
+    error: FactoryRpcError,
+  },
+);
+/** The pool the starter set runs on; the client picks it from the models the environment has. */
+export const FactoryConfigCreateStarterInput = Schema.Struct({
+  modelPool: Schema.Array(FactoryModelRef),
+});
+export type FactoryConfigCreateStarterInput = typeof FactoryConfigCreateStarterInput.Type;
+
+export const WsFactoryConfigCreateStarterRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryConfigCreateStarter,
+  {
+    payload: FactoryConfigCreateStarterInput,
+    success: FactoryDefinitionsView,
+    error: FactoryRpcError,
+  },
+);
 export const WsFactoryConfigSaveSettingsRpc = Rpc.make(
   FACTORY_WS_METHODS.factoryConfigSaveSettings,
   {

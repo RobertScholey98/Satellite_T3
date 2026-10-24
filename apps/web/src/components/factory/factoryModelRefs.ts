@@ -84,3 +84,18 @@ export function describeFactoryModelRefs(
     return { ref, label: option?.label ?? factoryModelRefKey(ref), flags };
   });
 }
+
+const STARTER_DRIVERS: ReadonlySet<string> = new Set(["claudeAgent", "codex"]);
+
+/**
+ * The starter set's pool: this environment's enabled Claude and Codex models, as the old starting
+ * point chose them. Two instances of one driver serving one model are one pool entry.
+ */
+export function factoryStarterPool(
+  options: ReadonlyArray<FactoryModelOption>,
+): ReadonlyArray<FactoryModelRef> {
+  const refs = options
+    .filter((option) => STARTER_DRIVERS.has(option.driverKind))
+    .map(factoryModelRefFromOption);
+  return [...new Map(refs.map((ref) => [factoryModelRefKey(ref), ref])).values()];
+}

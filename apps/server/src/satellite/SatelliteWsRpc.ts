@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 
 import type * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { FactoryDefinitionsEditor } from "../factory/config/definitionsEditor.ts";
+import { FactoryTeamUses } from "../factory/config/teamUses.ts";
 import { FactoryConfigTransfer } from "../factory/config/exportImport.ts";
 import { FactoryConfigRepo } from "../factory/config/FactoryConfigRepo.ts";
 import { FactoryConfigStore } from "../factory/config/FactoryConfigStore.ts";
@@ -19,6 +20,7 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
       const configRepo = yield* FactoryConfigRepo;
       const configTransfer = yield* FactoryConfigTransfer;
       const definitionsEditor = yield* FactoryDefinitionsEditor;
+      const teamUses = yield* FactoryTeamUses;
       return WsSatelliteRpcGroup.of({
         [SATELLITE_WS_METHODS.issuesList]: (input) => issues.list(input),
         [SATELLITE_WS_METHODS.issuesGet]: (input) => issues.get(input),
@@ -81,6 +83,9 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
           configTransfer.apply(input.bundle, input.decision),
         [SATELLITE_WS_METHODS.factoryDefinitionsSave]: (input) => definitionsEditor.save(input),
         [SATELLITE_WS_METHODS.factoryDefinitionsRemove]: (input) => definitionsEditor.remove(input),
+        [SATELLITE_WS_METHODS.factoryDefinitionsTeamUses]: (input) => teamUses.read(input.teamId),
+        [SATELLITE_WS_METHODS.factoryConfigCreateStarter]: (input) =>
+          definitionsEditor.createStarter(input.modelPool),
         [SATELLITE_WS_METHODS.factoryConfigSaveSettings]: (input) =>
           definitionsEditor.saveSettings(input),
       });

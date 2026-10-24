@@ -8,6 +8,7 @@ import type {
 import { PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
 
+import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -27,6 +28,7 @@ import { useFactoryDefinitions } from "./factoryDefinitionsState";
 import { summarizeFactoryModelList } from "./factoryModelRefs";
 import { FactoryModelListEditor } from "./FactoryModelListEditor";
 import type { FactoryModelOption } from "./FactoryPageConfig";
+import { PROTOCOL_COPY_WARNING, looksLikeProtocolCopy } from "./factoryProtocolCopy";
 import { duplicateDefinitionName } from "./factoryTeamCopies";
 
 type DefinitionKind = "worker" | "lead" | "manager";
@@ -45,6 +47,10 @@ interface EditRequest {
 }
 
 const KINDS: ReadonlyArray<DefinitionKind> = ["worker", "lead", "manager"];
+
+/** A lead's or manager's added instructions that repeat the built-in protocol, flagged to trim. */
+const copiesProtocol = (kind: DefinitionKind, body: string) =>
+  kind !== "worker" && looksLikeProtocolCopy(kind, body);
 
 const COPY: Record<
   DefinitionKind,
@@ -166,7 +172,14 @@ export function FactoryDefinitionsSection({
                 <SettingsRow
                   key={definition.id}
                   title={definition.name}
-                  description={summarizeFactoryModelList(definition.models, modelOptions)}
+                  description={
+                    <>
+                      {summarizeFactoryModelList(definition.models, modelOptions)}
+                      {copiesProtocol(kind, definition.body) ? (
+                        <span className="block text-warning">{PROTOCOL_COPY_WARNING}</span>
+                      ) : null}
+                    </>
+                  }
                   control={
                     <FactoryDefinitionActions
                       name={definition.name}
@@ -316,6 +329,11 @@ function DefinitionForm({
                 value={draft.body}
                 onChange={(event) => setDraft({ ...draft, body: event.target.value })}
               />
+              {copiesProtocol(request.kind, draft.body) ? (
+                <Alert variant="warning">
+                  <AlertDescription>{PROTOCOL_COPY_WARNING}</AlertDescription>
+                </Alert>
+              ) : null}
             </div>
             {error ? (
               <p role="alert" className="text-sm text-destructive">
