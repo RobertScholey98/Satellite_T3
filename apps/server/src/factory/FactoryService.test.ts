@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   DEFAULT_FACTORY_CONFIG,
   FactoryConfigOverride,
+  FactoryDraftTicketInput,
   FactoryOperationError,
   FactoryUpdateChecklistInput,
   IssueBoardView,
@@ -10,7 +11,6 @@ import {
   ProviderInstanceId,
   ThreadId,
   type FactoryAssignmentsEvent,
-  type FactoryDraftTicketInput,
   type FactoryManager,
   type FactoryManagerDefinition,
   type FactoryManagersEvent,
@@ -27,7 +27,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { TestClock } from "effect/testing";
 
 import { parseRateTable } from "../usage/usagePricing.ts";
-import type { FactoryThreadActivity, FactoryThreadTurn } from "./FactoryService.ts";
+import type { FactoryThreadTurn } from "./FactoryService.ts";
 import * as FactoryConfigStore from "./config/FactoryConfigStore.ts";
 import { projectSection } from "./roleSkills.ts";
 import { ONBOARDING_BRIEF } from "./roles/index.ts";
@@ -88,6 +88,7 @@ import {
 const UNKNOWN_PROJECT_ID = ProjectId.make("project-missing");
 const decodeChecklistInput = Schema.decodeUnknownOption(FactoryUpdateChecklistInput);
 const decodeOverride = Schema.decodeSync(FactoryConfigOverride);
+const isDraftTicketInput = Schema.is(FactoryDraftTicketInput);
 
 const insertAssignment = (managerId: string, state: string) =>
   Effect.gen(function* () {
@@ -134,6 +135,24 @@ describe("FactoryService config", () => {
         assert.strictEqual(view.environment.concurrencyCap, 4);
         assert.deepStrictEqual(view.override, { concurrencyCap: 1 });
         assert.notProperty(view.effective, "pickupGuidance");
+      }),
+    ),
+  );
+
+  it.effect("reads a config stored while team digests still had an interval", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const service = yield* makeService;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO factory_config(scope_key,config_json,updated_at) VALUES
+          ('environment','{"concurrencyCap":4,"digestIntervalMinutes":10}',${EPOCH}),
+          (${`project:${PROJECT_ID}`},'{"concurrencyCap":1,"digestIntervalMinutes":30}',${EPOCH})`;
+
+        const view = yield* service.getConfig({ projectId: PROJECT_ID });
+        assert.strictEqual(view.environment.concurrencyCap, 4);
+        assert.deepStrictEqual(view.override, { concurrencyCap: 1 });
+        assert.notProperty(view.environment, "digestIntervalMinutes");
+        assert.notProperty(view.effective, "digestIntervalMinutes");
       }),
     ),
   );
@@ -1718,103 +1737,6 @@ describe("FactoryService sweep", () => {
 const RETRO_REQUEST =
   "All pull requests for Ticket 1 are merged. Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.";
 
-const activity = (text: string, at: string): FactoryThreadActivity => ({
-  role: "assistant",
-  text,
-  at,
-});
-
-describe("FactoryService digests", () => {
-  it.effect("writes a digest on the sweep once there is new activity and the interval is up", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeFactory;
-        const { service, threadActivity, summaryRequests, sentMessages } = factory;
-        const { assignment, lead } = yield* startedAssignment(factory);
-        threadActivity.set(lead, [activity("Parser merged.", "1970-01-01T00:00:01.000Z")]);
-
-        yield* service.sweepDigests;
-        const first = (yield* service.assignmentForThread(lead))!.digest;
-        assert.deepStrictEqual(first, {
-          text: "Digest 1.",
-          generatedAt: EPOCH,
-          activityAt: "1970-01-01T00:00:01.000Z",
-        });
-        assert.strictEqual(summaryRequests[0]!.subject, "Ticket 1");
-        assert.strictEqual(summaryRequests[0]!.cwd, "/repo");
-        assert.isNull(summaryRequests[0]!.previousSummary);
-        assert.include(summaryRequests[0]!.context, "lead: Parser merged.");
-
-        // New activity inside the interval waits for the next due sweep, or a refresh.
-        threadActivity.set(lead, [
-          activity("Parser merged.", "1970-01-01T00:00:01.000Z"),
-          activity("Tests are failing on Windows.", "1970-01-01T00:00:02.000Z"),
-        ]);
-        yield* service.sweepDigests;
-        assert.strictEqual(summaryRequests.length, 1);
-
-        const refreshed = yield* service.refreshDigest(assignment.id);
-        assert.strictEqual(refreshed.digest?.text, "Digest 2.");
-        assert.strictEqual(refreshed.digest?.activityAt, "1970-01-01T00:00:02.000Z");
-        assert.strictEqual(summaryRequests[1]!.previousSummary, "Digest 1.");
-        assert.notInclude(summaryRequests[1]!.context, "Parser merged.");
-        assert.include(summaryRequests[1]!.context, "Tests are failing on Windows.");
-
-        // Past the interval with nothing new, the sweep leaves it alone.
-        yield* TestClock.adjust("11 minutes");
-        yield* service.sweepDigests;
-        assert.strictEqual(summaryRequests.length, 2);
-        const sentBefore = sentMessages.length;
-        yield* service.refreshDigest(assignment.id);
-        assert.strictEqual(summaryRequests.length, 2);
-        assert.strictEqual(sentMessages.length, sentBefore);
-      }),
-    ),
-  );
-
-  it.effect("keeps the previous digest when generation fails", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeFactory;
-        const { service, threadActivity, summaryRequests, controls } = factory;
-        const { assignment, lead } = yield* startedAssignment(factory);
-        threadActivity.set(lead, [activity("Parser merged.", "1970-01-01T00:00:01.000Z")]);
-        controls.summary = Effect.fail(
-          new FactoryOperationError({ reason: "unavailable", message: "Provider is offline." }),
-        );
-
-        const refreshed = yield* service.refreshDigest(assignment.id);
-        assert.isNull(refreshed.digest);
-        assert.strictEqual(summaryRequests.length, 1);
-      }),
-    ),
-  );
-
-  it.effect("generates once while a refresh for the assignment is in flight", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeFactory;
-        const { service, threadActivity, summaryRequests, controls } = factory;
-        const { assignment, lead } = yield* startedAssignment(factory);
-        threadActivity.set(lead, [activity("Parser merged.", "1970-01-01T00:00:01.000Z")]);
-        const started = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        controls.summary = Deferred.succeed(started, undefined).pipe(
-          Effect.andThen(Deferred.await(release)),
-          Effect.as("The parser landed."),
-        );
-
-        const first = yield* service.refreshDigest(assignment.id).pipe(Effect.forkChild);
-        yield* Deferred.await(started);
-        assert.isNull((yield* service.refreshDigest(assignment.id)).digest);
-        yield* Deferred.succeed(release, undefined);
-        assert.strictEqual((yield* Fiber.join(first)).digest?.text, "The parser landed.");
-        assert.strictEqual(summaryRequests.length, 1);
-      }),
-    ),
-  );
-});
-
 describe("FactoryService completion claims", () => {
   it.effect("starts the retro when every pull request is merged and asks the lead for it", () =>
     withDatabase(
@@ -2375,7 +2297,6 @@ describe("FactoryService checklist", () => {
         const { service } = factory;
         const { assignment, lead, mark } = yield* startedTeam(factory);
         assert.deepStrictEqual(assignment.checklist, []);
-        assert.isNull(assignment.digest);
 
         yield* service.updateChecklist(lead, {
           steps: [{ text: "Reproduce the crash", state: "in-progress" }],
@@ -2399,7 +2320,6 @@ describe("FactoryService checklist", () => {
             team: "Duo",
             leadThreadId: lead,
             checklist: steps,
-            digest: null,
             waitingReason: null,
           },
         ]);
@@ -2906,6 +2826,50 @@ describe("FactoryService applied drafts", () => {
           .pipe(Effect.flip);
         assert.strictEqual(refused.reason, "invalid");
         assert.include(refused.message, "set per manager at onboarding");
+        assert.deepStrictEqual((yield* service.getConfig({})).environment, FACTORY);
+      }),
+    ),
+  );
+
+  it.effect("keeps a stored digest interval draft readable but never applies or offers it", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service } = factory;
+        const sql = yield* SqlClient.SqlClient;
+        const manager = yield* activeManager(factory);
+        const digestInterval = {
+          kind: "setting",
+          key: "digestIntervalMinutes",
+          before: 10,
+          after: 5,
+        } as const;
+        assert.isFalse(
+          isDraftTicketInput({
+            scope: "factory",
+            title: "Digest more often",
+            body: "The digests lag behind.",
+            acceptanceCriteria: [],
+            proposedChange: digestInterval,
+          }),
+        );
+
+        const { draft } = yield* draftChange(factory, manager.threadId!, {
+          kind: "setting",
+          key: "concurrencyCap",
+          before: 1,
+          after: 2,
+        });
+        yield* sql`UPDATE factory_ticket_drafts
+            SET proposed_change_json=${JSON.stringify(digestInterval)} WHERE id=${draft.id}`;
+        const [stored] = yield* service.listDrafts({ state: "pending" });
+        assert.deepStrictEqual(stored!.proposedChange, digestInterval);
+
+        const refused = yield* service
+          .applyDraft({ requestId: "apply-1", draftId: draft.id })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "invalid");
+        assert.include(refused.message, "no longer has a digest interval");
         assert.deepStrictEqual((yield* service.getConfig({})).environment, FACTORY);
       }),
     ),

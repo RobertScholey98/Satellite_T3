@@ -82,7 +82,7 @@ const workspaceFeedsAtom = Atom.make((get) => {
   return feeds;
 }).pipe(Atom.withLabel("web-factory-workspace-feeds"));
 
-// Digests and checklists change the feed often; the sidebar repartitions only when membership does.
+// Checklists change the feed often; the sidebar repartitions only when membership does.
 const memberThreadKeysAtom = Atom.make((get) => {
   const next = factoryMemberThreadKeys(get(workspaceFeedsAtom));
   const previous = Option.getOrNull(get.self<ReadonlySet<string>>());
@@ -106,7 +106,7 @@ const managerWaitingAtom = Atom.family((threadKey: string) =>
   }).pipe(Atom.withLabel(`web-factory-manager-waiting:${threadKey}`)),
 );
 
-// A boolean per thread, so a digest or checklist change re-renders no thread's timeline.
+// A boolean per thread, so a checklist change re-renders no thread's timeline.
 const managerThreadAtom = Atom.family((threadKey: string) =>
   Atom.make((get) => {
     for (const [environmentId, feed] of get(workspaceFeedsAtom)) {

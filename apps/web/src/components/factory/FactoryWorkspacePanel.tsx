@@ -1,25 +1,12 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import {
-  isAtomCommandInterrupted,
-  squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, FactoryWorkspaceAssignment, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowLeftIcon, RefreshCwIcon } from "lucide-react";
-import {
-  useEffect,
-  useEffectEvent,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { ArrowLeftIcon } from "lucide-react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { observeResize } from "~/lib/observeResize";
-import { cn } from "~/lib/utils";
 import { selectThreadPanelOpen, useRightPanelStore } from "~/rightPanelStore";
 import { useThreadShell } from "~/state/entities";
-import { useAtomCommand } from "~/state/use-atom-command";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { useChatCanvas } from "../chat/ChatCanvasContext";
 import {
@@ -27,38 +14,27 @@ import {
   THREAD_DETAILS_CARD_GAP,
 } from "../chat/threadDetailsCardLayout";
 import { ThreadDetailsControl } from "../chat/ThreadDetailsControl";
-import {
-  THREAD_DETAILS_PANEL_ICON_CLASS,
-  THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
-} from "../chat/threadDetailsPanelStyles";
-import { RelativeTime } from "../RelativeTime";
+import { THREAD_DETAILS_PANEL_ICON_CLASS } from "../chat/threadDetailsPanelStyles";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
 import { ThreadStatusLabel } from "../ThreadStatusIndicators";
-import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
-import { toastManager } from "../ui/toast";
-import { factoryEnvironment, factoryErrorMessage } from "./factoryState";
 import { useFactoryWorkspaceFeed } from "./factoryWorkspaceState";
 import {
-  checklistProgress,
-  FACTORY_ASSIGNMENT_STATE_LABEL,
-  FACTORY_DIGEST_STALE_MS,
   factoryMemberLabel,
   resolveFactoryWorkspaceView,
   type FactoryWorkspaceTeam,
 } from "./factoryWorkspaceLogic";
 
-/** Below this the two cards would be unreadable; the column waits for the details card to close. */
+/** Below this the card would be unreadable; the column waits for the details card to close. */
 const MIN_COLUMN_HEIGHT = 220;
 /**
  * Matches the details card's pressed surface, so the open thread rests at the same fill. It sits
  * on the list item because the control owns its own colours.
  */
 const CURRENT_ROW_CLASS = "rounded-lg bg-black/[0.05] dark:bg-white/[0.08]";
-const UP_TO_DATE_MS = 4_000;
 
 /**
- * The right-hand column of a manager's workspace: what each team is doing, and every team thread.
+ * The right-hand column of a manager's workspace: every team thread.
  * Shown on the manager's thread and on each of its teams' threads, below the details card.
  */
 export function FactoryWorkspacePanel(props: {
@@ -143,13 +119,6 @@ export function FactoryWorkspacePanel(props: {
           style={{ right: placement.right, top, width: placement.width, height }}
           data-factory-workspace-panel
         >
-          {/* Keyed by thread so a manual team pick does not follow the user onto another thread. */}
-          <FactoryTeamActivityCard
-            key={props.threadId}
-            environmentId={props.environmentId}
-            teams={view.teams}
-            activeAssignmentId={view.activeAssignmentId}
-          />
           <FactoryTeamThreadsCard
             environmentId={props.environmentId}
             threadId={props.threadId}
@@ -162,18 +131,11 @@ export function FactoryWorkspacePanel(props: {
   );
 }
 
-function WorkspaceCard(props: {
-  readonly label: string;
-  readonly fill: boolean;
-  readonly children: ReactNode;
-}) {
+function WorkspaceCard(props: { readonly label: string; readonly children: ReactNode }) {
   return (
     <section
       aria-label={props.label}
-      className={cn(
-        "dropdown-glass isolate contain-paint flex min-h-0 flex-col overflow-hidden rounded-3xl",
-        props.fill ? "flex-1" : "max-h-[45%] shrink-0",
-      )}
+      className="dropdown-glass isolate contain-paint flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl"
     >
       {props.children}
     </section>
@@ -185,152 +147,6 @@ function CardHeading(props: { readonly children: ReactNode }) {
     <h3 className="px-3.5 pt-3 pb-1 text-2xs font-medium text-muted-foreground select-none">
       {props.children}
     </h3>
-  );
-}
-
-type RefreshStatus = { readonly assignmentId: string; readonly kind: "refreshing" | "up-to-date" };
-
-/** One live work item at a time, with its team's running digest. Nothing streams. */
-export function FactoryTeamActivityCard(props: {
-  readonly environmentId: EnvironmentId;
-  readonly teams: ReadonlyArray<FactoryWorkspaceTeam>;
-  readonly activeAssignmentId: string | null;
-}) {
-  const refreshDigest = useAtomCommand(factoryEnvironment.refreshDigest, { reportFailure: false });
-  const [picked, setPicked] = useState<string | null>(null);
-  const [status, setStatus] = useState<RefreshStatus | null>(null);
-  const requested = picked ?? props.activeAssignmentId;
-  const selected =
-    props.teams.find((team) => team.assignment.id === requested) ?? props.teams[0] ?? null;
-  const selectedKey = selected?.assignment.id ?? null;
-
-  const refresh = async (assignment: FactoryWorkspaceAssignment) => {
-    const before = assignment.digest?.generatedAt ?? null;
-    setStatus({ assignmentId: assignment.id, kind: "refreshing" });
-    const result = await refreshDigest({
-      environmentId: props.environmentId,
-      input: { assignmentId: assignment.id },
-    });
-    if (result._tag === "Success") {
-      const after = result.value.digest?.generatedAt ?? null;
-      setStatus(after === before ? { assignmentId: assignment.id, kind: "up-to-date" } : null);
-      return;
-    }
-    setStatus(null);
-    if (!isAtomCommandInterrupted(result)) {
-      toastManager.add({
-        type: "error",
-        title: "Could not refresh the digest",
-        description: factoryErrorMessage(squashAtomCommandFailure(result)) ?? undefined,
-      });
-    }
-  };
-
-  // Opening a team rewrites a missing or stale digest once; later reads keep what it got.
-  const refreshOnOpen = useEffectEvent(() => {
-    const assignment = selected?.assignment;
-    if (!assignment) return;
-    const generatedAt = assignment.digest ? Date.parse(assignment.digest.generatedAt) : null;
-    if (generatedAt !== null && Date.now() - generatedAt <= FACTORY_DIGEST_STALE_MS) return;
-    // In the background: the feed brings the new digest, and a failure here is not worth a toast.
-    void refreshDigest({
-      environmentId: props.environmentId,
-      input: { assignmentId: assignment.id },
-    });
-  });
-  useEffect(() => {
-    if (selectedKey !== null) refreshOnOpen();
-  }, [selectedKey]);
-
-  const upToDate = status?.kind === "up-to-date";
-  useEffect(() => {
-    if (!upToDate) return;
-    const timeout = window.setTimeout(() => setStatus(null), UP_TO_DATE_MS);
-    return () => window.clearTimeout(timeout);
-  }, [upToDate]);
-
-  return (
-    <WorkspaceCard label="Team activity" fill={false}>
-      <CardHeading>Team activity</CardHeading>
-      {selected === null ? (
-        <p className="px-3.5 pb-3 text-xs text-muted-foreground">No work on the go.</p>
-      ) : (
-        <>
-          <div className="px-2">
-            {props.teams.length === 1 ? (
-              <p className={cn(THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS, "flex items-center")}>
-                <span className="truncate">{selected.assignment.title}</span>
-              </p>
-            ) : (
-              <Menu>
-                <MenuTrigger render={<ThreadDetailsControl part="select" />}>
-                  <span className="truncate">{selected.assignment.title}</span>
-                </MenuTrigger>
-                <MenuPopup align="end">
-                  <MenuRadioGroup
-                    value={selected.assignment.id}
-                    onValueChange={(value) => setPicked(String(value))}
-                  >
-                    {props.teams.map((team) => (
-                      <MenuRadioItem key={team.assignment.id} value={team.assignment.id}>
-                        {`${team.assignment.title} · ${FACTORY_ASSIGNMENT_STATE_LABEL[team.assignment.state]}`}
-                      </MenuRadioItem>
-                    ))}
-                  </MenuRadioGroup>
-                </MenuPopup>
-              </Menu>
-            )}
-          </div>
-          <TeamDigest
-            assignment={selected.assignment}
-            status={status?.assignmentId === selected.assignment.id ? status.kind : null}
-            onRefresh={() => void refresh(selected.assignment)}
-          />
-        </>
-      )}
-    </WorkspaceCard>
-  );
-}
-
-function TeamDigest(props: {
-  readonly assignment: FactoryWorkspaceAssignment;
-  readonly status: RefreshStatus["kind"] | null;
-  readonly onRefresh: () => void;
-}) {
-  const { assignment } = props;
-  const progress = checklistProgress(assignment.checklist);
-  return (
-    <div className="flex min-h-0 flex-col">
-      <ScrollArea scrollFade className="min-h-0">
-        <p className="whitespace-pre-wrap px-3.5 pt-2 text-sm leading-5 text-foreground/80">
-          {assignment.digest?.text.trim() || "No digest yet"}
-        </p>
-      </ScrollArea>
-      <div className="flex min-h-9 items-center gap-2 px-3.5 pb-2 text-2xs text-muted-foreground">
-        <span className="min-w-0 flex-1 truncate">
-          {FACTORY_ASSIGNMENT_STATE_LABEL[assignment.state]}
-          {assignment.digest ? (
-            <>
-              {" · Updated "}
-              <RelativeTime timestamp={assignment.digest.generatedAt} />
-            </>
-          ) : null}
-          {progress.total > 0 ? ` · ${progress.done}/${progress.total}` : null}
-        </span>
-        {props.status === "up-to-date" ? (
-          <span role="status">Up to date</span>
-        ) : (
-          <ThreadDetailsControl
-            part="meta"
-            disabled={props.status === "refreshing"}
-            onClick={props.onRefresh}
-          >
-            <RefreshCwIcon className="size-3.5" />
-            {props.status === "refreshing" ? "Refreshing" : "Refresh"}
-          </ThreadDetailsControl>
-        )}
-      </div>
-    </div>
   );
 }
 
@@ -347,7 +163,7 @@ function FactoryTeamThreadsCard(props: {
       params: buildThreadRouteParams(scopeThreadRef(props.environmentId, threadId)),
     });
   return (
-    <WorkspaceCard label="Team threads" fill>
+    <WorkspaceCard label="Team threads">
       <CardHeading>Team threads</CardHeading>
       {props.threadId === props.managerThreadId ? null : (
         <div className="px-2 pb-1">

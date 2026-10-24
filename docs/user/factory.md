@@ -25,9 +25,8 @@ default lead and manager, and one **Standard** team.
 - A model list runs its first available model in order. Turn on **Dynamic** to let the lead pick
   per task for a member, or the manager per ticket for a team's lead. An empty list means any model
   in the pool.
-- The environment's **concurrency cap**, the digest interval and the git identity stay on this
-  machine. A manager also has its own cap, set when you approve its onboarding; work starts only
-  when both have room.
+- The environment's **concurrency cap** and the git identity stay on this machine. A manager also
+  has its own cap, set when you approve its onboarding; work starts only when both have room.
 - **Runs on** appears when this machine has more than one instance of a provider, such as two Claude
   accounts. It picks which one runs the factory's models for that provider; **First available** uses
   whichever comes first. It stays on this machine. If the chosen instance goes away, the factory uses
@@ -89,13 +88,10 @@ manager, pause the manager and its teams, resume, or retire it. The Issues page 
 status beside the sync time, and a ticket's detail says why the manager picked it up or skipped it.
 **Start** on a ticket always wins over the manager's decision.
 
-While you view the manager or any of its team threads, the right side shows two cards. **Team
-activity** has one tab per assignment with a short digest of what the team is doing, written by
-your text-generation model and refreshed on the interval you set; **Refresh** rewrites it on demand
-and says **Up to date** when nothing new happened. **Team threads** lists each team's lead and
-members, with the same waiting marker the sidebar uses, and a **Manager** button to go back. Lead
-and team threads leave the sidebar while their manager runs; search and the command palette still
-find them.
+While you view the manager or any of its team threads, the right side shows **Team threads**,
+which lists each team's lead and members, with the same waiting marker the sidebar uses, and a
+**Manager** button to go back. Lead and team threads leave the sidebar while their manager runs;
+search and the command palette still find them.
 
 A lead's details panel shows **Lead for the manager** with the assignment's state. Its menu, and
 the ticket chip's menu, offer **Take over** (the manager stops steering that assignment while you
@@ -120,4 +116,4 @@ that setting or file changed since the retro. **Discuss with manager** opens the
 Retro triage cards per project, and team stats: tasks finished per team with median tokens, cost,
 agent time and wall time, plus recoveries and what each team member used, its helpers included. Select a team to see its finished
 assignments with their outcome and the retro's verdict. Token totals across providers are
-approximate, and the stats never include the digests.
+approximate.

@@ -36,9 +36,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { RateTable } from "../usage/usagePricing.ts";
 import {
   makeFactoryService,
-  type FactoryDigestRequest,
   type FactoryServiceDependencies,
-  type FactoryThreadActivity,
   type FactoryThreadInterrupt,
   type FactoryThreadLaunch,
   type FactoryPullRequestRef,
@@ -263,8 +261,6 @@ interface HarnessControls {
   duringLaunch: Effect.Effect<void, FactoryOperationError> | null;
   /** What the usage rate cache holds; null when usage tracking has cached none. */
   rateTable: RateTable | null;
-  /** What the text-generation model answers a digest request with. */
-  summary: Effect.Effect<string, FactoryOperationError>;
   /** The repository's default branch as git reports it; null when it cannot be read. */
   defaultBranch: string | null;
   /** What the environment can run, which factory model names resolve against. */
@@ -288,8 +284,6 @@ export const makeHarness = (options: HarnessOptions = {}) =>
     const settles: ThreadId[] = [];
     const threadRuns = new Map<ThreadId, FactoryThreadRuns>();
     const threadTurns = new Map<ThreadId, ReadonlyArray<FactoryThreadTurn>>();
-    const threadActivity = new Map<ThreadId, ReadonlyArray<FactoryThreadActivity>>();
-    const summaryRequests: FactoryDigestRequest[] = [];
     const controls: HarnessControls = {
       sendFailures: 0,
       attemptFailures: 0,
@@ -298,7 +292,6 @@ export const makeHarness = (options: HarnessOptions = {}) =>
       launchFailures: options.launchFailures ?? 0,
       duringLaunch: null,
       rateTable: null,
-      summary: Effect.sync(() => ` Digest ${summaryRequests.length}. `),
       defaultBranch: "trunk",
       catalog: CATALOG,
     };
@@ -406,12 +399,6 @@ export const makeHarness = (options: HarnessOptions = {}) =>
         }),
       readThreadRuns: (threadId) => Effect.sync(() => threadRuns.get(threadId) ?? null),
       readThreadTurns: (threadId) => Effect.sync(() => threadTurns.get(threadId) ?? []),
-      readThreadActivity: (threadId) => Effect.sync(() => threadActivity.get(threadId) ?? []),
-      generateSummary: (input) =>
-        Effect.suspend(() => {
-          summaryRequests.push(input);
-          return controls.summary;
-        }),
       readRateTable: Effect.sync(() => controls.rateTable),
       sendToThread: (input) =>
         Effect.suspend(() => {
@@ -462,8 +449,6 @@ export const makeHarness = (options: HarnessOptions = {}) =>
       settles,
       threadRuns,
       threadTurns,
-      threadActivity,
-      summaryRequests,
       controls,
       pullRequestFiles,
       fileReads,

@@ -41,10 +41,6 @@ export function createFactoryEnvironmentAtoms<R, E>(
       tag: WS_METHODS.factoryAssignmentsSubscribe,
     }),
     cancelAssignment: command("assignments:cancel", WS_METHODS.factoryAssignmentsCancel),
-    refreshDigest: command(
-      "assignments:refresh-digest",
-      WS_METHODS.factoryAssignmentsRefreshDigest,
-    ),
     takeOver: command("threads:take-over", WS_METHODS.factoryThreadsTakeOver),
     handBack: command("threads:hand-back", WS_METHODS.factoryThreadsHandBack),
     listLog: command("log:list", WS_METHODS.factoryLogList),

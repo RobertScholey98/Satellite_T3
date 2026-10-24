@@ -44,7 +44,6 @@ const decodeFactoryConfig = Schema.decodeSync(FactoryConfig);
 const liveEnvironment = decodeFactoryConfig({
   concurrencyCap: 3,
   recoveryAllowance: 2,
-  digestIntervalMinutes: 15,
   modelPool: [opus, gptWork, sonnet, gpt, removed],
   roleModels: {
     manager: opus,
@@ -71,7 +70,6 @@ const projectId = ProjectId.make("project-satellite");
 const override = Schema.decodeSync(FactoryConfigOverride)({
   concurrencyCap: 1,
   recoveryAllowance: 0,
-  digestIntervalMinutes: 30,
   modelPool: [opus],
   roleModels: { manager: opus, workers: { implementer: [opus] } },
   teamPresets: [
@@ -228,7 +226,6 @@ describe("planFactoryConfigMigration", () => {
         { projectId, key: "modelPool", value: override.modelPool },
         { projectId, key: "roleModels.workers", value: override.roleModels?.workers },
         { projectId, key: "recoveryAllowance", value: 0 },
-        { projectId, key: "digestIntervalMinutes", value: 30 },
       ]);
     }),
   );

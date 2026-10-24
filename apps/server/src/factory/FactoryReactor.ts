@@ -92,14 +92,6 @@ export const make = Effect.gen(function* () {
           Effect.asVoid,
         ),
     );
-    // Off the worker, so a slow model call never holds up lead reconciliation.
-    yield* forkParked(
-      factory.sweepDigests.pipe(
-        Effect.catchCause(logFailure("factory digest sweep failed")),
-        Effect.repeat(Schedule.spaced("1 minute")),
-        Effect.asVoid,
-      ),
-    );
   });
   return { start, drain: worker.drain } satisfies FactoryReactor["Service"];
 });

@@ -51,8 +51,6 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.factoryAssignmentsSubscribe]: (input) =>
           factory.subscribeAssignments(input),
         [SATELLITE_WS_METHODS.factoryAssignmentsCancel]: (input) => factory.cancel(input),
-        [SATELLITE_WS_METHODS.factoryAssignmentsRefreshDigest]: (input) =>
-          factory.refreshDigest(input.assignmentId),
         [SATELLITE_WS_METHODS.factoryThreadsTakeOver]: (input) => factory.takeOver(input),
         [SATELLITE_WS_METHODS.factoryThreadsHandBack]: (input) => factory.handBack(input),
         [SATELLITE_WS_METHODS.factoryLogList]: (input) => factory.listLog(input),

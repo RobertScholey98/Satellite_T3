@@ -2,7 +2,6 @@ import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environ
 import type {
   EnvironmentId,
   FactoryAssignmentState,
-  FactoryChecklistStep,
   FactoryManagerState,
   FactoryMember,
   FactoryRole,
@@ -49,19 +48,12 @@ export const factoryMemberLabel = (member: {
   readonly memberName?: string;
 }) => member.memberName ?? FACTORY_ROLE_LABEL[member.role];
 
-/** A digest older than this is rewritten when its tab opens. */
-export const FACTORY_DIGEST_STALE_MS = 5 * 60_000;
-
 export const isLiveAssignment = (assignment: Pick<FactoryWorkspaceAssignment, "state">) =>
   assignment.state !== "completed" && assignment.state !== "cancelled";
 
 /** `retro` holds the manager but frees its slot under the concurrency cap. */
 export const takesAssignmentSlot = (assignment: Pick<FactoryWorkspaceAssignment, "state">) =>
   isLiveAssignment(assignment) && assignment.state !== "retro";
-
-export function checklistProgress(steps: ReadonlyArray<FactoryChecklistStep>) {
-  return { done: steps.filter((step) => step.state === "done").length, total: steps.length };
-}
 
 /**
  * Lead and team threads of every live manager. The sidebar shows only the manager's thread; the

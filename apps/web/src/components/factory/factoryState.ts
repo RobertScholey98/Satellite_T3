@@ -107,7 +107,7 @@ export function useFactoryAssignments(
   return useAtomValue(environmentId === null ? UNSUBSCRIBED : assignmentsAtom(environmentId));
 }
 
-/** Thread membership, checklists and digests for the manager workspace. */
+/** Thread membership and checklists for the manager workspace. */
 export function useFactoryWorkspace(
   environmentId: EnvironmentId | null,
 ): FactoryWorkspaceFeed | undefined {

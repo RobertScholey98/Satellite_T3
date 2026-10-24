@@ -84,7 +84,6 @@ function leadFeed(takenOver: boolean): FactoryWorkspaceFeed {
         team: "custom",
         leadThreadId,
         checklist: [],
-        digest: null,
         waitingReason: "Needs a decision",
       },
     ],

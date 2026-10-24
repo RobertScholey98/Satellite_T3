@@ -52,7 +52,6 @@ const startReactor = Effect.gen(function* () {
       Layer.mergeAll(
         Layer.mock(FactoryService)({
           sweep: record({ _tag: "sweep" }).pipe(Effect.ensuring(Queue.offer(sweeps, undefined))),
-          sweepDigests: Effect.void,
           reconcileThread: (threadId) => record({ _tag: "thread", threadId }),
           observeThread: (thread) => record({ _tag: "observe", thread }),
         }),

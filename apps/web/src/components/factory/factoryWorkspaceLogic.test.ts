@@ -60,7 +60,6 @@ function assignment(
     team: "custom",
     leadThreadId: ThreadId.make(`${id}-lead`),
     checklist: [],
-    digest: null,
     waitingReason: null,
     ...overrides,
   };
