@@ -1887,6 +1887,7 @@ describe("FactoryService dependencies", () => {
 
         // The blocked assignment fills the only slot; its delivery starts anyway.
         assert.isFalse((yield* service.status(manager.id)).capacityFree);
+        yield* TestClock.adjust("1 second");
         const delivering = yield* service.commission(manager.threadId!, {
           title: "Sync cursor endpoint",
           brief: "Add the cursor to GET /sync.",
@@ -1896,6 +1897,11 @@ describe("FactoryService dependencies", () => {
           dependencyId: dependency.id,
         });
         assert.strictEqual(delivering.source, "dependency");
+        // The workspace orders teams from this: oldest first, whatever the ids.
+        assert.deepStrictEqual(
+          (yield* workspace(service)).assignments.map((entry) => entry.id),
+          [assignment.id, delivering.id],
+        );
         const stillBlocked = (yield* service.assignmentForThread(lead))!;
         assert.strictEqual(stillBlocked.state, "blocked");
         assert.strictEqual(stillBlocked.dependencies[0]!.deliveringAssignmentId, delivering.id);
