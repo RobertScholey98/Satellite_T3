@@ -1,15 +1,17 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   type EnvironmentId,
+  FACTORY_CONCURRENCY_CAP_MAX,
   type FactoryConfig,
   type FactoryManager,
   type FactoryOnboardingResult,
+  type FactoryPickupColumn,
   issueReadyColumnIds,
   type ModelSelection,
   type ProjectId,
 } from "@t3tools/contracts";
 import { XIcon } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { randomUUID } from "~/lib/utils";
 import { useEnvironmentProviders } from "~/state/environments";
@@ -26,7 +28,6 @@ import { Textarea } from "../ui/textarea";
 import { useFactoryDefinitions } from "./factoryDefinitionsState";
 import {
   effectiveManagerCap,
-  MANAGER_CAP_MAX,
   managerModelChoices,
   managerSettingsDirty,
   managerSettingsDraft,
@@ -41,9 +42,12 @@ import {
   factoryEnvironment,
   factoryErrorMessage,
   unwrapFactoryResult,
+  useFactoryManagerCaps,
   useFactoryManagers,
 } from "./factoryState";
 import { FACTORY_CARD_CLASS } from "./FactoryThreadStack";
+import { takesAssignmentSlot } from "./factoryWorkspaceLogic";
+import { useFactoryWorkspaceFeed } from "./factoryWorkspaceState";
 
 interface ReadyBoard {
   readonly boardId: string;
@@ -87,16 +91,24 @@ function ManagerSettings(props: {
   const providers = useEnvironmentProviders().get(environmentId);
   const [environment, setEnvironment] = useState<FactoryConfig | null>(null);
   const [draft, setDraft] = useState<ManagerSettingsDraft | null>(null);
+  // Only for the instance preferences the model choices follow; the cap comes from the feed.
   // The version the form was opened at, so a save over a change made meanwhile is refused.
   const [openedAt, setOpenedAt] = useState(manager.updatedAt);
   const [newPath, setNewPath] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const boards = useReadyBoards(
-    environmentId,
-    manager.projectId,
-    draft !== null || result.pickup.columns.length > 0,
-  );
+  // A refusal lands above Save at the bottom of a column that may scroll; show both.
+  const actions = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (error !== null) actions.current?.scrollIntoView({ block: "nearest" });
+  }, [error]);
+  // Whole boards are read only to edit pickup; saved columns carry their titles.
+  const boards = useReadyBoards(environmentId, manager.projectId, draft !== null);
+  const caps = useFactoryManagerCaps(environmentId, manager.id);
+  // Counted as the Factory row counts them, so the two agree.
+  const running = (useFactoryWorkspaceFeed(environmentId)?.assignments ?? []).filter(
+    (assignment) => assignment.managerId === manager.id && takesAssignmentSlot(assignment),
+  ).length;
 
   useEffect(() => {
     let current = true;
@@ -120,25 +132,21 @@ function ManagerSettings(props: {
       ? "The pool's manager model"
       : (models.find((choice) => modelValue(choice.selection) === modelValue(model))?.label ??
         `${model.model} (${model.instanceId})`);
-  const columnLabel = (column: { readonly boardId: string; readonly columnId: string }) => {
-    const board = boards?.find((entry) => entry.boardId === column.boardId);
-    const title = board?.readyColumns.find((ready) => ready.id === column.columnId)?.title;
-    return board === undefined || title === undefined
+  const columnLabel = (column: FactoryPickupColumn) =>
+    column.title === undefined
       ? column.columnId
-      : `${title} on ${board.title}`;
-  };
+      : column.boardTitle === undefined
+        ? column.title
+        : `${column.title} on ${column.boardTitle}`;
   const shown = draft === null ? result : managerSettingsResult(result, draft);
-  const cap =
-    environment === null
-      ? null
-      : effectiveManagerCap(shown.concurrencyCap, environment.concurrencyCap);
+  const cap = caps === null ? null : effectiveManagerCap(shown.concurrencyCap, caps.environment);
   const capNote =
     cap === null ? null : (
       <p className="text-2xs text-muted-foreground">
         Runs up to {cap.cap} at once
         {cap.limitedByEnvironment ? `; the environment's cap of ${cap.cap} is the lower one.` : "."}
-        {draft !== null && manager.activeAssignments > shown.concurrencyCap
-          ? ` ${manager.activeAssignments} are running now: lowering the cap cancels none of them, and new work waits for room.`
+        {draft !== null && running > shown.concurrencyCap
+          ? ` ${running} are running now: lowering the cap cancels none of them, and new work waits for room.`
           : null}
       </p>
     );
@@ -291,7 +299,12 @@ function ManagerSettings(props: {
                   <legend className="text-2xs">Ready columns on {board.title}</legend>
                   <div className="flex flex-wrap gap-x-3 gap-y-1">
                     {board.readyColumns.map((column) => {
-                      const ref = { boardId: board.boardId, columnId: column.id };
+                      const ref = {
+                        boardId: board.boardId,
+                        columnId: column.id,
+                        title: column.title,
+                        boardTitle: board.title,
+                      };
                       return (
                         <Label key={column.id}>
                           <Checkbox
@@ -334,7 +347,7 @@ function ManagerSettings(props: {
           size="sm"
           type="number"
           min={1}
-          max={MANAGER_CAP_MAX}
+          max={FACTORY_CONCURRENCY_CAP_MAX}
           disabled={disabled}
           value={draft.concurrencyCap}
           onChange={(event) => update({ ...draft, concurrencyCap: event.target.value })}
@@ -451,7 +464,7 @@ function ManagerSettings(props: {
           {error}
         </p>
       )}
-      <div className="flex items-center justify-end gap-2">
+      <div ref={actions} className="flex items-center justify-end gap-2">
         {problem === null ? null : (
           <p className="min-w-0 flex-1 text-2xs text-muted-foreground">{problem}</p>
         )}

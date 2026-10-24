@@ -1,17 +1,15 @@
-import type {
-  FactoryConfig,
-  FactoryControlPath,
-  FactoryModelRef,
-  FactoryOnboardingResult,
-  FactoryPickupColumn,
-  ModelSelection,
+import {
+  FACTORY_CONCURRENCY_CAP_MAX,
+  type FactoryConfig,
+  type FactoryControlPath,
+  type FactoryModelRef,
+  type FactoryOnboardingResult,
+  type FactoryPickupColumn,
+  type ModelSelection,
 } from "@t3tools/contracts";
 
 import type { FactoryModelOption } from "./FactoryPageConfig";
 import { sameColumn } from "./factoryOnboardingCard.logic";
-
-/** The schema's bounds for a manager's cap. */
-export const MANAGER_CAP_MAX = 20;
 
 /** What the settings card edits. Text fields hold what the user typed until it is saved. */
 export interface ManagerSettingsDraft {
@@ -50,7 +48,7 @@ export function managerSettingsDraft(
 
 function parseCap(text: string): number | null {
   const cap = Number(text.trim());
-  return Number.isInteger(cap) && cap >= 1 && cap <= MANAGER_CAP_MAX ? cap : null;
+  return Number.isInteger(cap) && cap >= 1 && cap <= FACTORY_CONCURRENCY_CAP_MAX ? cap : null;
 }
 
 /** What the card checks before saving; the server checks the rest and says why it refuses. */
@@ -63,7 +61,7 @@ export function managerSettingsProblem(
   if (draft.pickupEnabled && draft.columns.length === 0)
     return "Tick at least one Ready column, or turn pickup off.";
   if (parseCap(draft.concurrencyCap) === null)
-    return `Set the cap to a whole number from 1 to ${MANAGER_CAP_MAX}.`;
+    return `Set the cap to a whole number from 1 to ${FACTORY_CONCURRENCY_CAP_MAX}.`;
   return null;
 }
 

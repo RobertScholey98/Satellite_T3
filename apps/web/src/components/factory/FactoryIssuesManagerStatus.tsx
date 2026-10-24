@@ -2,7 +2,6 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, FactoryManager } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
 
 import { randomUUID } from "~/lib/utils";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -15,7 +14,9 @@ import {
   factoryErrorMessage,
   unwrapFactoryResult,
   useFactoryAssignments,
+  useFactoryManagerCaps,
 } from "./factoryState";
+import { effectiveManagerCap } from "./factoryManagerSettings.logic";
 import { managerStatusText, runningAssignmentCount } from "./FactoryTriageState";
 
 /**
@@ -33,26 +34,11 @@ export function FactoryIssuesManagerStatus({
 }) {
   const navigate = useNavigate();
   const canOperate = useAtomValue(factoryEnvironment.pauseManager.permissionAtom(environmentId));
-  const getConfig = useAtomCommand(factoryEnvironment.getConfig, { reportFailure: false });
   const pauseManager = useAtomCommand(factoryEnvironment.pauseManager, { reportFailure: false });
   const resumeManager = useAtomCommand(factoryEnvironment.resumeManager, { reportFailure: false });
   const running = runningAssignmentCount(useFactoryAssignments(environmentId), manager.id);
 
-  const projectId = manager.projectId;
-  const [cap, setCap] = useState<{ readonly projectId: string; readonly value: number } | null>(
-    null,
-  );
-  useEffect(() => {
-    if (!connected) return;
-    let current = true;
-    void getConfig({ environmentId, input: { projectId } }).then((result) => {
-      if (current && result._tag === "Success")
-        setCap({ projectId, value: result.value.effective.concurrencyCap });
-    });
-    return () => {
-      current = false;
-    };
-  }, [connected, environmentId, getConfig, projectId]);
+  const caps = useFactoryManagerCaps(environmentId, manager.id);
 
   const paused = manager.state === "manager-paused" || manager.state === "project-paused";
   const perform = async (title: string, request: () => Promise<unknown>) => {
@@ -89,7 +75,11 @@ export function FactoryIssuesManagerStatus({
       <MenuTrigger
         render={<Button size="micro" variant="ghost-muted" aria-label={`${manager.name} status`} />}
       >
-        {managerStatusText(manager, running, cap?.projectId === projectId ? cap.value : null)}
+        {managerStatusText(
+          manager,
+          running,
+          caps === null ? null : effectiveManagerCap(caps.manager, caps.environment).cap,
+        )}
       </MenuTrigger>
       <MenuPopup align="start">
         {paused ? null : (

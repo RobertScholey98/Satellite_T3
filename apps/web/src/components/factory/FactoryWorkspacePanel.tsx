@@ -178,6 +178,9 @@ export function FactoryWorkspacePanel(props: {
   const aboveTop = column?.top ?? GAP + topInset;
   const detailsTop = aboveTop + stack.detailsTopInset;
   const belowTop = detailsTop + (detailsHeight > 0 ? detailsHeight + GAP : 0);
+  // The cards below scroll within what is left of the canvas, so the measured height below, and
+  // with it the reported obstacle, is the column's visible bottom.
+  const belowRoom = Math.max(0, (canvas?.container.height ?? 0) - belowTop - GAP);
   const stackBottom =
     column === null
       ? null
@@ -274,10 +277,12 @@ export function FactoryWorkspacePanel(props: {
       {column !== null && stack.below.length > 0 ? (
         <div
           ref={setBelow}
-          className={cn("absolute z-20 flex flex-col gap-3", slide)}
-          style={{ ...edge, top: belowTop, width: THREAD_DETAILS_CARD_WIDTH }}
+          className={cn("absolute z-20", slide)}
+          style={{ ...edge, top: belowTop, width: THREAD_DETAILS_CARD_WIDTH, maxHeight: belowRoom }}
         >
-          {renderEntries(stack.below)}
+          <ScrollArea scrollFade className="max-h-[inherit]">
+            <div className="flex flex-col gap-3">{renderEntries(stack.below)}</div>
+          </ScrollArea>
         </div>
       ) : null}
       {teamsVisible ? (
