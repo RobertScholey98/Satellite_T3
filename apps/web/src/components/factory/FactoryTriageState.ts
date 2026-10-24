@@ -28,15 +28,14 @@ export function draftIdOfDrag(id: string | number): string | null {
   return value.startsWith(DRAFT_DRAG_PREFIX) ? value.slice(DRAFT_DRAG_PREFIX.length) : null;
 }
 
-/** The project's standing manager; a retired one no longer triages or picks up work. */
-export function projectManager(
+/** The project's standing managers; a retired one no longer triages or picks up work. */
+export function projectManagers(
   managers: ReadonlyArray<FactoryManager> | undefined,
   projectId: ProjectId | null,
-): FactoryManager | null {
-  if (!managers || projectId === null) return null;
-  return (
-    managers.find((manager) => manager.projectId === projectId && manager.state !== "retired") ??
-    null
+): ReadonlyArray<FactoryManager> {
+  if (!managers || projectId === null) return [];
+  return managers.filter(
+    (manager) => manager.projectId === projectId && manager.state !== "retired",
   );
 }
 
@@ -81,25 +80,26 @@ export function runningAssignmentCount(
 }
 
 export function managerStatusText(
-  manager: Pick<FactoryManager, "state">,
+  manager: Pick<FactoryManager, "state" | "name">,
   running: number,
   cap: number | null,
 ): string {
+  const name = manager.name;
   switch (manager.state) {
     case "onboarding":
-      return "Manager onboarding";
+      return `${name} onboarding`;
     case "ready":
-      return "Manager ready to pick up";
+      return `${name} ready to pick up`;
     case "manager-paused":
-      return "Manager paused";
+      return `${name} paused`;
     case "project-paused":
-      return "Manager and teams paused";
+      return `${name} and teams paused`;
     case "retired":
-      return "Manager retired";
+      return `${name} retired`;
     case "active":
       return cap === null
-        ? `Manager · ${running} running`
-        : `Manager · ${running} of ${cap} running`;
+        ? `${name} · ${running} running`
+        : `${name} · ${running} of ${cap} running`;
   }
 }
 

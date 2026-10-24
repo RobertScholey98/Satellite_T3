@@ -1745,13 +1745,6 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             const replay = yield* replayManager(input.requestId, input);
             if (replay) return { replay } as const;
             const shell = yield* project(input.projectId);
-            const current = yield* sql<{ name: string }>`SELECT name FROM factory_managers
-                WHERE project_id=${input.projectId} AND state != 'retired'`;
-            if (current[0])
-              return yield* error(
-                "conflict",
-                `This project already has an engineering manager, ${current[0].name}.`,
-              );
             const config = (yield* configView(input.projectId)).effective;
             const files = yield* factoryFiles();
             if (files.pool.length === 0) return yield* error("invalid", yield* noPoolMessage);

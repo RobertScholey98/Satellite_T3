@@ -7,41 +7,33 @@ import { useEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Toggle } from "../ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { factoryEnvironment, supportsFactory, useFactoryWorkspace } from "./factoryState";
+import { factoryEnvironment, supportsFactory } from "./factoryState";
 import { setFactoryManagerDraft, useFactoryManagerDraft } from "./factoryWorkspaceState";
 
 /**
  * Turns a new-thread draft into a new engineering manager: the composer then takes the manager's
- * name. v1 allows one manager per project, so a project that has one gets a disabled toggle.
+ * name.
  */
 export function FactoryManagerToggle(props: {
   readonly environmentId: EnvironmentId;
-  readonly projectId: ProjectId;
   readonly draftId: string;
 }) {
   const environment = useEnvironment(props.environmentId);
   const available = supportsFactory(environment ?? undefined);
-  const feed = useFactoryWorkspace(available ? props.environmentId : null);
   const canCreate = useAtomValue(
     factoryEnvironment.createManager.permissionAtom(props.environmentId),
   );
   const on = useFactoryManagerDraft(props.draftId);
-  const existing =
-    feed?.managers.find(
-      (manager) => manager.projectId === props.projectId && manager.state !== "retired",
-    ) ?? null;
-  const disabled = !canCreate || existing !== null;
+  const disabled = !canCreate;
 
   useEffect(() => {
     if (on && disabled) setFactoryManagerDraft(props.draftId, false);
   }, [on, disabled, props.draftId]);
 
   if (!available) return null;
-  const tooltip = existing
-    ? `${existing.name} already manages this project`
-    : canCreate
-      ? "Create an engineering manager"
-      : "This connection cannot create engineering managers";
+  const tooltip = canCreate
+    ? "Create an engineering manager"
+    : "This connection cannot create engineering managers";
   return (
     <Tooltip>
       <TooltipTrigger

@@ -62,6 +62,7 @@ import {
 import * as FactoryConfigStore from "./config/FactoryConfigStore.ts";
 import type { FactoryModelCatalog } from "./config/modelResolution.ts";
 import { FactoryDefinitionsV1 } from "./migrations/FactoryDefinitionsV1.ts";
+import { FactoryManagersPerProjectV1 } from "./migrations/FactoryManagersPerProjectV1.ts";
 import { FactoryOnboardingResultV1 } from "./migrations/FactoryOnboardingResultV1.ts";
 import { FactoryV1 } from "./migrations/FactoryV1.ts";
 import { projectSection, type RoleSkillSource } from "./roleSkills.ts";
@@ -287,6 +288,7 @@ const makeHarness = (options: HarnessOptions = {}) =>
     yield* FactoryV1;
     yield* FactoryOnboardingResultV1;
     yield* FactoryDefinitionsV1;
+    yield* FactoryManagersPerProjectV1;
     const launches: FactoryThreadLaunch[] = [];
     const skillReads: Array<readonly [FactoryRole, string]> = [];
     const boards: IssueBoardView[] = [];
@@ -730,10 +732,28 @@ describe("FactoryService managers", () => {
         const reused = yield* create(service, "create-1", "Grace").pipe(Effect.flip);
         assert.strictEqual(reused.reason, "conflict");
 
-        const second = yield* create(service, "create-2", "Grace").pipe(Effect.flip);
-        assert.strictEqual(second.reason, "conflict");
-        assert.include(second.message, "Ada");
         assert.strictEqual(yield* managerRowCount, 1);
+      }),
+    ),
+  );
+
+  it.effect("creates a second manager in a project that already has one", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const service = yield* makeManagerService;
+
+        const ada = yield* create(service, "create-1", "Ada");
+        const grace = yield* create(service, "create-2", "Grace");
+        assert.strictEqual(grace.projectId, PROJECT_ID);
+        assert.strictEqual(grace.state, "onboarding");
+        assert.notStrictEqual(grace.id, ada.id);
+        assert.notStrictEqual(grace.threadId, ada.threadId);
+        assert.deepStrictEqual(
+          (yield* service.listManagers({ projectId: PROJECT_ID }))
+            .map((manager) => manager.name)
+            .toSorted(),
+          ["Ada", "Grace"],
+        );
       }),
     ),
   );
