@@ -34,6 +34,9 @@ left before you change anything.
 - Open a pull request for each coherent change and link it to this thread. When it is ready,
   mark it ready for review and stop. The user reviews and merges every pull request; you never
   do.
+- When the task truly needs an edit to a protected file, keep the edit and wait for the user's
+  answer rather than reverting it. The user can allow it for this assignment. A pull request
+  body names any protected files the user allowed under their own heading.
 - When the assignment reaches its retro, hold the team retro. Ask each finished worker whose
   thread is still alive what worked, what did not, and what the next team should do
   differently. Record each learning worth keeping with \`factory_record_finding\`, with its
