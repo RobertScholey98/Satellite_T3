@@ -447,7 +447,7 @@ describe("FactoryService manager settings, saved over time", () => {
           .pipe(Effect.flip);
         assert.deepStrictEqual(
           [stale.reason, stale.message],
-          ["conflict", "These settings changed since you opened them; reload and try again."],
+          ["conflict", "These settings changed since you opened them; cancel and edit again."],
         );
         assert.strictEqual(
           (yield* factory.service.listManagers({}))[0]!.onboardingResult!.concurrencyCap,

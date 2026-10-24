@@ -2428,7 +2428,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                 if (manager.updatedAt !== input.expectedUpdatedAt)
                   return yield* error(
                     "conflict",
-                    "These settings changed since you opened them; reload and try again.",
+                    "These settings changed since you opened them; cancel and edit again.",
                   );
                 const stored = manager.onboardingResult!;
                 // Overlap is checked only when this save changes pickup, so two managers that already
