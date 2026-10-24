@@ -509,4 +509,31 @@ describe("FactoryService manager settings, saved over time", () => {
       }),
     ),
   );
+
+  it.effect("finishes a committed save when the client disconnects during it", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { manager, sentBefore } = yield* settledManager(factory);
+        const switching = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        factory.controls.duringModelSwitch = Deferred.succeed(switching, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const save = yield* update(factory, manager.id, RESULT, { modelSelection: SONNET }).pipe(
+          Effect.forkChild,
+        );
+        yield* Deferred.await(switching);
+        // What the RPC server does to a disconnected client's requests.
+        save.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(save);
+
+        assert.deepStrictEqual(factory.modelChanges, [
+          { threadId: manager.threadId!, model: SONNET.model },
+        ]);
+        assert.strictEqual(factory.sentMessages.length, sentBefore + 1);
+      }),
+    ),
+  );
 });

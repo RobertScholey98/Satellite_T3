@@ -256,6 +256,8 @@ interface HarnessControls {
   sendFailures: number;
   /** How many thread model switches fail before one succeeds. */
   modelFailures: number;
+  /** Runs once inside the next thread model switch, before it succeeds or fails. */
+  duringModelSwitch: Effect.Effect<void> | null;
   attemptFailures: number;
   fileReadFailures: number;
   ticketFailures: number;
@@ -294,6 +296,7 @@ export const makeHarness = (options: HarnessOptions = {}) =>
     const controls: HarnessControls = {
       sendFailures: 0,
       modelFailures: 0,
+      duringModelSwitch: null,
       attemptFailures: 0,
       fileReadFailures: 0,
       ticketFailures: 0,
@@ -423,15 +426,21 @@ export const makeHarness = (options: HarnessOptions = {}) =>
       settleThread: (input) => Effect.sync(() => void settles.push(input.threadId)),
       setThreadModel: (input) =>
         Effect.suspend(() => {
-          if (controls.modelFailures > 0) {
-            controls.modelFailures -= 1;
-            return Effect.fail(
-              new FactoryOperationError({ reason: "unavailable", message: "Thread is busy." }),
-            );
-          }
-          modelChanges.push({ threadId: input.threadId, model: input.modelSelection.model });
-          return Effect.void;
-        }),
+          const during = controls.duringModelSwitch ?? Effect.void;
+          controls.duringModelSwitch = null;
+          return during;
+        }).pipe(
+          Effect.andThen(() => {
+            if (controls.modelFailures > 0) {
+              controls.modelFailures -= 1;
+              return Effect.fail(
+                new FactoryOperationError({ reason: "unavailable", message: "Thread is busy." }),
+              );
+            }
+            modelChanges.push({ threadId: input.threadId, model: input.modelSelection.model });
+            return Effect.void;
+          }),
+        ),
       readDefaultBranch: () => Effect.sync(() => controls.defaultBranch),
       readPullRequestFiles: (input) =>
         Effect.suspend(() => {
