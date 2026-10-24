@@ -17,6 +17,7 @@ import {
   startTicket,
   makeStaffingFactory,
   pickupRefusal,
+  idleRun,
 } from "./FactoryService.testkit.ts";
 
 describe("FactoryService staffing from the factory config", () => {
@@ -182,6 +183,55 @@ describe("FactoryService staffing from the factory config", () => {
         );
       }),
     ),
+  );
+
+  it.effect(
+    "frees a member's place once its task finishes, and takes it while a follow-up runs",
+    () =>
+      withDatabase(
+        Effect.gen(function* () {
+          const factory = yield* makeStaffingFactory();
+          const { service, threadRuns } = factory;
+          factory.boards.push(board([{ number: 1, columnId: READY }]));
+          const manager = yield* activeManager(factory);
+          yield* service.pickup(manager.threadId!, { ...START, issueNumber: 1, teamId: "web" });
+          const lead = ThreadId.make("lead-1");
+          const worker = ThreadId.make("worker-1");
+          const busy = () =>
+            service.planDelegation(lead, { member: "Builder", task: "Again." }).pipe(
+              Effect.flip,
+              Effect.map((failure) => failure.message),
+            );
+
+          yield* service.planDelegation(lead, { member: "Builder", task: "Add the button." });
+          yield* service.recordMember(lead, {
+            threadId: worker,
+            role: "worker",
+            memberName: "Builder",
+            modelSelection: SONNET,
+            joined: "created",
+          });
+          threadRuns.set(worker, idleRun({ latestRunStatus: "running", runInProgress: true }));
+          assert.strictEqual(yield* busy(), "The team allows 1 × Builder and it is busy.");
+
+          threadRuns.set(worker, idleRun());
+          const again = yield* service.planDelegation(lead, { member: "Builder", task: "Again." });
+          assert.strictEqual(again.member, "Builder");
+          const second = ThreadId.make("worker-2");
+          yield* service.recordMember(lead, {
+            threadId: second,
+            role: "worker",
+            memberName: "Builder",
+            modelSelection: SONNET,
+            joined: "created",
+          });
+          threadRuns.set(second, idleRun());
+
+          // A follow-up on the first worker's thread runs again, so it takes the place again.
+          threadRuns.set(worker, idleRun({ latestRunStatus: "running", runInProgress: true }));
+          assert.strictEqual(yield* busy(), "The team allows 1 × Builder and it is busy.");
+        }),
+      ),
   );
 });
 

@@ -65,8 +65,10 @@ Never start a model outside this list, even if it would be faster.
 - Staff the team with \`factory_delegate\`: the member's name from the Team section, the task,
   and optionally a model. A member whose models you pick per task needs one from its list; for
   any other member, the first model this environment can run is used. The team sets how many of
-  each member may run at once. On an older team that lists roles instead of members, name the
-  role. A child started with plain \`delegate_task\` is still observed, and flagged to the
+  each member may run at once. A member whose task finished frees its place: a follow-up you send
+  to its thread takes the place again while it runs but is not a new delegation, and
+  \`factory_delegate\` starts a fresh one that is. On an older team that lists roles instead of
+  members, name the role. A child started with plain \`delegate_task\` is still observed, and flagged to the
   manager if its model is outside the pool.
 - A helper you or a member start on your own is that agent's business: it takes no place on
   the team, and its cost counts as the agent's that started it.

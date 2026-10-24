@@ -17,6 +17,7 @@ import {
   workspace,
   makeStaffingFactory,
   asLegacyTeam,
+  idleRun,
 } from "./FactoryService.testkit.ts";
 
 describe("FactoryService delegation", () => {
@@ -101,6 +102,32 @@ describe("FactoryService delegation", () => {
           .pipe(Effect.flip);
         assert.strictEqual(busy.reason, "conflict");
         assert.strictEqual(busy.message, "The team allows 1 implementer and all are busy.");
+      }),
+    ),
+  );
+
+  it.effect("on a team staffed by role, a finished implementer frees its place", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service } = factory;
+        const { assignment, lead } = yield* startedTeam(factory);
+        yield* asLegacyTeam(assignment.id);
+        const plan = yield* service.planDelegation(lead, { role: "implementer", task: "Fix it." });
+        const worker = ThreadId.make("worker-1");
+        yield* service.recordMember(lead, {
+          threadId: worker,
+          role: "implementer",
+          modelSelection: plan.modelSelection,
+          joined: "created",
+        });
+        factory.threadRuns.set(worker, idleRun());
+
+        const next = yield* service.planDelegation(lead, {
+          role: "implementer",
+          task: "Fix the next thing.",
+        });
+        assert.strictEqual(next.role, "implementer");
       }),
     ),
   );
