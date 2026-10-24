@@ -2,7 +2,6 @@ import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environ
 import type {
   EnvironmentId,
   FactoryAssignmentState,
-  FactoryChecklistStep,
   FactoryManagerState,
   FactoryMember,
   FactoryRole,
@@ -14,6 +13,11 @@ import type {
 } from "@t3tools/contracts";
 import type { TimelineEntry } from "~/session-logic";
 import type { ChatMessage } from "~/types";
+import { DETAILS_CARD_CLEARANCE } from "../chat/chatCanvasLayout";
+import {
+  THREAD_DETAILS_CARD_GAP,
+  THREAD_DETAILS_CARD_WIDTH,
+} from "../chat/threadDetailsCardLayout";
 
 export const FACTORY_MANAGER_STATE_LABEL: Record<FactoryManagerState, string> = {
   onboarding: "Onboarding",
@@ -49,19 +53,12 @@ export const factoryMemberLabel = (member: {
   readonly memberName?: string;
 }) => member.memberName ?? FACTORY_ROLE_LABEL[member.role];
 
-/** A digest older than this is rewritten when its tab opens. */
-export const FACTORY_DIGEST_STALE_MS = 5 * 60_000;
-
 export const isLiveAssignment = (assignment: Pick<FactoryWorkspaceAssignment, "state">) =>
   assignment.state !== "completed" && assignment.state !== "cancelled";
 
 /** `retro` holds the manager but frees its slot under the concurrency cap. */
 export const takesAssignmentSlot = (assignment: Pick<FactoryWorkspaceAssignment, "state">) =>
   isLiveAssignment(assignment) && assignment.state !== "retro";
-
-export function checklistProgress(steps: ReadonlyArray<FactoryChecklistStep>) {
-  return { done: steps.filter((step) => step.state === "done").length, total: steps.length };
-}
 
 /**
  * Lead and team threads of every live manager. The sidebar shows only the manager's thread; the
@@ -132,8 +129,9 @@ export interface FactoryWorkspaceTeam {
 
 export interface FactoryWorkspaceView {
   readonly manager: FactoryWorkspaceManager & { readonly threadId: ThreadId };
+  /** Live teams, the open thread's first and then the newest. */
   readonly teams: ReadonlyArray<FactoryWorkspaceTeam>;
-  /** The team whose thread is open, so the workspace opens on it; `null` on the manager's thread. */
+  /** The team whose thread is open; `null` on the manager's thread. */
   readonly activeAssignmentId: string | null;
 }
 
@@ -145,7 +143,9 @@ export function resolveFactoryWorkspaceView(
   const place = resolveFactoryThreadPlace(feed, threadId);
   if (!feed || !place || place.manager.threadId === null) return null;
   const manager = { ...place.manager, threadId: place.manager.threadId };
+  // The feed lists assignments oldest first, so the newest come from the end.
   const teams = feed.assignments
+    .toReversed()
     .filter((assignment) => assignment.managerId === manager.id && isLiveAssignment(assignment))
     .map((assignment) => {
       const members = feed.members.filter(
@@ -170,9 +170,89 @@ export function resolveFactoryWorkspaceView(
     });
   // A completed or cancelled assignment is not in `teams`, so its thread opens on no team.
   const open = place.kind === "manager" ? null : (place.assignment?.id ?? null);
-  const activeAssignmentId =
-    open !== null && teams.some((team) => team.assignment.id === open) ? open : null;
-  return { manager, teams, activeAssignmentId };
+  const active = open === null ? undefined : teams.find((team) => team.assignment.id === open);
+  return {
+    manager,
+    teams: active ? [active, ...teams.filter((team) => team !== active)] : teams,
+    activeAssignmentId: active?.assignment.id ?? null,
+  };
+}
+
+/** What a factory thread shows beside its chat, apart from the details card. */
+export interface FactoryWorkspacePlace {
+  /** Team threads lead back to their manager's thread. */
+  readonly backToManager: boolean;
+  /** The right-hand column of team cards, shown while any team is live. */
+  readonly teamColumn: boolean;
+}
+
+export const factoryWorkspacePlace = (
+  view: FactoryWorkspaceView,
+  threadId: ThreadId,
+): FactoryWorkspacePlace => ({
+  backToManager: threadId !== view.manager.threadId,
+  teamColumn: view.teams.length > 0,
+});
+
+/** Back to manager's height above the details card, in whichever corner the card takes. */
+export const FACTORY_BACK_CONTROL_HEIGHT = 44;
+
+/** The manager's own thread, or one of its team threads. */
+export type FactoryThreadKind = "manager" | "team";
+
+export const factoryThreadKind = (place: FactoryWorkspacePlace): FactoryThreadKind =>
+  place.backToManager ? "team" : "manager";
+
+/** One card in the column around a factory thread's details card. */
+export interface FactoryStackSlot {
+  readonly key: string;
+  readonly visibleOn: ReadonlyArray<FactoryThreadKind>;
+  /**
+   * A card above the details card needs a fixed height: the details card is placed from it before
+   * anything renders. Cards below it are measured.
+   */
+  readonly height?: number;
+}
+
+/** The details card's slot. The chat view renders the card; the stack only leaves it room. */
+export const FACTORY_DETAILS_SLOT = "details";
+
+/** The stack's cards that show on a thread, either side of the details card, in order. */
+export function resolveFactoryThreadStack<Slot extends FactoryStackSlot>(
+  stack: ReadonlyArray<Slot>,
+  kind: FactoryThreadKind,
+) {
+  const visible = stack.filter((slot) => slot.visibleOn.includes(kind));
+  const details = visible.findIndex((slot) => slot.key === FACTORY_DETAILS_SLOT);
+  const above = details < 0 ? visible : visible.slice(0, details);
+  return {
+    above,
+    below: details < 0 ? [] : visible.slice(details + 1),
+    /** How far below the column's top the details card starts. */
+    detailsTopInset: above.reduce(
+      (inset, slot) => inset + (slot.height ?? 0) + THREAD_DETAILS_CARD_GAP,
+      0,
+    ),
+  };
+}
+
+/**
+ * Whether a factory thread's details card takes the top-left gutter: only while the card, the
+ * lane's clearance and a readable lane fit beside the team column. Otherwise it stays at the top
+ * right, as on every other thread. Decided from the canvas width and the lane's padding and
+ * minimum width, which the card does not change, so moving the card cannot flip the decision.
+ */
+export function resolveFactoryDetailsCardSide(input: {
+  readonly container: { readonly width: number };
+  readonly lane: { readonly padding: number; readonly minChatWidth: number };
+  readonly teamColumn: boolean;
+}): "left" | "right" {
+  const cardEdge = THREAD_DETAILS_CARD_GAP + THREAD_DETAILS_CARD_WIDTH;
+  const laneLeft = cardEdge + DETAILS_CARD_CLEARANCE;
+  const laneRight = input.teamColumn
+    ? input.container.width - cardEdge - DETAILS_CARD_CLEARANCE
+    : input.container.width - input.lane.padding;
+  return laneRight - laneLeft >= input.lane.minChatWidth ? "left" : "right";
 }
 
 /** The newest pickup or skip in a manager's log, which `log.list` returns newest first. */

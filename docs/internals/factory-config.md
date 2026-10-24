@@ -68,7 +68,7 @@ machine-specific, so the preference never reaches the files, the repo or an expo
 | ---------------------------------------------------------------------------- | ------------------------------------ |
 | Protected paths, pickup guidance, project rules, teams used, concurrency cap | The manager's onboarding result      |
 | A manager's own instructions and models                                      | The manager record                   |
-| Environment concurrency cap, digest interval, runs-on instance per driver    | The environment, in its database     |
+| Environment concurrency cap, runs-on instance per driver                     | The environment, in its database     |
 | Git identity and every secret                                                | The environment and its secret store |
 
 There are no project-level overrides of definitions, and project role-skill files

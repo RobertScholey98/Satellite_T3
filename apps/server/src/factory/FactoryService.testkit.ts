@@ -36,9 +36,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { RateTable } from "../usage/usagePricing.ts";
 import {
   makeFactoryService,
-  type FactoryDigestRequest,
   type FactoryServiceDependencies,
-  type FactoryThreadActivity,
   type FactoryThreadInterrupt,
   type FactoryThreadLaunch,
   type FactoryPullRequestRef,
@@ -183,6 +181,8 @@ interface HarnessOptions {
   /** How many launches fail before one succeeds. */
   readonly launchFailures?: number;
   readonly readRoleSkill?: (role: FactoryRole, projectRoot: string) => RoleSkillSource;
+  /** A service over a database that already holds a factory, as after a restart. */
+  readonly restart?: boolean;
 }
 
 const decodeIssue = Schema.decodeSync(IssueSummary);
@@ -255,6 +255,8 @@ export const board = (
 /** What the fakes do next; tests change it between calls. */
 interface HarnessControls {
   sendFailures: number;
+  /** Runs once inside the next message sent to a thread, before it succeeds or fails. */
+  duringSend: Effect.Effect<void> | null;
   attemptFailures: number;
   fileReadFailures: number;
   ticketFailures: number;
@@ -264,8 +266,6 @@ interface HarnessControls {
   duringLaunch: Effect.Effect<void, FactoryOperationError> | null;
   /** What the usage rate cache holds; null when usage tracking has cached none. */
   rateTable: RateTable | null;
-  /** What the text-generation model answers a digest request with. */
-  summary: Effect.Effect<string, FactoryOperationError>;
   /** The repository's default branch as git reports it; null when it cannot be read. */
   defaultBranch: string | null;
   /** What the environment can run, which factory model names resolve against. */
@@ -276,11 +276,13 @@ type TicketRequest = Parameters<FactoryServiceDependencies["createTicket"]>[0];
 
 export const makeHarness = (options: HarnessOptions = {}) =>
   Effect.gen(function* () {
-    yield* FactoryV1;
-    yield* FactoryOnboardingResultV1;
-    yield* FactoryDefinitionsV1;
-    yield* FactoryManagersPerProjectV1;
-    yield* FactoryProtectedPathAsksV1;
+    if (options.restart !== true) {
+      yield* FactoryV1;
+      yield* FactoryOnboardingResultV1;
+      yield* FactoryDefinitionsV1;
+      yield* FactoryManagersPerProjectV1;
+      yield* FactoryProtectedPathAsksV1;
+    }
     const launches: FactoryThreadLaunch[] = [];
     const skillReads: Array<readonly [FactoryRole, string]> = [];
     const boards: IssueBoardView[] = [];
@@ -290,17 +292,15 @@ export const makeHarness = (options: HarnessOptions = {}) =>
     const settles: ThreadId[] = [];
     const threadRuns = new Map<ThreadId, FactoryThreadRuns>();
     const threadTurns = new Map<ThreadId, ReadonlyArray<FactoryThreadTurn>>();
-    const threadActivity = new Map<ThreadId, ReadonlyArray<FactoryThreadActivity>>();
-    const summaryRequests: FactoryDigestRequest[] = [];
     const controls: HarnessControls = {
       sendFailures: 0,
+      duringSend: null,
       attemptFailures: 0,
       fileReadFailures: 0,
       ticketFailures: 0,
       launchFailures: options.launchFailures ?? 0,
       duringLaunch: null,
       rateTable: null,
-      summary: Effect.sync(() => ` Digest ${summaryRequests.length}. `),
       defaultBranch: "trunk",
       catalog: CATALOG,
     };
@@ -408,24 +408,24 @@ export const makeHarness = (options: HarnessOptions = {}) =>
         }),
       readThreadRuns: (threadId) => Effect.sync(() => threadRuns.get(threadId) ?? null),
       readThreadTurns: (threadId) => Effect.sync(() => threadTurns.get(threadId) ?? []),
-      readThreadActivity: (threadId) => Effect.sync(() => threadActivity.get(threadId) ?? []),
-      generateSummary: (input) =>
-        Effect.suspend(() => {
-          summaryRequests.push(input);
-          return controls.summary;
-        }),
       readRateTable: Effect.sync(() => controls.rateTable),
       sendToThread: (input) =>
         Effect.suspend(() => {
-          if (controls.sendFailures === 0) {
-            sentMessages.push(input);
-            return Effect.void;
-          }
-          controls.sendFailures -= 1;
-          return Effect.fail(
-            new FactoryOperationError({ reason: "unavailable", message: "Thread is busy." }),
-          );
-        }),
+          const during = controls.duringSend ?? Effect.void;
+          controls.duringSend = null;
+          return during;
+        }).pipe(
+          Effect.andThen(() => {
+            if (controls.sendFailures === 0) {
+              sentMessages.push(input);
+              return Effect.void;
+            }
+            controls.sendFailures -= 1;
+            return Effect.fail(
+              new FactoryOperationError({ reason: "unavailable", message: "Thread is busy." }),
+            );
+          }),
+        ),
       interruptThread: (input) => Effect.sync(() => void interrupts.push(input)),
       settleThread: (input) => Effect.sync(() => void settles.push(input.threadId)),
       readDefaultBranch: () => Effect.sync(() => controls.defaultBranch),
@@ -464,8 +464,6 @@ export const makeHarness = (options: HarnessOptions = {}) =>
       settles,
       threadRuns,
       threadTurns,
-      threadActivity,
-      summaryRequests,
       controls,
       pullRequestFiles,
       fileReads,
@@ -515,6 +513,15 @@ export const RESULT: FactoryOnboardingResult = {
   controlPaths: [{ path: "AGENTS.md", reason: "Agent instructions." }],
   teamIds: [],
   concurrencyCap: 1,
+};
+
+/** RESULT as the server saves it, with the titles of its pickup column from `board`. */
+export const SAVED_RESULT: FactoryOnboardingResult = {
+  ...RESULT,
+  pickup: {
+    ...RESULT.pickup,
+    columns: [{ boardId: "board-1", columnId: READY, title: "Ready", boardTitle: "Roadmap" }],
+  },
 };
 
 export const create = (service: Service, requestId = "create-1", name = "Ada") =>

@@ -94,18 +94,6 @@ export type ReviewGuideGenerationResult = Omit<
   "headSha" | "generatedAt" | "modelSelection"
 >;
 
-export interface SummaryGenerationInput {
-  cwd: string;
-  subject: string;
-  context: string;
-  previousSummary?: string | undefined;
-  modelSelection: ModelSelection;
-}
-
-export interface SummaryGenerationResult {
-  summary: string;
-}
-
 export interface ProviderTextGeneration {
   readonly generateCommitMessage: (
     input: CommitMessageGenerationInput,
@@ -126,9 +114,4 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
-
-  /** Optional so hand-written implementations need not grow; `fromRunner` builds it. */
-  readonly generateSummary?: (
-    input: SummaryGenerationInput,
-  ) => Effect.Effect<SummaryGenerationResult, TextGenerationError>;
 }

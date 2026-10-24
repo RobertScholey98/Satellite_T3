@@ -38,11 +38,11 @@ function failureMessage<A, E>(result: AtomCommandResult<A, E>): string | null {
 }
 
 /** The settings the environment's database still owns; the rest live in the config files. */
-type EnvironmentField = "concurrencyCap" | "digestIntervalMinutes";
+type EnvironmentField = "concurrencyCap";
 
 /**
- * Factory settings for one environment. The concurrency cap, digest interval and git identity are
- * the environment's own and save together with Save; workers, teams, the model pool and the
+ * Factory settings for one environment. The concurrency cap and git identity are the
+ * environment's own and save together with Save; workers, teams, the model pool and the
  * recovery allowance live in the factory config files, which each section below saves itself.
  */
 export function FactoryPageConfiguration({
@@ -193,23 +193,6 @@ export function FactoryPageConfiguration({
           </SettingsSection>
           <SettingsSection id="factory-behaviour" title="Behaviour">
             <SettingsRow
-              id="factory-digest-interval"
-              title="Digest interval"
-              description="How often a lead's recent activity is summarised for you and the manager."
-              resetAction={resetFor("digestIntervalMinutes", "digest interval")}
-              control={
-                <FactoryNumberControl
-                  label="Digest interval"
-                  value={config.digestIntervalMinutes}
-                  min={1}
-                  max={24 * 60}
-                  unit="minutes"
-                  disabled={disabled}
-                  onChange={(value) => change("digestIntervalMinutes", value)}
-                />
-              }
-            />
-            <SettingsRow
               id="factory-git-identity"
               title="Git identity"
               description="Managed work pushes and opens pull requests as you. Using a GitHub App identity comes in a later version."
@@ -259,7 +242,6 @@ function FactoryNumberControl({
   value,
   min,
   max,
-  unit,
   disabled,
   onChange,
 }: {
@@ -267,7 +249,6 @@ function FactoryNumberControl({
   readonly value: number;
   readonly min: number;
   readonly max: number;
-  readonly unit?: string;
   readonly disabled: boolean;
   readonly onChange: (value: number) => void;
 }) {
@@ -291,7 +272,6 @@ function FactoryNumberControl({
           <NumberFieldIncrement aria-label={`Increase ${label}`} />
         </NumberFieldGroup>
       </NumberField>
-      {unit ? <span className="text-xs text-muted-foreground">{unit}</span> : null}
     </div>
   );
 }

@@ -47,14 +47,14 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.factoryManagersApproveOnboarding]: (input) =>
           factory.approveOnboarding(input),
         [SATELLITE_WS_METHODS.factoryManagersStartPickup]: (input) => factory.startPickup(input),
+        [SATELLITE_WS_METHODS.factoryManagersUpdateSettings]: (input) =>
+          factory.updateSettings(input),
         [SATELLITE_WS_METHODS.factoryAssignmentsList]: (input) => factory.listAssignments(input),
         [SATELLITE_WS_METHODS.factoryAssignmentsSubscribe]: (input) =>
           factory.subscribeAssignments(input),
         [SATELLITE_WS_METHODS.factoryAssignmentsCancel]: (input) => factory.cancel(input),
         [SATELLITE_WS_METHODS.factoryAssignmentsAnswerProtectedPaths]: (input) =>
           factory.answerProtectedPaths(input),
-        [SATELLITE_WS_METHODS.factoryAssignmentsRefreshDigest]: (input) =>
-          factory.refreshDigest(input.assignmentId),
         [SATELLITE_WS_METHODS.factoryThreadsTakeOver]: (input) => factory.takeOver(input),
         [SATELLITE_WS_METHODS.factoryThreadsHandBack]: (input) => factory.handBack(input),
         [SATELLITE_WS_METHODS.factoryLogList]: (input) => factory.listLog(input),

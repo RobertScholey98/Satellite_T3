@@ -188,13 +188,6 @@ export const planFactoryConfigMigration = (
         value: override.recoveryAllowance,
       });
     }
-    if (override.digestIntervalMinutes !== undefined) {
-      notCarriedOver.push({
-        projectId,
-        key: "digestIntervalMinutes",
-        value: override.digestIntervalMinutes,
-      });
-    }
   }
 
   return {

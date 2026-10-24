@@ -3,7 +3,7 @@ import { DETAILS_CARD_CLEARANCE } from "./chatCanvasLayout";
 
 export const THREAD_DETAILS_CARD_GAP = 12;
 // Keep in sync with --thread-details-panel-width, which sizes the popover and the find bar.
-const THREAD_DETAILS_CARD_WIDTH = 280;
+export const THREAD_DETAILS_CARD_WIDTH = 280;
 
 export function resolveThreadDetailsCardDensity(
   height: number,
@@ -20,17 +20,21 @@ export function resolveThreadDetailsCardLayout({
   frame,
   overlapsDetailsCard = false,
   topInset = 0,
+  side = "right",
 }: {
   container: { width: number; height: number };
   lane: { padding: number; minChatWidth: number };
   frame: PreviewMiniPlayerFrame | null;
   overlapsDetailsCard?: boolean;
   topInset?: number;
+  /** `left` puts the card in the top-left gutter; whoever asks for it has checked that it fits. */
+  side?: "left" | "right";
 }) {
   const gap = THREAD_DETAILS_CARD_GAP;
   const width = THREAD_DETAILS_CARD_WIDTH;
-  const x = container.width - width - gap;
-  if (x - DETAILS_CARD_CLEARANCE - lane.padding < lane.minChatWidth) return null;
+  const x = side === "left" ? gap : container.width - width - gap;
+  if (side === "right" && x - DETAILS_CARD_CLEARANCE - lane.padding < lane.minChatWidth)
+    return null;
   const y = gap + topInset;
   const height =
     overlapsDetailsCard && frame && frame.x + frame.width > x - gap && frame.x < x + width + gap
@@ -39,7 +43,7 @@ export function resolveThreadDetailsCardLayout({
   if (height < 160) return null;
   return {
     x,
-    right: gap,
+    right: container.width - x - width,
     width,
     y,
     height,

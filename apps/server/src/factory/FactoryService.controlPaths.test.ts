@@ -16,6 +16,7 @@ import {
   setupDone,
   SYNC_WORK,
   DUO_TEAM,
+  workspace,
 } from "./FactoryService.testkit.ts";
 
 const PROTECTED_FILES = ["src/list.tsx", "apps/web/AGENTS.md", ".satellite/factory/roles/lead.md"];
@@ -105,6 +106,44 @@ describe("FactoryService control paths", () => {
         assert.deepStrictEqual(cleared.controlViolations, []);
         assert.strictEqual(cleared.state, "waiting-user");
         assert.strictEqual(cleared.waitingReason, "Pull requests await the user's review: #7.");
+      }),
+    ),
+  );
+
+  it.effect("lets the user's merge override the hold and starts the retro", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles, sentMessages } = factory;
+        const { manager, lead, mark, sentBefore } = yield* startedTeam(factory);
+        pullRequestFiles.set(7, PROTECTED_FILES);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
+        yield* service.reconcileThread(lead);
+        yield* service.claimComplete(lead, {
+          evidence: "Tests pass.",
+          pullRequests: [{ host: "github.com", repository: "acme/app", number: 7 }],
+        });
+        assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "waiting-user");
+        // The workspace shows the claim and the paths the merge would override.
+        const [held] = (yield* workspace(service)).assignments;
+        assert.isString(held!.claimedAt);
+        assert.deepStrictEqual(held!.controlViolations, [
+          {
+            pullRequest: { host: "github.com", repository: "acme/app", number: 7 },
+            paths: ["apps/web/AGENTS.md"],
+          },
+        ]);
+
+        yield* service.reconcileMerge({ repository: "acme/app", number: 7 });
+        const merged = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(merged.state, "retro");
+        assert.deepStrictEqual(merged.controlViolations, []);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["control", "retro"]);
+        assert.strictEqual(
+          sentMessages.at(-1)!.text,
+          "All pull requests for Ticket 1 are merged. Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.",
+        );
+        assert.strictEqual(sentMessages.length - sentBefore, 2);
       }),
     ),
   );

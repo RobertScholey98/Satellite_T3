@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { controlPathMatcher } from "./controlPaths.ts";
+import { controlPathMatcher, controlPathProblem } from "./controlPaths.ts";
 
 describe("controlPathMatcher", () => {
   it("lets ** cross any number of segments, including none", () => {
@@ -56,5 +56,24 @@ describe("controlPathMatcher", () => {
     assert.isFalse(controlPathMatcher(["AGENTS.md", ".github/**"])("src/index.ts"));
     assert.isFalse(controlPathMatcher([])("AGENTS.md"));
     assert.isFalse(controlPathMatcher(["  ", "/"])("AGENTS.md"));
+  });
+});
+
+describe("controlPathProblem", () => {
+  it("accepts repository-relative globs and refuses paths that could match nothing", () => {
+    for (const path of ["AGENTS.md", ".github/workflows/**", "./docs/", "/scripts/*.sh"])
+      assert.isNull(controlPathProblem(path));
+    assert.strictEqual(
+      controlPathProblem("./"),
+      `"./" names no path; use a path relative to the repository root.`,
+    );
+    assert.strictEqual(
+      controlPathProblem("C:\\repo\\AGENTS.md"),
+      `"C:\\repo\\AGENTS.md" is an absolute path; use a path relative to the repository root.`,
+    );
+    assert.strictEqual(
+      controlPathProblem("../shared/**"),
+      `"../shared/**" leaves the repository; use a path relative to its root.`,
+    );
   });
 });

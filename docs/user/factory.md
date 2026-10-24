@@ -25,9 +25,9 @@ default lead and manager, and one **Standard** team.
 - A model list runs its first available model in order. Turn on **Dynamic** to let the lead pick
   per task for a member, or the manager per ticket for a team's lead. An empty list means any model
   in the pool.
-- The environment's **concurrency cap**, the digest interval and the git identity stay on this
-  machine. A manager also has its own cap, set when you approve its onboarding; work starts only
-  when both have room.
+- The environment's **concurrency cap** and the git identity stay on this machine. A manager also
+  has its own cap, set when you approve its onboarding and changed in its **Settings**; work starts
+  only when both have room.
 - **Runs on** appears when this machine has more than one instance of a provider, such as two Claude
   accounts. It picks which one runs the factory's models for that provider; **First available** uses
   whichever comes first. It stays on this machine. If the chosen instance goes away, the factory uses
@@ -60,7 +60,7 @@ On the new-thread screen, turn on the **Engineering manager** toggle left of the
 Type a name for the manager and send. The manager's thread opens pinned and starts onboarding: it
 reads the project and proposes how it should work. A project can have several managers. Each picks
 up only from its own pickup columns, and a ticket one manager is working on is not offered to
-another.
+another. Two managers can't pick up the same column unless their labels differ.
 
 The proposal appears as a card in the manager's thread. Review it there:
 
@@ -89,13 +89,30 @@ manager, pause the manager and its teams, resume, or retire it. The Issues page 
 status beside the sync time, and a ticket's detail says why the manager picked it up or skipped it.
 **Start** on a ticket always wins over the manager's decision.
 
-While you view the manager or any of its team threads, the right side shows two cards. **Team
-activity** has one tab per assignment with a short digest of what the team is doing, written by
-your text-generation model and refreshed on the interval you set; **Refresh** rewrites it on demand
-and says **Up to date** when nothing new happened. **Team threads** lists each team's lead and
-members, with the same waiting marker the sidebar uses, and a **Manager** button to go back. Lead
+While you view the manager or any of its team threads, the right side shows a card for each team
+at work, the team you are in first, listing its lead and members with the same waiting marker
+the sidebar uses. The thread's details move to the top left, and on a team thread **Back to
+manager** sits above them. In a narrower window both stay at the top right, in the same order,
+above the teams; narrower still, the team cards hide and **Back to manager** stays there alone. Lead
 and team threads leave the sidebar while their manager runs; search and the command palette still
 find them.
+
+On the manager's thread, a **Settings** card below the details shows what you approved. **Edit**
+changes it: pickup columns and labels, the cap, which teams it may staff (none ticked means all),
+protected paths, and your answers to its rules. A save tells the manager what changed. To change the
+manager's model, use the model switch in its thread's composer. Lowering the cap below what is
+running cancels nothing; new work waits for room. Turning pickup on waits for **Start picking up**,
+as after approval. You can edit a paused manager's settings too; it hears about the changes when it
+resumes. If the settings changed elsewhere since you opened them, the save is refused; cancel and
+edit again.
+
+Below that, a **Pull requests** card lists the teams' open pull requests, the ones ready to merge
+first, the longest waiting at the top. **Merge** appears once the lead has claimed the work done,
+checks pass, and the host reports no conflicts; it merges with the project's default method.
+Otherwise the row says what it waits on, such as **In progress** or **Needs rebase**. A team whose
+pull request starts conflicting is asked to rebase it. A pull request that changes protected paths
+names them, and merging it asks you to confirm overriding the hold.
+Once every pull request of an assignment is merged, its retro starts straight away.
 
 A lead's details panel shows **Lead for the manager** with the assignment's state. Its menu, and
 the ticket chip's menu, offer **Take over** (the manager stops steering that assignment while you
@@ -120,4 +137,4 @@ that setting or file changed since the retro. **Discuss with manager** opens the
 Retro triage cards per project, and team stats: tasks finished per team with median tokens, cost,
 agent time and wall time, plus recoveries and what each team member used, its helpers included. Select a team to see its finished
 assignments with their outcome and the retro's verdict. Token totals across providers are
-approximate, and the stats never include the digests.
+approximate.

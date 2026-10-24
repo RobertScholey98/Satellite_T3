@@ -1044,7 +1044,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "factory-behaviour",
     title: "Factory behaviour",
     to: "/factory",
-    searchTerms: ["recovery allowance digest interval git identity github app behavior"],
+    searchTerms: ["recovery allowance git identity github app behavior"],
   },
 ] as const satisfies ReadonlyArray<SettingsSearchItem>;
 

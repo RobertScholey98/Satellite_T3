@@ -73,8 +73,11 @@ import {
   type FactoryManagersResumeInput,
   type FactoryManagersRetireInput,
   type FactoryManagersStartPickupInput,
+  type FactoryManagersUpdateSettingsInput,
   type FactoryManagersSubscribeInput,
   type FactoryOnboardingBoard,
+  type FactoryPickup,
+  type FactoryPickupColumn,
   type FactoryOnboardingProposalInput,
   type FactoryPickupInput,
   type FactoryReadyTicket,
@@ -103,6 +106,7 @@ import {
   type OrchestrationV2RunStatus,
   type ProviderInteractionMode,
   type PullRequestDiffResult,
+  type PullRequestMergeability,
   type PullRequestState,
   ThreadId,
   type ThreadPullRequestKey,
@@ -110,7 +114,6 @@ import {
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
 import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   normalizeThreadPullRequestKey,
   threadPullRequestsOf,
@@ -136,8 +139,6 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
-import * as ServerSettings from "../serverSettings.ts";
-import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { parseRateTable, priceUsage, type RateTable } from "../usage/usagePricing.ts";
@@ -159,7 +160,7 @@ import {
 } from "./config/modelResolution.ts";
 import { findTeamMember, pickFactoryTeam } from "./config/teamStaffing.ts";
 import { rollupMemberStats } from "./memberStats.ts";
-import { controlPathMatcher, normaliseControlPath } from "./controlPaths.ts";
+import { controlPathMatcher, controlPathProblem, normaliseControlPath } from "./controlPaths.ts";
 import { factoryConfigProblem, modelKey, overrideWidensPool } from "./factoryConfig.ts";
 import {
   definitionTeamSection,
@@ -203,6 +204,17 @@ export interface FactoryThreadPullRequest {
   readonly state: PullRequestState | null;
   /** The snapshot's version, which the control-path check keys on; null until the first sync. */
   readonly updatedAt: string | null;
+  /** Null until the host reports it. */
+  readonly mergeability?: PullRequestMergeability | null;
+}
+
+/**
+ * A pull request the user merged in Satellite, as PullRequestService announces it. The event
+ * carries no host, and it fires before the link's sync sees the merge.
+ */
+export interface FactoryMergedPullRequest {
+  readonly repository: string;
+  readonly number: number;
 }
 
 /** What reconciling a lead reads from its thread. */
@@ -275,24 +287,6 @@ export interface FactoryThreadMessage {
   readonly text: string;
 }
 
-/** A finished user or assistant message on a member thread, as the digest reads it. */
-export interface FactoryThreadActivity {
-  readonly role: "user" | "assistant";
-  readonly text: string;
-  /** When the message last changed. */
-  readonly at: string;
-}
-
-/** What an assignment digest asks the project's text-generation model to summarize. */
-export interface FactoryDigestRequest {
-  readonly projectId: ProjectId;
-  readonly cwd: string;
-  readonly subject: string;
-  /** Member activity since the previous digest, oldest first. */
-  readonly context: string;
-  readonly previousSummary: string | null;
-}
-
 export interface FactoryServiceDependencies {
   readonly getProject: (
     projectId: ProjectId,
@@ -325,14 +319,6 @@ export interface FactoryServiceDependencies {
   readonly readThreadRuns: (threadId: ThreadId) => Effect.Effect<FactoryThreadRuns | null>;
   /** Empty when the thread is unknown. */
   readonly readThreadTurns: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<FactoryThreadTurn>>;
-  /** Finished user and assistant messages; empty when the thread is unknown. */
-  readonly readThreadActivity: (
-    threadId: ThreadId,
-  ) => Effect.Effect<ReadonlyArray<FactoryThreadActivity>>;
-  /** A short summary from the project's text-generation model. */
-  readonly generateSummary: (
-    input: FactoryDigestRequest,
-  ) => Effect.Effect<string, FactoryOperationError>;
   /** The model rates usage tracking last cached, or null when there are none. */
   readonly readRateTable: Effect.Effect<RateTable | null>;
   readonly sendToThread: (
@@ -412,6 +398,13 @@ export interface FactoryServiceShape {
   /** Moves a `ready` manager to `active` and offers it the tickets in its pickup columns. */
   readonly startPickup: (
     input: FactoryManagersStartPickupInput,
+  ) => Effect.Effect<FactoryManager, FactoryOperationError>;
+  /**
+   * Replaces an approved manager's settings through the checks approval makes, and wakes the
+   * manager with what changed. Turning pickup on waits for the user's start, as after approval.
+   */
+  readonly updateSettings: (
+    input: FactoryManagersUpdateSettingsInput,
   ) => Effect.Effect<FactoryManager, FactoryOperationError>;
   /**
    * What to tell a manager-only tool called from a manager's finished onboarding thread, or null
@@ -499,14 +492,6 @@ export interface FactoryServiceShape {
   readonly answerProtectedPaths: (
     input: FactoryAssignmentsAnswerProtectedPathsInput,
   ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
-  /**
-   * Rewrites the assignment's digest from its team's activity since the last one. With no new
-   * activity, a refresh already running, or a failed generation, it returns the assignment as is.
-   * It never messages the team.
-   */
-  readonly refreshDigest: (
-    assignmentId: string,
-  ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
   readonly takeOver: (
     input: FactoryThreadsTakeOverInput,
   ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
@@ -518,17 +503,13 @@ export interface FactoryServiceShape {
    * pull requests a completion claim waits on.
    */
   readonly reconcileThread: (threadId: ThreadId) => Effect.Effect<void>;
+  /** Reconciles the live leads with a pull request the user just merged, ahead of its sync. */
+  readonly reconcileMerge: (merged: FactoryMergedPullRequest) => Effect.Effect<void>;
   /**
    * Reconciles every live lead, records a pickup wake for unjudged Ready tickets while there is
    * capacity, and delivers each active manager's undelivered wakes in one message.
    */
   readonly sweep: Effect.Effect<void>;
-  /**
-   * Refreshes the digest of each active manager's live assignments once it is older than the
-   * project's digest interval. Apart from `sweep` because generating takes seconds to minutes,
-   * and the reactor runs `sweep` on the worker that reconciles leads.
-   */
-  readonly sweepDigests: Effect.Effect<void>;
   /**
    * What delegating a worker from the lead in this thread launches: the role must be on the
    * team with a free place, and the model one the member allows. Changes nothing.
@@ -726,7 +707,7 @@ const startPickupProblem = (manager: FactoryManager): string | null => {
     case "active":
       return manager.onboardingResult?.pickup.enabled === true
         ? `${manager.name} is already picking up tickets.`
-        : `Pickup is off for ${manager.name}; turn it on at onboarding.`;
+        : `Pickup is off for ${manager.name}; turn it on in its settings.`;
     case "onboarding":
       return `${manager.name} is still onboarding.`;
     case "manager-paused":
@@ -809,6 +790,10 @@ const ControlWakePayload = Schema.Struct({ title: Schema.String, text: Schema.St
 const decodeControlWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(ControlWakePayload)),
 );
+const ConflictLogPayload = Schema.Struct({ pullRequest: Schema.String, asked: Schema.Boolean });
+const decodeConflictLog = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(ConflictLogPayload)),
+);
 const OffPoolWakePayload = Schema.Struct({
   threadId: Schema.String,
   title: Schema.String,
@@ -836,12 +821,102 @@ const ManagerRetroWakePayload = Schema.Struct({
 const decodeManagerRetroWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(ManagerRetroWakePayload)),
 );
+const SettingsWakePayload = Schema.Struct({ changes: Schema.Array(Schema.String) });
+const decodeSettingsWake = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(SettingsWakePayload)),
+);
+
+/** Why an approved manager's settings cannot change now, or null. */
+const settingsStateProblem = (manager: FactoryManager): string | null => {
+  if (manager.onboardingResult === null)
+    return `${manager.name} is still onboarding; approve its onboarding first.`;
+  switch (manager.state) {
+    case "ready":
+    case "active":
+    case "manager-paused":
+    case "project-paused":
+      return null;
+    case "onboarding":
+      return `${manager.name} is still onboarding; approve its onboarding first.`;
+    case "retired":
+      return `${manager.name} is retired.`;
+  }
+};
+
+const listed = (values: ReadonlyArray<string>, empty: string) =>
+  values.length === 0 ? empty : values.join(", ");
+const quoted = (value: string) => (value.trim() === "" ? "(none)" : `"${value.trim()}"`);
+
+/** Each setting that differs, as `name: old → new`, for the manager's wake. */
+const settingsChanges = (
+  before: FactoryOnboardingResult,
+  after: FactoryOnboardingResult,
+  boards: ReadonlyArray<FactoryOnboardingBoard>,
+) => {
+  const changes: string[] = [];
+  const line = (name: string, old: string, next: string) => {
+    if (old !== next) changes.push(`${name}: ${old} → ${next}`);
+  };
+  const columnName = (column: FactoryPickupColumn) => {
+    const board = boards.find((candidate) => candidate.boardId === column.boardId);
+    const title = board?.readyColumns.find((ready) => ready.id === column.columnId)?.title;
+    return title === undefined ? column.columnId : `${title} (${board!.title})`;
+  };
+  line("purpose", quoted(before.purpose), quoted(after.purpose));
+  line("pickup", before.pickup.enabled ? "on" : "off", after.pickup.enabled ? "on" : "off");
+  line(
+    "pickup columns",
+    listed(before.pickup.columns.map(columnName), "(none)"),
+    listed(after.pickup.columns.map(columnName), "(none)"),
+  );
+  line(
+    "pickup labels",
+    listed(before.pickup.labels, "(any)"),
+    listed(after.pickup.labels, "(any)"),
+  );
+  line("pickup guidance", quoted(before.pickup.guidance), quoted(after.pickup.guidance));
+  line("concurrency cap", String(before.concurrencyCap), String(after.concurrencyCap));
+  line("teams", listed(before.teamIds, "all"), listed(after.teamIds, "all"));
+  const paths = (result: FactoryOnboardingResult) =>
+    listed(
+      result.controlPaths.map((controlPath) =>
+        controlPath.reason.trim() === ""
+          ? controlPath.path
+          : `${controlPath.path} (${controlPath.reason.trim()})`,
+      ),
+      "(none)",
+    );
+  line("protected paths", paths(before), paths(after));
+  for (const rule of after.rules) {
+    const old = before.rules.find((candidate) => candidate.id === rule.id);
+    if (old !== undefined) line(`rule "${rule.question}"`, quoted(old.answer), quoted(rule.answer));
+  }
+  return changes;
+};
+
 const decodeIssueRef = jsonDecoder(Schema.decodeUnknownOption(Schema.fromJsonString(IssueRef)));
 
 /** Ends agent- or user-written text with a full stop when it has none, so wake text reads. */
 const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
 
 const pullRequestKey = (key: ThreadPullRequestKey) => `${key.host}/${key.repository}#${key.number}`;
+
+const isMerge = (
+  merged: FactoryMergedPullRequest | undefined,
+  pullRequest: { readonly repository: string; readonly number: number },
+) =>
+  merged !== undefined &&
+  pullRequest.number === merged.number &&
+  pullRequest.repository.toLowerCase() === merged.repository.toLowerCase();
+
+/** The links as they read once their sync sees the user's merge. */
+const withMerge = (
+  links: ReadonlyArray<FactoryThreadPullRequest>,
+  merged: FactoryMergedPullRequest | undefined,
+) =>
+  links.map((link) =>
+    isMerge(merged, link) ? { ...link, merged: true, state: "merged" as const } : link,
+  );
 
 /**
  * Paths the user allowed for the assignment. An allowed path in any ask is allowed, even if
@@ -1098,7 +1173,6 @@ const PICKUP_GUIDANCE_MOVED =
 const SETTING_LABELS = {
   concurrencyCap: "concurrency cap",
   recoveryAllowance: "recovery allowance",
-  digestIntervalMinutes: "digest interval",
 } as const;
 
 const shownValue = (value: unknown) => {
@@ -1125,6 +1199,10 @@ const applyProposedChange = (
     case "setting": {
       if (change.key === "pickupGuidance")
         return { refused: error("invalid", PICKUP_GUIDANCE_MOVED) };
+      if (change.key === "digestIntervalMinutes")
+        return {
+          refused: error("invalid", "The factory no longer has a digest interval to change."),
+        };
       const current = config[change.key];
       if (!NodeUtil.isDeepStrictEqual(current, change.before))
         return {
@@ -1182,20 +1260,111 @@ const proposalProblem = (input: FactoryOnboardingProposalInput) => {
   return null;
 };
 
-/** Every proposed question needs exactly one rule with its id, and every rule a question. */
+/** Every question the manager asked needs exactly one rule with its id, and every rule a question. */
 const rulesProblem = (
-  questions: FactoryOnboardingProposal["rules"],
+  questions: ReadonlyArray<{ readonly id: string; readonly question: string }>,
   rules: FactoryOnboardingResult["rules"],
 ) => {
   const asked = new Set(questions.map((question) => question.id));
   const answered = new Set<string>();
   for (const rule of rules) {
-    if (!asked.has(rule.id)) return `Rule "${rule.id}" answers no question in the proposal.`;
+    if (!asked.has(rule.id)) return `Rule "${rule.id}" answers none of the manager's questions.`;
     if (answered.has(rule.id)) return `Question "${rule.id}" is answered more than once.`;
     answered.add(rule.id);
   }
   const unanswered = questions.find((question) => !answered.has(question.id));
-  return unanswered === undefined ? null : `Answer "${unanswered.question}" before approving.`;
+  return unanswered === undefined ? null : `Answer "${unanswered.question}" first.`;
+};
+
+/**
+ * Pickup of two live managers on one project may not share a column unless their labels keep the
+ * tickets apart; no labels means every ticket in the column.
+ */
+const pickupOverlapProblem = (
+  pickup: FactoryOnboardingResult["pickup"],
+  others: ReadonlyArray<{ readonly name: string; readonly pickup: FactoryPickup }>,
+  boards: ReadonlyArray<FactoryOnboardingBoard>,
+) => {
+  if (!pickup.enabled) return null;
+  for (const other of others) {
+    if (!other.pickup.enabled) continue;
+    const shared = pickup.columns.find((column) =>
+      other.pickup.columns.some(
+        (theirs) => theirs.boardId === column.boardId && theirs.columnId === column.columnId,
+      ),
+    );
+    if (shared === undefined) continue;
+    const labels = new Set(pickup.labels.map((label) => label.toLowerCase()));
+    const overlap =
+      labels.size === 0 ||
+      other.pickup.labels.length === 0 ||
+      other.pickup.labels.some((label) => labels.has(label.toLowerCase()));
+    if (!overlap) continue;
+    const board = boards.find((candidate) => candidate.boardId === shared.boardId);
+    const column =
+      board?.readyColumns.find((ready) => ready.id === shared.columnId)?.title ?? shared.columnId;
+    return `${other.name} already picks up from ${column}${board ? ` on ${board.title}` : ""} with overlapping labels. Give each manager its own labels or columns.`;
+  }
+  return null;
+};
+
+/**
+ * Pickup with each column's title and board title as the boards read now, so a client can show
+ * them without reading the boards. They are not refreshed if a column is renamed later.
+ */
+const titledPickup = (
+  pickup: FactoryPickup,
+  boards: ReadonlyArray<FactoryOnboardingBoard>,
+): FactoryPickup => ({
+  ...pickup,
+  columns: pickup.columns.map(({ boardId, columnId }) => {
+    const board = boards.find((candidate) => candidate.boardId === boardId);
+    const title = board?.readyColumns.find((ready) => ready.id === columnId)?.title;
+    return board === undefined || title === undefined
+      ? { boardId, columnId }
+      : { boardId, columnId, title, boardTitle: board.title };
+  }),
+});
+
+/** The part of pickup that decides which tickets a manager may take, for overlap. */
+const pickupScope = (pickup: FactoryPickup) =>
+  [
+    pickup.enabled ? "on" : "off",
+    pickup.columns
+      .map((column) => `${column.boardId}/${column.columnId}`)
+      .toSorted()
+      .join(","),
+    pickup.labels
+      .map((label) => label.toLowerCase())
+      .toSorted()
+      .join(","),
+  ].join("|");
+
+/** What a result is checked against besides itself. */
+interface ResultContext {
+  /** The manager's questions: the proposal's while onboarding, the stored rules' afterwards. */
+  readonly questions: ReadonlyArray<{ readonly id: string; readonly question: string }>;
+  readonly boards: ReadonlyArray<FactoryOnboardingBoard>;
+  readonly teamIds: ReadonlySet<string>;
+  /** The project's other live managers with an approved result. */
+  readonly others: ReadonlyArray<{ readonly name: string; readonly pickup: FactoryPickup }>;
+}
+
+/**
+ * Why a manager's result cannot be saved, worded for the user; null when it can. Approval and a
+ * later settings change both go through it. The cap's bounds are the schema's.
+ */
+const onboardingResultProblem = (result: FactoryOnboardingResult, context: ResultContext) => {
+  const unknownTeam = result.teamIds.find((id) => !context.teamIds.has(id));
+  return (
+    rulesProblem(context.questions, result.rules) ??
+    pickupColumnsProblem(result.pickup, context.boards) ??
+    pickupOverlapProblem(result.pickup, context.others, context.boards) ??
+    result.controlPaths.map((controlPath) => controlPathProblem(controlPath.path)).find(Boolean) ??
+    (unknownTeam === undefined
+      ? null
+      : `There is no factory team "${unknownTeam}". Choose from the teams in the factory config.`)
+  );
 };
 
 /**
@@ -1317,9 +1486,6 @@ interface AssignmentRow {
   readonly claim_json: string | null;
   readonly team_verdict_json: string | null;
   readonly checklist_json: string;
-  readonly digest_text: string | null;
-  readonly digest_generated_at: string | null;
-  readonly digest_activity_at: string | null;
   readonly control_violations_json: string;
   readonly control_checked_json: string;
   readonly protected_path_asks_json: string;
@@ -1390,39 +1556,6 @@ const memberValue = (row: MemberRow) => ({
   offPool: row.off_pool === 1,
   endedAt: row.ended_at,
 });
-
-const digestValue = (row: AssignmentRow) =>
-  row.digest_text === null || row.digest_generated_at === null || row.digest_activity_at === null
-    ? null
-    : {
-        text: row.digest_text,
-        generatedAt: row.digest_generated_at,
-        activityAt: row.digest_activity_at,
-      };
-
-const DIGEST_CONTEXT_CHARS = 12_000;
-const DIGEST_MESSAGE_CHARS = 2_000;
-
-/** Activity lines, newest last; the oldest drop first when they exceed the context budget. */
-const digestContext = (
-  entries: ReadonlyArray<{ readonly role: string; readonly activity: FactoryThreadActivity }>,
-) => {
-  const kept: string[] = [];
-  let size = 0;
-  for (const { role, activity } of entries.toReversed()) {
-    const text = activity.text.trim();
-    const clipped =
-      text.length > DIGEST_MESSAGE_CHARS ? `${text.slice(0, DIGEST_MESSAGE_CHARS)} [cut]` : text;
-    const line =
-      activity.role === "assistant"
-        ? `[${activity.at}] ${role}: ${clipped}`
-        : `[${activity.at}] to ${role}: ${clipped}`;
-    if (kept.length > 0 && size + line.length > DIGEST_CONTEXT_CHARS) break;
-    kept.push(line);
-    size += line.length + 1;
-  }
-  return kept.toReversed().join("\n");
-};
 
 /** An assignment with whether the user has taken over its lead's thread. */
 interface LeadAssignmentRow extends AssignmentRow {
@@ -1580,8 +1713,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
 
   /**
    * The factory config files with this environment's usable pool. The pool and recovery allowance
-   * come from here; the database config keeps only the environment cap, digest interval and git
-   * identity.
+   * come from here; the database config keeps only the environment cap and git identity.
    */
   // Saving a pool writes factory.yaml, which would skip a migration that failed, so say why instead.
   const noPoolMessage = Effect.map(deps.configStore.migrationFailure, (failure) =>
@@ -1765,7 +1897,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         yield* writeConfigRow(scopeKey, encodeOverride(input.override));
         return yield* configView(input.projectId);
       }),
-    ).pipe(Effect.flatMap(withStalePreferences));
+    ).pipe(
+      // The managers feed carries the environment cap.
+      Effect.tap(() => (input.scope === "environment" ? publish : Effect.void)),
+      Effect.flatMap(withStalePreferences),
+    );
 
   const decodeManager = Effect.fnUntraced(function* (row: ManagerRow) {
     return yield* decodeManagerValue({
@@ -1823,7 +1959,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     return yield* Effect.forEach(rows, decodeManager);
   });
   const managersEvent = Effect.fnUntraced(function* () {
-    return { managers: yield* currentManagers() } satisfies FactoryManagersEvent;
+    return {
+      managers: yield* currentManagers(),
+      environmentConcurrencyCap: (yield* environmentConfig()).config.concurrencyCap,
+    } satisfies FactoryManagersEvent;
   });
 
   const listManagers: FactoryServiceShape["listManagers"] = (input) =>
@@ -2122,6 +2261,20 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     );
 
   /** Each connected board's Ready columns in board order, and the labels on its items. */
+  const factoryTeamIds = deps.configStore.read.pipe(
+    Effect.map((view) => new Set(view.teams.map((team) => team.id))),
+  );
+  /** The pickup of the project's other approved managers that are not retired. */
+  const otherPickups = Effect.fnUntraced(function* (manager: FactoryManager) {
+    return (yield* currentManagers()).flatMap((other) =>
+      other.projectId === manager.projectId &&
+      other.id !== manager.id &&
+      other.onboardingResult !== null
+        ? [{ name: other.name, pickup: other.onboardingResult.pickup }]
+        : [],
+    );
+  });
+
   const onboardingBoards = Effect.fnUntraced(function* (projectId: ProjectId) {
     const boards: FactoryOnboardingBoard[] = [];
     for (const summary of yield* deps.readBoards(projectId)) {
@@ -2190,6 +2343,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       pickup.enabled || pickup.columns.length > 0
         ? yield* onboardingBoards((yield* readManager(input.managerId)).projectId)
         : [];
+    const teamIds = yield* factoryTeamIds;
     const approved = yield* lock(
       Effect.gen(function* () {
         const replay = yield* replayManager(input.requestId, input);
@@ -2202,13 +2356,18 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         const proposal = manager.onboardingProposal;
         if (proposal === null)
           return yield* error("conflict", `${manager.name} has not proposed onboarding yet.`);
-        const problem =
-          rulesProblem(proposal.rules, input.result.rules) ?? pickupColumnsProblem(pickup, boards);
+        const problem = onboardingResultProblem(input.result, {
+          questions: proposal.rules,
+          boards,
+          teamIds,
+          others: yield* otherPickups(manager),
+        });
         if (problem !== null) return yield* error("invalid", problem);
         // The question is the manager's wording from the proposal, not whatever the client sent.
         const asked = new Map(proposal.rules.map((question) => [question.id, question.question]));
         const result = {
           ...input.result,
+          pickup: titledPickup(input.result.pickup, boards),
           rules: input.result.rules.map((rule) => ({
             ...rule,
             question: asked.get(rule.id) ?? rule.question,
@@ -2370,6 +2529,98 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       }),
     );
 
+  const updateSettings: FactoryServiceShape["updateSettings"] = (input) =>
+    protect(
+      Effect.gen(function* () {
+        const { pickup } = input.result;
+        const boards =
+          pickup.enabled || pickup.columns.length > 0
+            ? yield* onboardingBoards((yield* readManager(input.managerId)).projectId)
+            : [];
+        const teamIds = yield* factoryTeamIds;
+        // The RPC server interrupts a request when its client disconnects. Once the save commits, the
+        // wake must still be written and sent, so closing the window doesn't drop it.
+        return yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            const saved = yield* lock(
+              Effect.gen(function* () {
+                const replay = yield* replayManager(input.requestId, input);
+                if (replay) return { replay } as const;
+                const manager = yield* readManager(input.managerId);
+                const stateProblem = settingsStateProblem(manager);
+                if (stateProblem !== null) return yield* error("conflict", stateProblem);
+                if (manager.updatedAt !== input.expectedUpdatedAt)
+                  return yield* error(
+                    "conflict",
+                    "These settings changed since you opened them; cancel and edit again.",
+                  );
+                const stored = manager.onboardingResult!;
+                // Overlap is checked only when this save changes pickup, so two managers that already
+                // overlap can still change everything else.
+                const pickupChanged =
+                  pickupScope(stored.pickup) !== pickupScope(input.result.pickup);
+                // The manager's questions stay its own; only the answers are the user's to change.
+                const problem = onboardingResultProblem(input.result, {
+                  questions: stored.rules,
+                  boards,
+                  teamIds,
+                  others: pickupChanged ? yield* otherPickups(manager) : [],
+                });
+                if (problem !== null) return yield* error("invalid", problem);
+                const asked = new Map(stored.rules.map((rule) => [rule.id, rule.question]));
+                const result = {
+                  ...input.result,
+                  pickup: titledPickup(input.result.pickup, boards),
+                  baseBranch: stored.baseBranch,
+                  rules: input.result.rules.map((rule) => ({
+                    ...rule,
+                    question: asked.get(rule.id) ?? rule.question,
+                  })),
+                };
+                const changes = settingsChanges(stored, result, boards);
+                // Pickup turned on waits for the user's start, as after approval; turned off before
+                // it started, there is nothing left to start. A paused manager stays paused and
+                // resumes to what the new settings say.
+                const settled = (from: string) =>
+                  from === "active" && result.pickup.enabled && !stored.pickup.enabled
+                    ? "ready"
+                    : from === "ready" && !result.pickup.enabled
+                      ? "active"
+                      : from;
+                if (isPaused(manager.state))
+                  yield* sql`UPDATE factory_managers SET paused_from=CASE paused_from
+                      WHEN 'active' THEN ${settled("active")} WHEN 'ready' THEN ${settled("ready")}
+                      ELSE paused_from END WHERE id=${manager.id}`;
+                const state = isPaused(manager.state) ? manager.state : settled(manager.state);
+                yield* sql`UPDATE factory_managers SET state=${state},
+                onboarding_result_json=${encodeResult(result)},
+                updated_at=${yield* now} WHERE id=${manager.id}`;
+                return {
+                  manager: yield* rememberManager(input.requestId, input, manager.id),
+                  changes,
+                } as const;
+              }),
+            );
+            if ("replay" in saved) return saved.replay;
+            const { manager, changes } = saved;
+            yield* publish;
+            if (changes.length > 0)
+              yield* lock(writeLog(manager.id, null, "wake", "settings", { changes })).pipe(
+                // A paused manager's wakes wait in the log; the sweep delivers them once it resumes.
+                Effect.andThen(isPaused(manager.state) ? Effect.void : deliverWakes(manager)),
+                Effect.catch((cause) =>
+                  Effect.logWarning("Could not tell a manager its settings changed", {
+                    managerId: manager.id,
+                    cause: cause.message,
+                  }),
+                ),
+              );
+            return manager;
+          }),
+        );
+      }),
+    );
+
   const roleBrief: FactoryServiceShape["roleBrief"] = (projectId, role, managerId, assignmentId) =>
     protect(
       Effect.gen(function* () {
@@ -2487,7 +2738,6 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       teamVerdict:
         row.team_verdict_json === null ? null : yield* parse(Schema.Unknown, row.team_verdict_json),
       checklist: yield* parse(Schema.Unknown, row.checklist_json),
-      digest: digestValue(row),
       controlViolations: effectiveViolations(
         yield* parse(ControlViolations, row.control_violations_json),
         asks,
@@ -3210,16 +3460,27 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    * Starts the retro once every claimed pull request and every one linked on the lead's thread is
    * merged or closed; until then the assignment waits on the user's review.
    */
-  const settleClaim = Effect.fnUntraced(function* (id: string, runs: FactoryThreadRuns | null) {
-    // A replacement lead inherits the worktree but not the first lead's pull request links, so
-    // the gate reads every lead thread the assignment has had.
+  /**
+   * The pull requests linked on the lead threads an assignment had before its current one: a
+   * replacement lead inherits the worktree but not the first lead's links.
+   */
+  const previousLeadLinks = Effect.fnUntraced(function* (id: string) {
     const previousLeads = yield* sql<{ thread_id: string }>`SELECT thread_id FROM factory_members
         WHERE assignment_id=${id} AND role='lead' AND ended_at IS NOT NULL`;
-    const previousLinks: FactoryThreadPullRequest[] = [];
+    const links: FactoryThreadPullRequest[] = [];
     for (const lead of previousLeads) {
       const previous = yield* deps.readThreadRuns(ThreadId.make(lead.thread_id));
-      previousLinks.push(...(previous?.pullRequests ?? []));
+      links.push(...(previous?.pullRequests ?? []));
     }
+    return links;
+  });
+
+  const settleClaim = Effect.fnUntraced(function* (
+    id: string,
+    runs: FactoryThreadRuns | null,
+    merged?: FactoryMergedPullRequest,
+  ) {
+    const previousLinks = withMerge(yield* previousLeadLinks(id), merged);
     const settled = yield* lock(
       Effect.gen(function* () {
         const rows = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments WHERE id=${id}`;
@@ -3234,16 +3495,17 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             pullRequest,
           ]),
         );
-        const numbers = new Map<string, number>();
+        const gated = new Map<string, ThreadPullRequestKey>();
         for (const pullRequest of [...claim.pullRequests, ...linked.values()])
-          numbers.set(pullRequestKey(pullRequest), pullRequest.number);
-        const unmerged = [...numbers].filter(([key]) => {
+          gated.set(pullRequestKey(pullRequest), pullRequest);
+        const unmerged = [...gated].filter(([key, pullRequest]) => {
           const link = linked.get(key);
-          return link === undefined || (!link.merged && link.state !== "closed");
+          if (link === undefined) return !isMerge(merged, pullRequest);
+          return !link.merged && link.state !== "closed";
         });
         if (unmerged.length > 0) {
           const reason = `Pull requests await the user's review: ${unmerged
-            .map(([, number]) => `#${number}`)
+            .map(([, pullRequest]) => `#${pullRequest.number}`)
             .join(", ")}.`;
           if (
             row.state === "waiting-user" &&
@@ -3286,6 +3548,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   const checkControlPaths = Effect.fnUntraced(function* (
     row: LeadAssignmentRow & { readonly manager_result_json: string | null },
     runs: FactoryThreadRuns,
+    merged: FactoryMergedPullRequest | undefined,
   ) {
     // An exempt team's job is the workflow itself. The snapshot carries the flag, so editing the
     // team later cannot change a running check.
@@ -3454,7 +3717,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         return true;
       case "cleared":
         yield* publish;
-        if (outcome.claimed) yield* settleClaim(row.id, runs);
+        if (outcome.claimed) yield* settleClaim(row.id, runs, merged);
         return true;
       case "recorded":
         if (row.lead_taken_over !== 1 && row.lead_thread_id !== null)
@@ -3465,7 +3728,78 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     }
   });
 
-  const reconcileLead = Effect.fnUntraced(function* (threadId: ThreadId) {
+  /** Whether the assignment's claim or any of its lead threads links the merged pull request. */
+  const involvesMerge = Effect.fnUntraced(function* (
+    row: AssignmentRow,
+    runs: FactoryThreadRuns,
+    merged: FactoryMergedPullRequest,
+  ) {
+    if (runs.pullRequests.some((link) => isMerge(merged, link))) return true;
+    const claim =
+      row.claim_json === null ? null : yield* parse(FactoryAssignmentClaim, row.claim_json);
+    if (claim?.pullRequests.some((pullRequest) => isMerge(merged, pullRequest))) return true;
+    return (yield* previousLeadLinks(row.id)).some((link) => isMerge(merged, link));
+  });
+
+  /**
+   * Asks the lead to rebase an open pull request once when it starts conflicting with its base.
+   * A sync that shows it mergeable again ends that conflict, so a later one is asked about anew.
+   * `unknown` ends nothing: hosts report it while they recompute after any push or base move, so
+   * it says nothing about whether the conflict was resolved. The ask waits while the manager is
+   * paused, the user has the lead, or the lead waits on the user. It is recorded after the send is
+   * attempted: a failed send is only logged, so that ask is lost rather than retried.
+   */
+  const askToRebase = Effect.fnUntraced(function* (
+    row: LeadAssignmentRow & { readonly manager_state: string },
+    runs: FactoryThreadRuns,
+  ) {
+    const leadThreadId = row.lead_thread_id;
+    if (leadThreadId === null) return;
+    const open = runs.pullRequests.filter((pullRequest) => pullRequest.state === "open");
+    const conflicting = open.filter((pullRequest) => pullRequest.mergeability === "conflicting");
+    const resolved = open.filter((pullRequest) => pullRequest.mergeability === "mergeable");
+    if (conflicting.length === 0 && resolved.length === 0) return;
+    const asked = new Map<string, boolean>();
+    for (const logged of yield* sql<{ payload_json: string | null }>`SELECT payload_json
+        FROM factory_log WHERE assignment_id=${row.id} AND kind='conflict' ORDER BY sequence`)
+      Option.map(decodeConflictLog(logged.payload_json), (payload) =>
+        asked.set(payload.pullRequest, payload.asked),
+      );
+    const record = (pullRequest: FactoryThreadPullRequest, nowAsked: boolean) =>
+      writeLog(
+        row.manager_id,
+        row.id,
+        "conflict",
+        nowAsked
+          ? `Pull request #${pullRequest.number} conflicts with its base branch.`
+          : `Pull request #${pullRequest.number} no longer conflicts.`,
+        { pullRequest: pullRequestKey(pullRequest), asked: nowAsked },
+      );
+    for (const pullRequest of resolved)
+      if (asked.get(pullRequestKey(pullRequest)) === true) yield* lock(record(pullRequest, false));
+    const holding =
+      row.lead_taken_over === 1 ||
+      row.manager_state === "manager-paused" ||
+      row.manager_state === "project-paused" ||
+      runs.pendingRequests > 0 ||
+      (row.state === "waiting-user" && row.waiting_kind === "question");
+    if (holding) return;
+    // The reactor reconciles one lead at a time, so recording after the send cannot ask twice.
+    for (const pullRequest of conflicting) {
+      if (asked.get(pullRequestKey(pullRequest)) === true) continue;
+      yield* notifyLead(
+        row.project_id,
+        leadThreadId,
+        `Pull request #${pullRequest.number} conflicts with its base branch. Rebase it onto the base, resolve the conflicts, and push.`,
+      );
+      yield* lock(record(pullRequest, true));
+    }
+  });
+
+  const reconcileLead = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    merged?: FactoryMergedPullRequest,
+  ) {
     const rows = yield* sql<
       LeadAssignmentRow & { manager_state: string; manager_result_json: string | null }
     >`
@@ -3475,12 +3809,15 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         WHERE a.lead_thread_id=${threadId} AND a.state IN ('active','waiting-user')`;
     const row = rows[0];
     if (!row) return;
-    const runs = yield* deps.readThreadRuns(threadId);
-    if (runs === null) return;
-    if (!runs.deleted && (yield* checkControlPaths(row, runs))) return;
+    const read = yield* deps.readThreadRuns(threadId);
+    if (read === null) return;
+    if (merged !== undefined && !(yield* involvesMerge(row, read, merged))) return;
+    const runs = { ...read, pullRequests: withMerge(read.pullRequests, merged) };
+    if (!runs.deleted && (yield* checkControlPaths(row, runs, merged))) return;
+    if (!runs.deleted) yield* askToRebase(row, runs);
     if (row.state === "waiting-user") {
       if (row.waiting_kind === "review" && row.claim_json !== null)
-        return yield* settleClaim(row.id, runs);
+        return yield* settleClaim(row.id, runs, merged);
       if (row.waiting_kind === "question" && runs.pendingRequests === 0) {
         const moved = yield* lock(
           moveState(
@@ -3518,6 +3855,23 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     protect(reconcileLead(threadId)).pipe(
       Effect.catch((cause) =>
         Effect.logWarning("Could not reconcile a factory lead thread", { threadId, cause }),
+      ),
+    );
+
+  const reconcileMerge: FactoryServiceShape["reconcileMerge"] = (merged) =>
+    protect(
+      Effect.gen(function* () {
+        const leads = yield* sql<{ lead_thread_id: string }>`SELECT lead_thread_id
+            FROM factory_assignments WHERE lead_thread_id IS NOT NULL
+            AND state IN ('active','waiting-user')`;
+        for (const lead of leads) yield* reconcileLead(ThreadId.make(lead.lead_thread_id), merged);
+      }),
+    ).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not reconcile a merged factory pull request", {
+          pullRequest: `${merged.repository}#${merged.number}`,
+          cause,
+        }),
       ),
     );
 
@@ -3607,6 +3961,17 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           Option.map(decodeFindingWake(row.payload_json), (payload) =>
             lines.push(
               `Finding escalated on ${payload.title}: ${sentence(payload.summary)} Read it with factory_status or factory_findings and decide.`,
+            ),
+          );
+          break;
+        case "settings":
+          Option.map(decodeSettingsWake(row.payload_json), (payload) =>
+            lines.push(
+              [
+                "The user changed your settings:",
+                ...payload.changes.map((change) => `- ${change}`),
+                "Use them from now on.",
+              ].join("\n"),
             ),
           );
           break;
@@ -4226,101 +4591,6 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       }),
     );
 
-  const digesting = new Set<string>();
-
-  /** Whether a new digest was written. */
-  const writeDigest = Effect.fnUntraced(function* (row: AssignmentRow) {
-    if (row.lead_thread_id === null) return false;
-    const roles = new Map([[row.lead_thread_id, "lead"]]);
-    const members = yield* sql<{ thread_id: string; role: string }>`SELECT thread_id,role
-        FROM factory_members WHERE assignment_id=${row.id} ORDER BY created_at, thread_id`;
-    for (const member of members)
-      if (!roles.has(member.thread_id)) roles.set(member.thread_id, member.role);
-    const since = row.digest_activity_at === null ? -Infinity : Date.parse(row.digest_activity_at);
-    const entries: Array<{ role: string; activity: FactoryThreadActivity }> = [];
-    for (const [threadId, role] of roles)
-      for (const activity of yield* deps.readThreadActivity(ThreadId.make(threadId)))
-        if (Date.parse(activity.at) > since) entries.push({ role, activity });
-    const fresh = entries.toSorted(
-      (left, right) => Date.parse(left.activity.at) - Date.parse(right.activity.at),
-    );
-    const newest = fresh.at(-1);
-    if (newest === undefined) return false;
-    const projectShell = yield* deps.getProject(ProjectId.make(row.project_id));
-    if (projectShell === null) return false;
-    const summary = yield* deps
-      .generateSummary({
-        projectId: projectShell.id,
-        cwd: projectShell.workspaceRoot,
-        subject: row.title,
-        context: digestContext(fresh),
-        previousSummary: row.digest_text,
-      })
-      .pipe(
-        Effect.map((text) => text.trim()),
-        Effect.catch((cause) =>
-          Effect.logWarning("Could not write a factory assignment digest", {
-            assignmentId: row.id,
-            cause: cause.message,
-          }).pipe(Effect.as("")),
-        ),
-      );
-    if (summary.length === 0) return false;
-    yield* lock(
-      Effect.gen(function* () {
-        yield* sql`UPDATE factory_assignments SET digest_text=${summary},
-            digest_generated_at=${yield* now},digest_activity_at=${newest.activity.at}
-            WHERE id=${row.id}`;
-      }),
-    );
-    yield* publish;
-    return true;
-  });
-
-  const refreshDigest: FactoryServiceShape["refreshDigest"] = Effect.fn(
-    "FactoryService.refreshDigest",
-  )(function* (assignmentId) {
-    const rows = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
-        WHERE id=${assignmentId}`;
-    const row = rows[0];
-    if (!row) return yield* error("not-found", "This assignment no longer exists.");
-    if (isTerminal(row.state) || digesting.has(row.id)) return yield* decodeAssignment(row);
-    digesting.add(row.id);
-    const written = yield* writeDigest(row).pipe(
-      Effect.ensuring(Effect.sync(() => digesting.delete(row.id))),
-    );
-    return written ? yield* readAssignment(row.id) : yield* decodeAssignment(row);
-  }, protect);
-
-  const sweepDigests: FactoryServiceShape["sweepDigests"] = Effect.gen(function* () {
-    const at = Date.parse(yield* now);
-    for (const manager of yield* currentManagers()) {
-      if (manager.state !== "active" && manager.state !== "ready") continue;
-      const intervalMs =
-        (yield* configView(manager.projectId)).effective.digestIntervalMinutes * 60_000;
-      for (const row of yield* liveAssignmentRows(manager.id)) {
-        if (
-          row.digest_generated_at !== null &&
-          at - Date.parse(row.digest_generated_at) < intervalMs
-        )
-          continue;
-        yield* refreshDigest(row.id).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("Could not refresh a factory assignment digest", {
-              assignmentId: row.id,
-              cause: cause.message,
-            }),
-          ),
-        );
-      }
-    }
-  }).pipe(
-    protect,
-    Effect.catch((cause) =>
-      Effect.logWarning("Could not sweep factory digests", { cause: cause.message }),
-    ),
-  );
-
   /**
    * The design has a state that waits for the user's reason after a cancel. The reason is part of
    * the cancel call, so the assignment goes straight to the lead's retro.
@@ -4798,6 +5068,19 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     const assignments = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
         WHERE ${sql.in("state", ACTIVE_ASSIGNMENT_STATES)} OR ended_at >= ${since}
         ORDER BY created_at, id`;
+    const previousLeads = new Map<string, string[]>();
+    for (const lead of yield* sql<{ assignment_id: string; thread_id: string }>`
+        SELECT m.assignment_id,m.thread_id FROM factory_members m
+        JOIN factory_assignments a ON a.id=m.assignment_id
+        WHERE m.role='lead' AND m.ended_at IS NOT NULL
+          -- Completion ends the current lead's membership too.
+          AND m.thread_id IS NOT a.lead_thread_id
+          AND (${sql.in("a.state", ACTIVE_ASSIGNMENT_STATES)} OR a.ended_at >= ${since})
+        ORDER BY m.created_at, m.rowid`)
+      previousLeads.set(lead.assignment_id, [
+        ...(previousLeads.get(lead.assignment_id) ?? []),
+        lead.thread_id,
+      ]);
     return yield* decodeWorkspaceFeed({
       managers: managers.map((manager) => ({
         id: manager.id,
@@ -4823,8 +5106,13 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             ),
             leadThreadId: row.lead_thread_id,
             checklist: yield* parse(Schema.Unknown, row.checklist_json),
-            digest: digestValue(row),
             waitingReason: row.waiting_reason,
+            claimedAt:
+              row.claim_json === null
+                ? null
+                : (yield* parse(FactoryAssignmentClaim, row.claim_json)).claimedAt,
+            controlViolations: yield* parse(ControlViolations, row.control_violations_json),
+            previousLeadThreadIds: previousLeads.get(row.id) ?? [],
           };
         }),
       ),
@@ -5268,7 +5556,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           }),
         );
         if ("done" in prepared) {
-          if (prepared.changed) yield* publishDrafts;
+          // An applied factory change may set the environment cap the managers feed carries.
+          if (prepared.changed) yield* Effect.andThen(publishDrafts, publish);
           return prepared.done;
         }
         const { row } = prepared;
@@ -5333,6 +5622,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     proposeOnboarding,
     approveOnboarding,
     startPickup,
+    updateSettings,
     managerForThread,
     finishedOnboardingMessage,
     roleBrief,
@@ -5352,9 +5642,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     takeOver,
     handBack,
     reconcileThread,
+    reconcileMerge,
     sweep,
-    sweepDigests,
-    refreshDigest,
     planDelegation,
     recordMember,
     observeThread,
@@ -5407,8 +5696,6 @@ export const make = Effect.gen(function* () {
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
   const pullRequests = yield* PullRequestService.PullRequestService;
   const ticketHost = yield* FactoryTicketHost.FactoryTicketHost;
-  const serverSettings = yield* ServerSettings.ServerSettingsService;
-  const { generateSummary } = yield* TextGeneration.TextGeneration;
   const { stateDir } = yield* ServerConfig.ServerConfig;
   const configStore = yield* FactoryConfigStore;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -5478,6 +5765,7 @@ export const make = Effect.gen(function* () {
               merged: link.snapshot?.state === "merged" || link.snapshot?.mergedAt != null,
               // A host with no updatedAt is checked again on every sync rather than never.
               updatedAt: link.snapshot?.updatedAt ?? link.snapshot?.syncedAt ?? null,
+              mergeability: link.snapshot?.mergeability ?? null,
             })),
           worktreePath: thread.worktreePath,
         })),
@@ -5521,51 +5809,6 @@ export const make = Effect.gen(function* () {
           ),
         ),
       ),
-    readThreadActivity: (threadId) =>
-      threads
-        .getThreadRecords(threadId, ["messages"], { messageRoles: ["user", "assistant"] })
-        .pipe(
-          Effect.map(({ messages }) =>
-            messages.flatMap((message) =>
-              message.streaming || message.role === "system"
-                ? []
-                : [
-                    {
-                      role: message.role,
-                      text: message.text,
-                      at: DateTime.formatIso(message.updatedAt),
-                    },
-                  ],
-            ),
-          ),
-          Effect.catchCause((cause) =>
-            Effect.logDebug("factory member messages unavailable", { threadId, cause }).pipe(
-              Effect.as([]),
-            ),
-          ),
-        ),
-    // Digest tokens stay out of team stats: text generation runs no provider turn on a thread.
-    generateSummary: (input) =>
-      generateSummary === undefined
-        ? Effect.fail(error("unavailable", "Text generation cannot write summaries."))
-        : serverSettings.getSettings.pipe(
-            Effect.flatMap((settings) =>
-              generateSummary({
-                cwd: input.cwd,
-                subject: input.subject,
-                context: input.context,
-                ...(input.previousSummary === null
-                  ? {}
-                  : { previousSummary: input.previousSummary }),
-                modelSelection: resolveProjectSettings(settings, input.projectId).settings
-                  .textGenerationModelSelection,
-              }),
-            ),
-            Effect.map((result) => result.summary),
-            Effect.mapError((cause) =>
-              error("unavailable", `The digest could not be written: ${cause.message}`),
-            ),
-          ),
     // UsageService owns fetching the rates; the factory only reads the copy it caches.
     readRateTable: fs.readFileString(path.join(stateDir, "usage-model-rates.json")).pipe(
       Effect.flatMap(decodeRatesCache),

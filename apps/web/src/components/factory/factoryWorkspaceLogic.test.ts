@@ -14,8 +14,13 @@ import type { TimelineEntry } from "~/session-logic";
 import {
   collapseFactoryPriming,
   factoryMemberThreadKeys,
+  factoryThreadKind,
+  factoryWorkspacePlace,
+  resolveFactoryThreadStack,
+  resolveFactoryDetailsCardSide,
   resolveFactoryWorkspaceView,
 } from "./factoryWorkspaceLogic";
+import { FACTORY_THREAD_STACK } from "./FactoryThreadStack";
 
 const environmentId = EnvironmentId.make("local");
 const key = (threadId: string) =>
@@ -60,7 +65,6 @@ function assignment(
     team: "custom",
     leadThreadId: ThreadId.make(`${id}-lead`),
     checklist: [],
-    digest: null,
     waitingReason: null,
     ...overrides,
   };
@@ -131,6 +135,106 @@ describe("resolveFactoryWorkspaceView", () => {
       ThreadId.make("manager-1-thread"),
     );
     expect(view?.activeAssignmentId).toBeNull();
+  });
+
+  const ordered = workspace({
+    managers: [manager("manager-1", "active")],
+    members: [
+      member("manager-1-thread", { role: "manager", assignmentId: null }),
+      member("oldest-lead", { role: "lead", assignmentId: "oldest" }),
+    ],
+    // Oldest first, as the server sends them.
+    assignments: [
+      assignment("oldest"),
+      assignment("done", { state: "completed" }),
+      assignment("middle", { state: "retro" }),
+      assignment("newest"),
+    ],
+  });
+  const teamIds = (threadId: string) =>
+    resolveFactoryWorkspaceView(ordered, ThreadId.make(threadId))?.teams.map(
+      (team) => team.assignment.id,
+    );
+
+  it("lists live teams newest first on the manager's thread, a team in its retro included", () => {
+    expect(teamIds("manager-1-thread")).toEqual(["newest", "middle", "oldest"]);
+  });
+
+  it("puts the open thread's team first, then the newest", () => {
+    expect(teamIds("oldest-lead")).toEqual(["oldest", "newest", "middle"]);
+  });
+
+  it("leads back to the manager from team threads, with a team column while any team is live", () => {
+    const place = (feedInput: FactoryWorkspaceFeed, threadId: string) =>
+      factoryWorkspacePlace(
+        resolveFactoryWorkspaceView(feedInput, ThreadId.make(threadId))!,
+        ThreadId.make(threadId),
+      );
+    expect(place(ordered, "manager-1-thread")).toEqual({ backToManager: false, teamColumn: true });
+    expect(place(ordered, "oldest-lead")).toEqual({ backToManager: true, teamColumn: true });
+    expect(
+      place(
+        { ...ordered, assignments: [assignment("done", { state: "completed" })] },
+        "manager-1-thread",
+      ),
+    ).toEqual({ backToManager: false, teamColumn: false });
+  });
+});
+
+describe("resolveFactoryDetailsCardSide", () => {
+  const lane = { padding: 48, minChatWidth: 640 };
+  const side = (width: number, teamColumn: boolean) =>
+    resolveFactoryDetailsCardSide({ container: { width }, lane, teamColumn });
+
+  it("goes left only while a readable lane fits between the card and the team column", () => {
+    expect(side(1288, true)).toBe("left");
+    expect(side(1287, true)).toBe("right");
+  });
+
+  it("needs only the lane's padding on the right when there is no team column", () => {
+    expect(side(1012, false)).toBe("left");
+    expect(side(1011, false)).toBe("right");
+  });
+});
+
+describe("resolveFactoryThreadStack", () => {
+  const keys = (kind: "manager" | "team") => {
+    const stack = resolveFactoryThreadStack(FACTORY_THREAD_STACK, kind);
+    return {
+      above: stack.above.map((entry) => entry.key),
+      below: stack.below.map((entry) => entry.key),
+      detailsTopInset: stack.detailsTopInset,
+    };
+  };
+
+  it("puts Back to manager above a team thread's details, leaving the card room below it", () => {
+    expect(keys("team")).toEqual({
+      above: ["back-to-manager"],
+      below: [],
+      detailsTopInset: 56,
+    });
+  });
+
+  it("starts the manager's column with its details", () => {
+    expect(keys("manager")).toEqual({
+      above: [],
+      below: ["manager-settings", "pr-merge"],
+      detailsTopInset: 0,
+    });
+  });
+
+  it("takes the order from the stack and the thread kind from its place", () => {
+    const stack = [
+      { key: "details", visibleOn: ["manager", "team"] as const },
+      { key: "second", visibleOn: ["team"] as const },
+      { key: "first", visibleOn: ["team"] as const, height: 30 },
+    ];
+    const kind = factoryThreadKind({ backToManager: true, teamColumn: false });
+    expect(resolveFactoryThreadStack(stack, kind).below.map((entry) => entry.key)).toEqual([
+      "second",
+      "first",
+    ]);
+    expect(factoryThreadKind({ backToManager: false, teamColumn: true })).toBe("manager");
   });
 });
 

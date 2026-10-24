@@ -89,19 +89,24 @@ describe("command permissions", () => {
     ),
   );
 
-  it.effect("requires the destination operate grant to pause an engineering manager", () =>
+  it.effect("requires the destination operate grant to pause or edit an engineering manager", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const registry = yield* setup;
-        const pause = createCommandPermissions(runtime, WS_METHODS.factoryManagersPause);
-        registry.set(sessions(env), AsyncResult.success(grant(false)));
-        expect(registry.get(pause.permissionAtom(env))).toBe(false);
-        expect((yield* pause.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
-          "EnvironmentAuthorizationError",
-        );
-        registry.set(sessions(env), AsyncResult.success(grant(true)));
-        expect(registry.get(pause.permissionAtom(env))).toBe(true);
-        yield* pause.authorize(registry, env);
+        for (const method of [
+          WS_METHODS.factoryManagersPause,
+          WS_METHODS.factoryManagersUpdateSettings,
+        ]) {
+          const command = createCommandPermissions(runtime, method);
+          registry.set(sessions(env), AsyncResult.success(grant(false)));
+          expect(registry.get(command.permissionAtom(env))).toBe(false);
+          expect((yield* command.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+            "EnvironmentAuthorizationError",
+          );
+          registry.set(sessions(env), AsyncResult.success(grant(true)));
+          expect(registry.get(command.permissionAtom(env))).toBe(true);
+          yield* command.authorize(registry, env);
+        }
       }),
     ),
   );

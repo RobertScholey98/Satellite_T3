@@ -22,7 +22,7 @@ import {
   waitForThreadShell,
 } from "~/state/entities";
 import { environmentPresentations, environmentSummaries } from "~/state/presentation";
-import { threadEnvironment } from "~/state/threads";
+import { environmentThreadShells, threadEnvironment } from "~/state/threads";
 import { randomUUID } from "~/lib/utils";
 import { useEnvironment } from "~/state/environments";
 import {
@@ -31,7 +31,19 @@ import {
   unwrapFactoryResult,
   useFactoryWorkspace,
 } from "./factoryState";
-import { factoryMemberThreadKeys } from "./factoryWorkspaceLogic";
+import {
+  factoryAssignmentLeadThreadIds,
+  resolveFactoryMergeRows,
+  type FactoryLeadThreadLinks,
+  type FactoryMergeRow,
+} from "./factoryMergeLogic";
+import {
+  factoryMemberThreadKeys,
+  factoryWorkspacePlace,
+  isLiveAssignment,
+  resolveFactoryWorkspaceView,
+  type FactoryWorkspacePlace,
+} from "./factoryWorkspaceLogic";
 
 /** Drafts whose composer currently names a new engineering manager instead of starting a thread. */
 const useManagerDrafts = create<{ readonly draftIds: ReadonlySet<string> }>(() => ({
@@ -82,7 +94,7 @@ const workspaceFeedsAtom = Atom.make((get) => {
   return feeds;
 }).pipe(Atom.withLabel("web-factory-workspace-feeds"));
 
-// Digests and checklists change the feed often; the sidebar repartitions only when membership does.
+// Checklists change the feed often; the sidebar repartitions only when membership does.
 const memberThreadKeysAtom = Atom.make((get) => {
   const next = factoryMemberThreadKeys(get(workspaceFeedsAtom));
   const previous = Option.getOrNull(get.self<ReadonlySet<string>>());
@@ -106,7 +118,7 @@ const managerWaitingAtom = Atom.family((threadKey: string) =>
   }).pipe(Atom.withLabel(`web-factory-manager-waiting:${threadKey}`)),
 );
 
-// A boolean per thread, so a digest or checklist change re-renders no thread's timeline.
+// A boolean per thread, so a checklist change re-renders no thread's timeline.
 const managerThreadAtom = Atom.family((threadKey: string) =>
   Atom.make((get) => {
     for (const [environmentId, feed] of get(workspaceFeedsAtom)) {
@@ -121,6 +133,71 @@ const managerThreadAtom = Atom.family((threadKey: string) =>
     return false;
   }).pipe(Atom.withLabel(`web-factory-manager-thread:${threadKey}`)),
 );
+
+// Two booleans per thread, so the details card re-renders only when they change.
+const workspacePlaceAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.family((threadId: ThreadId) =>
+    Atom.make((get) => {
+      const view = resolveFactoryWorkspaceView(
+        get(workspaceFeedsAtom).get(environmentId),
+        threadId,
+      );
+      const next = view === null ? null : factoryWorkspacePlace(view, threadId);
+      const previous = Option.getOrNull(get.self<FactoryWorkspacePlace | null>());
+      return previous !== null &&
+        next !== null &&
+        previous.backToManager === next.backToManager &&
+        previous.teamColumn === next.teamColumn
+        ? previous
+        : next;
+    }).pipe(Atom.withLabel(`web-factory-workspace-place:${environmentId}:${threadId}`)),
+  ),
+);
+
+// Reads the shell of every lead each live assignment has had, held through streaming ticks, so the
+// card re-renders only when a row changes.
+const mergeRowsAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.family((managerId: string) =>
+    Atom.make((get) => {
+      const assignments = get(workspaceFeedsAtom).get(environmentId)?.assignments ?? [];
+      const leadThreads = new Map<ThreadId, FactoryLeadThreadLinks>();
+      for (const assignment of assignments) {
+        if (assignment.managerId !== managerId || !isLiveAssignment(assignment)) continue;
+        for (const threadId of factoryAssignmentLeadThreadIds(assignment)) {
+          const shell = get(
+            environmentThreadShells.quietThreadShellAtom(scopeThreadRef(environmentId, threadId)),
+          );
+          if (shell)
+            leadThreads.set(threadId, {
+              projectId: shell.projectId,
+              pullRequests: shell.pullRequests,
+            });
+        }
+      }
+      const next = resolveFactoryMergeRows(assignments, managerId, leadThreads);
+      const previous = Option.getOrNull(get.self<ReadonlyArray<FactoryMergeRow>>());
+      return previous !== null && JSON.stringify(previous) === JSON.stringify(next)
+        ? previous
+        : next;
+    }).pipe(Atom.withLabel(`web-factory-merge-rows:${environmentId}:${managerId}`)),
+  ),
+);
+
+/** The open pull requests of a manager's teams, in the order the user should merge them. */
+export function useFactoryMergeRows(
+  environmentId: EnvironmentId,
+  managerId: string,
+): ReadonlyArray<FactoryMergeRow> {
+  return useAtomValue(mergeRowsAtom(environmentId)(managerId));
+}
+
+/** Where a thread sits in its manager's workspace; null when it is not a factory thread. */
+export function useFactoryWorkspacePlace(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): FactoryWorkspacePlace | null {
+  return useAtomValue(workspacePlaceAtom(environmentId)(threadId));
+}
 
 /** Whether the thread is a manager's current thread on a factory environment. */
 export function useIsFactoryManagerThread(threadKey: string | null): boolean {

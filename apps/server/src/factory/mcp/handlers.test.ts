@@ -127,7 +127,6 @@ const assignment: FactoryAssignment = {
   dependencies: [],
   teamVerdict: null,
   checklist: [],
-  digest: null,
   controlViolations: [],
   protectedPathAsks: [],
   retro: { teamDoneAt: null, managerDoneAt: null },

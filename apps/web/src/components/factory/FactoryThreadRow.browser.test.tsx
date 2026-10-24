@@ -24,6 +24,7 @@ vi.mock(import("./factoryWorkspaceState"), async (importOriginal) => ({
 vi.mock(import("./factoryState"), async (importOriginal) => ({
   ...(await importOriginal()),
   useFactoryManagers: () => state.managers,
+  useFactoryManagerCaps: () => null,
 }));
 vi.mock(import("@effect/atom-react"), async (importOriginal) => ({
   ...(await importOriginal()),
@@ -84,7 +85,6 @@ function leadFeed(takenOver: boolean): FactoryWorkspaceFeed {
         team: "custom",
         leadThreadId,
         checklist: [],
-        digest: null,
         waitingReason: "Needs a decision",
       },
     ],
