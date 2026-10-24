@@ -1,538 +1,93 @@
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   DEFAULT_FACTORY_CONFIG,
-  FactoryConfig,
   FactoryConfigOverride,
   FactoryOperationError,
   FactoryUpdateChecklistInput,
   IssueBoardView,
-  IssueSummary,
-  ModelSelection,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   type FactoryAssignmentsEvent,
-  type FactoryConfigSettings,
-  type FactoryDelegateInput,
   type FactoryDraftTicketInput,
-  type FactoryLeadDefinition,
   type FactoryManager,
   type FactoryManagerDefinition,
   type FactoryManagersEvent,
-  type FactoryModelRef,
-  type FactoryTeamDefinition,
-  type FactoryWorkerDefinition,
-  type FactoryOnboardingProposalInput,
   type FactoryOnboardingResult,
-  type FactoryPickupInput,
-  type FactoryRole,
-  type IssueAttemptsStartInput,
-  type OrchestrationProjectShell,
 } from "@t3tools/contracts";
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as FileSystem from "effect/FileSystem";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { TestClock } from "effect/testing";
 
-import { parseRateTable, type RateTable } from "../usage/usagePricing.ts";
-import {
-  makeFactoryService,
-  type FactoryDigestRequest,
-  type FactoryServiceDependencies,
-  type FactoryThreadActivity,
-  type FactoryThreadInterrupt,
-  type FactoryThreadLaunch,
-  type FactoryPullRequestRef,
-  type FactoryThreadMessage,
-  type FactoryThreadRuns,
-  type FactoryThreadTurn,
-} from "./FactoryService.ts";
+import { parseRateTable } from "../usage/usagePricing.ts";
+import type { FactoryThreadActivity, FactoryThreadTurn } from "./FactoryService.ts";
 import * as FactoryConfigStore from "./config/FactoryConfigStore.ts";
-import type { FactoryModelCatalog } from "./config/modelResolution.ts";
-import { FactoryDefinitionsV1 } from "./migrations/FactoryDefinitionsV1.ts";
-import { FactoryManagersPerProjectV1 } from "./migrations/FactoryManagersPerProjectV1.ts";
-import { FactoryOnboardingResultV1 } from "./migrations/FactoryOnboardingResultV1.ts";
-import { FactoryV1 } from "./migrations/FactoryV1.ts";
-import { projectSection, type RoleSkillSource } from "./roleSkills.ts";
-import { DEFAULT_ROLE_SKILLS, ONBOARDING_BRIEF } from "./roles/index.ts";
+import { projectSection } from "./roleSkills.ts";
+import { ONBOARDING_BRIEF } from "./roles/index.ts";
+import {
+  PROJECT_ID,
+  EPOCH,
+  OPUS,
+  SONNET,
+  GPT,
+  decodeConfig,
+  preset,
+  ENVIRONMENT,
+  withDatabase,
+  refOf,
+  ANY_MODEL,
+  BACKLOG,
+  READY,
+  IN_PROGRESS,
+  issue,
+  board,
+  makeHarness,
+  makeService,
+  makeManagerService,
+  PROPOSAL,
+  RESULT,
+  create,
+  managerRowCount,
+  FACTORY,
+  SONNET_LEAD,
+  makeFactory,
+  type Factory,
+  approve,
+  activeManager,
+  START,
+  startTicket,
+  logKinds,
+  logMark,
+  setupDone,
+  memberRows,
+  SYNC_WORK,
+  idleRun,
+  failedRun,
+  pullRequest,
+  startedAssignment,
+  wakeReasons,
+  TEAM_FACTORY,
+  DUO_TEAM,
+  makeTeamFactory,
+  startedTeam,
+  STANDARD_TEAM,
+  DEFAULT_LEAD,
+  CATALOG,
+  workspace,
+  VERDICT,
+  asLegacyTeam,
+} from "./FactoryService.testkit.ts";
 
-const PROJECT_ID = ProjectId.make("project-1");
 const UNKNOWN_PROJECT_ID = ProjectId.make("project-missing");
-const EPOCH = "1970-01-01T00:00:00.000Z";
-
-const PROJECT: OrchestrationProjectShell = {
-  id: PROJECT_ID,
-  title: "App",
-  workspaceRoot: "/repo",
-  repositoryIdentity: {
-    canonicalKey: "github.com/acme/app",
-    locator: {
-      source: "git-remote",
-      remoteName: "origin",
-      remoteUrl: "https://github.com/acme/app.git",
-    },
-    provider: "github",
-    owner: "acme",
-    name: "app",
-  },
-  defaultModelSelection: null,
-  scripts: [],
-  createdAt: EPOCH,
-  updatedAt: EPOCH,
-};
-
-const model = Schema.decodeSync(ModelSelection);
-const OPUS = model({ instanceId: "claude", model: "claude-opus-5-5" });
-const SONNET = model({ instanceId: "claude", model: "claude-sonnet-5" });
-const GPT = model({ instanceId: "codex", model: "gpt-6" });
-
-const decodeConfig = Schema.decodeSync(FactoryConfig);
 const decodeChecklistInput = Schema.decodeUnknownOption(FactoryUpdateChecklistInput);
 const decodeOverride = Schema.decodeSync(FactoryConfigOverride);
-
-const preset = (name: string, workflow: string, models?: ReadonlyArray<typeof OPUS>) => ({
-  id: `preset-${name}-${workflow}`,
-  name,
-  useWhen: "",
-  members: [{ role: "implementer" as const, count: 1, ...(models ? { models } : {}) }],
-  workflow,
-  createdBy: "user" as const,
-});
-
-const ENVIRONMENT = decodeConfig({
-  concurrencyCap: 3,
-  modelPool: [OPUS, SONNET],
-  roleModels: { manager: OPUS },
-  teamPresets: [preset("Solo", "environment"), preset("Pair", "environment")],
-});
-
-const withDatabase = <A, E>(
-  effect: Effect.Effect<
-    A,
-    E,
-    SqlClient.SqlClient | Scope.Scope | FileSystem.FileSystem | Path.Path
-  >,
-) =>
-  effect.pipe(
-    Effect.provide(
-      Layer.merge(NodeSqliteClient.layer({ filename: ":memory:" }), NodeServices.layer),
-    ),
-  );
-
-/** What the fake environment runs: instance `claude` is Claude Agent, `codex` is Codex. */
-const CATALOG: FactoryModelCatalog = [
-  {
-    instanceId: ProviderInstanceId.make("claude"),
-    driver: ProviderDriverKind.make("claudeAgent"),
-    models: [OPUS.model, SONNET.model],
-  },
-  {
-    instanceId: ProviderInstanceId.make("codex"),
-    driver: ProviderDriverKind.make("codex"),
-    models: [GPT.model],
-  },
-];
-const refOf = (selection: ModelSelection): FactoryModelRef => ({
-  driver: CATALOG.find((entry) => entry.instanceId === selection.instanceId)!.driver,
-  model: selection.model,
-});
-
-const ANY_MODEL = { dynamic: false, models: [] };
-const DEFAULT_LEAD = { id: "default", name: "Default lead", models: ANY_MODEL, instructions: "" };
-/** The team a harness with a config staffs by default: a lead and one implementer. */
-const STANDARD_TEAM: FactoryTeamDefinition = {
-  id: "standard",
-  name: "Standard",
-  useWhen: "Most tickets.",
-  workflow: "",
-  mayEditProtectedPaths: false,
-  createdBy: "user",
-  lead: DEFAULT_LEAD,
-  members: [
-    {
-      id: "implementer",
-      name: "Implementer",
-      count: 1,
-      models: ANY_MODEL,
-      description: "Implements the change.",
-    },
-  ],
-};
-
-/** Written to the harness's factory config files; absent parts follow the database config. */
-interface HarnessDefinitions {
-  readonly settings?: FactoryConfigSettings;
-  readonly workers?: ReadonlyArray<FactoryWorkerDefinition>;
-  readonly leads?: ReadonlyArray<FactoryLeadDefinition>;
-  readonly managers?: ReadonlyArray<FactoryManagerDefinition>;
-  readonly teams?: ReadonlyArray<FactoryTeamDefinition>;
-}
-
-interface HarnessOptions {
-  /** Saved as the environment config before the service is returned. */
-  readonly config?: FactoryConfig;
-  /**
-   * The factory config files. A harness with `config` or `definitions` gets that config's pool and
-   * recovery allowance and the Standard team unless these say otherwise; one with neither starts
-   * with no files.
-   */
-  readonly definitions?: HarnessDefinitions;
-  /** How many launches fail before one succeeds. */
-  readonly launchFailures?: number;
-  readonly readRoleSkill?: (role: FactoryRole, projectRoot: string) => RoleSkillSource;
-}
-
-const decodeIssue = Schema.decodeSync(IssueSummary);
-const decodeBoardView = Schema.decodeSync(IssueBoardView);
-const BACKLOG = "column-backlog";
-const READY = "column-ready";
-const IN_PROGRESS = "column-progress";
-
-const issue = (number: number, updatedAt = EPOCH, labels: ReadonlyArray<string> = []) =>
-  decodeIssue({
-    ref: {
-      hostKind: "github",
-      host: "github.com",
-      repository: "acme/app",
-      id: `issue-node-${number}`,
-      number,
-      url: `https://github.com/acme/app/issues/${number}`,
-    },
-    title: `Ticket ${number}`,
-    state: "open",
-    updatedAt,
-    labels,
-  });
-
-/** One connected board whose tickets sit in the given columns, mapping `ready` as Ready. */
-const board = (
-  items: ReadonlyArray<{
-    readonly number: number;
-    readonly columnId: string;
-    readonly updatedAt?: string;
-    readonly labels?: ReadonlyArray<string>;
-  }>,
-  ready: string | ReadonlyArray<string> = READY,
-) =>
-  decodeBoardView({
-    board: {
-      id: "board-1",
-      projectId: PROJECT_ID,
-      title: "Roadmap",
-      locator: {
-        kind: "github-project",
-        host: "github.com",
-        owner: "acme",
-        ownerKind: "organization",
-        projectNumber: 1,
-      },
-      mapping: {
-        ready,
-        inProgress: IN_PROGRESS,
-        inPullRequest: "column-review",
-        completed: "column-done",
-        moveOnMerge: true,
-      },
-    },
-    columns: [
-      { id: BACKLOG, title: "Backlog" },
-      { id: READY, title: "Ready" },
-      { id: IN_PROGRESS, title: "In progress" },
-    ],
-    items: items.map((item) => ({
-      issue: issue(item.number, item.updatedAt, item.labels),
-      itemId: `item-${item.number}`,
-      columnId: item.columnId,
-      version: "v1",
-    })),
-    attempts: [],
-    moves: [],
-  });
-
-/** What the fakes do next; tests change it between calls. */
-interface HarnessControls {
-  sendFailures: number;
-  attemptFailures: number;
-  fileReadFailures: number;
-  ticketFailures: number;
-  /** How many thread launches fail before one succeeds. */
-  launchFailures: number;
-  /** Runs once inside the next launch, before it succeeds or fails. */
-  duringLaunch: Effect.Effect<void, FactoryOperationError> | null;
-  /** What the usage rate cache holds; null when usage tracking has cached none. */
-  rateTable: RateTable | null;
-  /** What the text-generation model answers a digest request with. */
-  summary: Effect.Effect<string, FactoryOperationError>;
-  /** The repository's default branch as git reports it; null when it cannot be read. */
-  defaultBranch: string | null;
-  /** What the environment can run, which factory model names resolve against. */
-  catalog: FactoryModelCatalog;
-}
-
-type TicketRequest = Parameters<FactoryServiceDependencies["createTicket"]>[0];
-
-const makeHarness = (options: HarnessOptions = {}) =>
-  Effect.gen(function* () {
-    yield* FactoryV1;
-    yield* FactoryOnboardingResultV1;
-    yield* FactoryDefinitionsV1;
-    yield* FactoryManagersPerProjectV1;
-    const launches: FactoryThreadLaunch[] = [];
-    const skillReads: Array<readonly [FactoryRole, string]> = [];
-    const boards: IssueBoardView[] = [];
-    const attemptStarts: IssueAttemptsStartInput[] = [];
-    const sentMessages: FactoryThreadMessage[] = [];
-    const interrupts: FactoryThreadInterrupt[] = [];
-    const settles: ThreadId[] = [];
-    const threadRuns = new Map<ThreadId, FactoryThreadRuns>();
-    const threadTurns = new Map<ThreadId, ReadonlyArray<FactoryThreadTurn>>();
-    const threadActivity = new Map<ThreadId, ReadonlyArray<FactoryThreadActivity>>();
-    const summaryRequests: FactoryDigestRequest[] = [];
-    const controls: HarnessControls = {
-      sendFailures: 0,
-      attemptFailures: 0,
-      fileReadFailures: 0,
-      ticketFailures: 0,
-      launchFailures: options.launchFailures ?? 0,
-      duringLaunch: null,
-      rateTable: null,
-      summary: Effect.sync(() => ` Digest ${summaryRequests.length}. `),
-      defaultBranch: "trunk",
-      catalog: CATALOG,
-    };
-    const ticketRequests: TicketRequest[] = [];
-    /** Changed files by pull request number. */
-    const pullRequestFiles = new Map<number, ReadonlyArray<string>>();
-    const fileReads: FactoryPullRequestRef[] = [];
-    let threads = 0;
-    // A real config store in a scratch directory, so definitions round-trip through their files.
-    const configStore = yield* FactoryConfigStore.FactoryConfigStore.pipe(
-      Effect.provide(
-        FactoryConfigStore.layerAt(
-          yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({ prefix: "t3-factory-" }),
-        ),
-      ),
-    );
-    if (options.config !== undefined || options.definitions !== undefined) {
-      const files = options.definitions ?? {};
-      yield* configStore.writeSettings(
-        files.settings ?? {
-          version: 1,
-          modelPool: (options.config?.modelPool ?? []).map(refOf),
-          recoveryAllowance: options.config?.recoveryAllowance ?? 1,
-        },
-      );
-      for (const worker of files.workers ?? []) yield* configStore.writeWorker(worker);
-      for (const lead of files.leads ?? []) yield* configStore.writeLead(lead);
-      for (const manager of files.managers ?? []) yield* configStore.writeManager(manager);
-      for (const team of files.teams ?? [STANDARD_TEAM]) yield* configStore.writeTeam(team);
-    }
-    const service = yield* makeFactoryService({
-      getProject: (id) => Effect.succeed(id === PROJECT_ID ? PROJECT : null),
-      allocateThreadId: () => Effect.sync(() => ThreadId.make(`thread-${++threads}`)),
-      launchThread: (input) =>
-        Effect.suspend(() => {
-          launches.push(input);
-          const during = controls.duringLaunch ?? Effect.void;
-          controls.duringLaunch = null;
-          return during.pipe(
-            Effect.andThen(
-              Effect.suspend(() => {
-                if (controls.launchFailures === 0) return Effect.void;
-                controls.launchFailures -= 1;
-                return Effect.fail(
-                  new FactoryOperationError({
-                    reason: "unavailable",
-                    message: "Provider is offline.",
-                  }),
-                );
-              }),
-            ),
-          );
-        }),
-      configStore,
-      readModelCatalog: Effect.sync(() => controls.catalog),
-      readRoleSkill: (role, projectRoot) =>
-        Effect.sync(() => {
-          skillReads.push([role, projectRoot]);
-          return (
-            options.readRoleSkill?.(role, projectRoot) ?? {
-              text: DEFAULT_ROLE_SKILLS[role],
-              source: "default",
-            }
-          );
-        }),
-      readBoards: (projectId) =>
-        Effect.sync(() =>
-          boards.filter((view) => view.board.projectId === projectId).map((view) => view.board),
-        ),
-      readBoard: (_projectId, boardId) =>
-        Effect.suspend(() => {
-          const view = boards.find((candidate) => candidate.board.id === boardId);
-          return view
-            ? Effect.succeed(view)
-            : Effect.fail(new FactoryOperationError({ reason: "not-found", message: "No board." }));
-        }),
-      startAttempt: (input) =>
-        Effect.suspend(() => {
-          attemptStarts.push(input);
-          if (controls.attemptFailures > 0) {
-            controls.attemptFailures -= 1;
-            return Effect.fail(
-              new FactoryOperationError({ reason: "conflict", message: "The ticket moved." }),
-            );
-          }
-          const threadId = ThreadId.make(`lead-${attemptStarts.length}`);
-          return Effect.succeed({
-            threadId,
-            attempt: {
-              id: `attempt-${attemptStarts.length}`,
-              boardId: input.boardId,
-              issue: input.issue,
-              projectId: input.projectId,
-              threadId,
-              worktreePath: null,
-              status: "launching" as const,
-              active: false,
-              endedReason: null,
-              automaticMoves: "on" as const,
-              createdAt: EPOCH,
-              startedAt: null,
-              controllingPullRequest: null,
-            },
-          });
-        }),
-      readThreadRuns: (threadId) => Effect.sync(() => threadRuns.get(threadId) ?? null),
-      readThreadTurns: (threadId) => Effect.sync(() => threadTurns.get(threadId) ?? []),
-      readThreadActivity: (threadId) => Effect.sync(() => threadActivity.get(threadId) ?? []),
-      generateSummary: (input) =>
-        Effect.suspend(() => {
-          summaryRequests.push(input);
-          return controls.summary;
-        }),
-      readRateTable: Effect.sync(() => controls.rateTable),
-      sendToThread: (input) =>
-        Effect.suspend(() => {
-          if (controls.sendFailures === 0) {
-            sentMessages.push(input);
-            return Effect.void;
-          }
-          controls.sendFailures -= 1;
-          return Effect.fail(
-            new FactoryOperationError({ reason: "unavailable", message: "Thread is busy." }),
-          );
-        }),
-      interruptThread: (input) => Effect.sync(() => void interrupts.push(input)),
-      settleThread: (input) => Effect.sync(() => void settles.push(input.threadId)),
-      readDefaultBranch: () => Effect.sync(() => controls.defaultBranch),
-      readPullRequestFiles: (input) =>
-        Effect.suspend(() => {
-          fileReads.push(input);
-          if (controls.fileReadFailures === 0)
-            return Effect.succeed(pullRequestFiles.get(input.number) ?? []);
-          controls.fileReadFailures -= 1;
-          return Effect.fail(
-            new FactoryOperationError({ reason: "unavailable", message: "GitHub is down." }),
-          );
-        }),
-      createTicket: (input) =>
-        Effect.suspend(() => {
-          ticketRequests.push(input);
-          if (controls.ticketFailures === 0)
-            return Effect.succeed(issue(100 + ticketRequests.length).ref);
-          controls.ticketFailures -= 1;
-          return Effect.fail(
-            new FactoryOperationError({ reason: "unavailable", message: "GitHub is down." }),
-          );
-        }),
-    });
-    if (options.config)
-      yield* service.updateConfig({ scope: "environment", config: options.config });
-    return {
-      service,
-      configStore,
-      launches,
-      skillReads,
-      boards,
-      attemptStarts,
-      sentMessages,
-      interrupts,
-      settles,
-      threadRuns,
-      threadTurns,
-      threadActivity,
-      summaryRequests,
-      controls,
-      pullRequestFiles,
-      fileReads,
-      ticketRequests,
-    };
-  });
-
-const makeService = makeHarness().pipe(Effect.map(({ service }) => service));
-/** Managers need a model pool to launch from. */
-const makeManagerService = makeHarness({ config: ENVIRONMENT }).pipe(
-  Effect.map(({ service }) => service),
-);
-
-type Service = Effect.Success<typeof makeService>;
-
-const PROPOSAL: FactoryOnboardingProposalInput = {
-  summary: "pnpm workspace; CI runs lint and tests.",
-  purpose: "A todo app for small teams.",
-  pickup: { enabled: true, guidance: "Small, well-specified bugs." },
-  rules: [
-    {
-      id: "small-tickets",
-      question: "Which tickets count as small?",
-      options: ["One file", "One package"],
-      recommended: 0,
-      reason: "Reviews stay short.",
-    },
-  ],
-  controlPaths: [
-    { path: ".github/workflows/**", reason: "CI decides what ships." },
-    { path: "AGENTS.md", reason: "" },
-  ],
-  findings: ["Pull requests need one approving review."],
-};
-
-/** Pickup from board-1's Ready column, with the proposed guidance and question answered. */
-const RESULT: FactoryOnboardingResult = {
-  purpose: "A todo app for small teams.",
-  pickup: {
-    enabled: true,
-    columns: [{ boardId: "board-1", columnId: READY }],
-    labels: [],
-    guidance: "Small, well-specified bugs.",
-  },
-  baseBranch: null,
-  rules: [{ id: "small-tickets", question: "Which tickets count as small?", answer: "One file" }],
-  controlPaths: [{ path: "AGENTS.md", reason: "Agent instructions." }],
-  teamIds: [],
-  concurrencyCap: 1,
-};
-
-const create = (service: Service, requestId = "create-1", name = "Ada") =>
-  service.createManager({ requestId, projectId: PROJECT_ID, name });
-
-const managerRowCount = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM factory_managers`;
-  return rows[0]?.count;
-});
 
 const insertAssignment = (managerId: string, state: string) =>
   Effect.gen(function* () {
@@ -716,13 +271,16 @@ describe("FactoryService managers", () => {
   it.effect("creates a manager in onboarding and replays a repeated request", () =>
     withDatabase(
       Effect.gen(function* () {
-        const service = yield* makeManagerService;
+        const { service, launches } = yield* makeHarness({ config: ENVIRONMENT });
 
         const created = yield* create(service);
         assert.strictEqual(created.state, "onboarding");
         assert.strictEqual(created.projectId, PROJECT_ID);
         assert.strictEqual(created.name, "Ada");
-        assert.strictEqual(created.threadId, "thread-1");
+        assert.include(
+          launches.map((launch) => launch.threadId),
+          created.threadId,
+        );
         assert.strictEqual(created.activeAssignments, 0);
         assert.strictEqual(created.waitingOnYou, 0);
 
@@ -808,10 +366,9 @@ describe("FactoryService managers", () => {
   it.effect("resumes an active manager to active", () =>
     withDatabase(
       Effect.gen(function* () {
-        const service = yield* makeManagerService;
-        const sql = yield* SqlClient.SqlClient;
-        const { id: managerId } = yield* create(service);
-        yield* sql`UPDATE factory_managers SET state='active' WHERE id=${managerId}`;
+        const factory = yield* makeFactory;
+        const { service } = factory;
+        const { id: managerId } = yield* activeManager(factory);
 
         const paused = yield* service.pauseManager({
           requestId: "pause-1",
@@ -1269,18 +826,22 @@ describe("FactoryService primed manager thread", () => {
   const FINISHED = "This thread's onboarding is finished; the manager now runs in a new thread.";
   const PICKUP_OFF = { ...RESULT, pickup: { ...RESULT.pickup, enabled: false } };
 
-  /** A manager that proposed, approved by the user with `result`; board-1 stays connected. */
+  /**
+   * A manager that proposed, approved by the user with `result`; board-1 stays connected. Launches
+   * from `launchesBefore` on are the approval's.
+   */
   const approved = (factory: Factory, result: FactoryOnboardingResult = RESULT) =>
     Effect.gen(function* () {
       if (factory.boards.length === 0) factory.boards.push(board([]));
       const created = yield* create(factory.service);
       yield* factory.service.proposeOnboarding(created.threadId!, PROPOSAL);
+      const launchesBefore = factory.launches.length;
       const manager = yield* factory.service.approveOnboarding({
         requestId: "approve-1",
         managerId: created.id,
         result,
       });
-      return { created, manager };
+      return { created, manager, launchesBefore };
     });
 
   it.effect(
@@ -1291,7 +852,7 @@ describe("FactoryService primed manager thread", () => {
           const factory = yield* makeFactory;
           const { service, boards, launches, sentMessages, settles } = factory;
           boards.push(board([{ number: 1, columnId: READY }]));
-          const { created, manager } = yield* approved(factory);
+          const { created, manager, launchesBefore } = yield* approved(factory);
 
           assert.strictEqual(manager.state, "ready");
           assert.notStrictEqual(manager.threadId, created.threadId);
@@ -1302,8 +863,9 @@ describe("FactoryService primed manager thread", () => {
             `message:factory-manager-primed:${manager.threadId}`,
           );
           assert.isNull(created.primingMessageId);
-          assert.strictEqual(launches.length, 2);
-          const [onboarding, primed] = launches;
+          const onboarding = launches.find((launch) => launch.threadId === created.threadId);
+          assert.strictEqual(launches.length, launchesBefore + 1);
+          const primed = launches.at(-1);
           assert.strictEqual(primed!.threadId, manager.threadId);
           assert.strictEqual(primed!.messageId, manager.primingMessageId);
           assert.strictEqual(primed!.title, "Engineering manager: Ada");
@@ -1349,6 +911,7 @@ describe("FactoryService primed manager thread", () => {
         boards.push(board([]));
         const created = yield* create(service);
         yield* service.proposeOnboarding(created.threadId!, PROPOSAL);
+        const launchesBefore = launches.length;
         const approve = service.approveOnboarding({
           requestId: "approve-1",
           managerId: created.id,
@@ -1366,7 +929,7 @@ describe("FactoryService primed manager thread", () => {
 
         const approved = yield* approve;
         assert.deepStrictEqual(yield* Fiber.join(repeat!), approved);
-        assert.strictEqual(launches.length, 2);
+        assert.strictEqual(launches.length, launchesBefore + 1);
       }),
     ),
   );
@@ -1439,6 +1002,8 @@ describe("FactoryService primed manager thread", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { created, manager } = yield* approved(factory);
+        const launchesBefore = factory.launches.length;
+        const settlesBefore = factory.settles.length;
 
         const replayed = yield* factory.service.approveOnboarding({
           requestId: "approve-1",
@@ -1446,8 +1011,8 @@ describe("FactoryService primed manager thread", () => {
           result: RESULT,
         });
         assert.deepStrictEqual(replayed, manager);
-        assert.strictEqual(factory.launches.length, 2);
-        assert.strictEqual(factory.settles.length, 1);
+        assert.strictEqual(factory.launches.length, launchesBefore);
+        assert.strictEqual(factory.settles.length, settlesBefore);
       }),
     ),
   );
@@ -1460,6 +1025,7 @@ describe("FactoryService primed manager thread", () => {
         boards.push(board([]));
         const created = yield* create(service);
         const proposed = yield* service.proposeOnboarding(created.threadId!, PROPOSAL);
+        const launchesBefore = launches.length;
         controls.launchFailures = 1;
         const approve = service.approveOnboarding({
           requestId: "approve-1",
@@ -1479,8 +1045,8 @@ describe("FactoryService primed manager thread", () => {
 
         const retried = yield* approve;
         assert.strictEqual(retried.state, "active");
-        assert.strictEqual(launches.length, 3);
-        assert.strictEqual(retried.threadId, launches[2]!.threadId);
+        assert.strictEqual(launches.length, launchesBefore + 2);
+        assert.strictEqual(retried.threadId, launches.at(-1)!.threadId);
       }),
     ),
   );
@@ -1489,9 +1055,9 @@ describe("FactoryService primed manager thread", () => {
     withDatabase(
       Effect.gen(function* () {
         const factory = yield* makeFactory;
-        const { manager } = yield* approved(factory, PICKUP_OFF);
+        const { manager, launchesBefore } = yield* approved(factory, PICKUP_OFF);
         assert.strictEqual(manager.state, "active");
-        assert.include(factory.launches[1]!.text, "Pickup is off.");
+        assert.include(factory.launches[launchesBefore]!.text, "Pickup is off.");
 
         const refused = yield* factory.service
           .startPickup({ requestId: "start-1", managerId: manager.id })
@@ -1628,84 +1194,6 @@ describe("FactoryService role briefs", () => {
   );
 });
 
-/** One slot, a lead model for small work, and nothing set for large work. */
-const FACTORY = decodeConfig({
-  concurrencyCap: 1,
-  modelPool: [OPUS, SONNET],
-  roleModels: { manager: OPUS, lead: { small: SONNET } },
-});
-
-/** FACTORY's lead model for small tickets, as the Standard team's lead copy now holds it. */
-const SONNET_LEAD = { ...DEFAULT_LEAD, models: { dynamic: false, models: [refOf(SONNET)] } };
-const makeFactory = makeHarness({
-  config: FACTORY,
-  definitions: { teams: [{ ...STANDARD_TEAM, lead: SONNET_LEAD }] },
-});
-type Factory = Effect.Success<typeof makeFactory>;
-
-const approve = (
-  factory: Factory,
-  managerId: string,
-  threadId: ThreadId,
-  result: FactoryOnboardingResult = RESULT,
-) =>
-  Effect.gen(function* () {
-    yield* factory.service.proposeOnboarding(threadId, PROPOSAL);
-    // Approval reads the pickup column live; tests that add their tickets later start boardless.
-    const connected = factory.boards.some((view) => view.board.id === "board-1");
-    if (!connected) factory.boards.push(board([]));
-    const approved = yield* factory.service.approveOnboarding({
-      requestId: `approve-${managerId}`,
-      managerId,
-      result,
-    });
-    if (!connected) factory.boards.pop();
-    if (approved.state !== "ready") return approved;
-    // Starting pickup has its own tests; the rest begin active, without its first wake.
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`UPDATE factory_managers SET state='active' WHERE id=${managerId}`;
-    return { ...approved, state: "active" as const };
-  });
-
-const activeManager = (factory: Factory, result?: FactoryOnboardingResult) =>
-  Effect.gen(function* () {
-    const created = yield* create(factory.service);
-    return yield* approve(factory, created.id, created.threadId!, result);
-  });
-
-const START = {
-  decision: "start",
-  complexity: "small",
-  reason: "Matches the guidance: a small bug.",
-  brief: "Fix the crash when the list is empty.",
-  completionCondition: "An empty list renders without errors and a test covers it.",
-} as const;
-
-const startTicket = (factory: Factory, threadId: ThreadId, issueNumber = 1) =>
-  factory.service.pickup(threadId, { ...START, issueNumber });
-
-/** What happened since approval, oldest first; the approval itself has its own tests. */
-const logKinds = (service: Service, managerId: string) =>
-  service.listLog({ managerId }).pipe(
-    Effect.map((entries) =>
-      entries
-        .map((entry) => entry.kind)
-        .filter((kind) => kind !== "onboarded")
-        .toReversed(),
-    ),
-  );
-
-const memberRows = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  return yield* sql<{
-    thread_id: string;
-    assignment_id: string;
-    role: string;
-    parent_thread_id: string;
-    joined: string;
-  }>`SELECT thread_id,assignment_id,role,parent_thread_id,joined FROM factory_members`;
-});
-
 describe("FactoryService status", () => {
   it.effect("lists Ready tickets, judged after a skip until the ticket changes", () =>
     withDatabase(
@@ -1831,11 +1319,14 @@ describe("FactoryService pickup", () => {
         );
         const created = yield* create(service);
         let threadId = created.threadId!;
+        const createdMark = yield* logMark(service, created.id);
 
         const onboarding = yield* startTicket(factory, threadId).pipe(Effect.flip);
         assert.strictEqual(onboarding.reason, "conflict");
         assert.include(onboarding.message, "onboarding");
+        assert.deepStrictEqual(yield* logKinds(service, created.id, createdMark), ["refused"]);
         threadId = (yield* approve(factory, created.id, threadId)).threadId!;
+        const mark = yield* logMark(service, created.id);
 
         const large = yield* service
           .pickup(threadId, { ...START, issueNumber: 1, complexity: "large" })
@@ -1862,8 +1353,7 @@ describe("FactoryService pickup", () => {
         assert.include(full.message, "slots");
 
         assert.strictEqual(attemptStarts.length, 1);
-        assert.deepStrictEqual(yield* logKinds(service, created.id), [
-          "refused",
+        assert.deepStrictEqual(yield* logKinds(service, created.id, mark), [
           "refused",
           "refused",
           "refused",
@@ -1971,14 +1461,14 @@ describe("FactoryService pickup", () => {
         const factory = yield* makeFactory;
         const { service, boards, controls } = factory;
         boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
+        const { manager, mark } = yield* setupDone(factory, yield* activeManager(factory));
         controls.attemptFailures = 1;
 
         const failed = yield* startTicket(factory, manager.threadId!).pipe(Effect.flip);
         assert.strictEqual(failed.reason, "conflict");
         assert.strictEqual(failed.message, "The ticket moved.");
         assert.deepStrictEqual(yield* service.listAssignments({ includeEnded: true }), []);
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["refused"]);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["refused"]);
         const status = yield* service.status(manager.id);
         assert.isTrue(status.capacityFree);
         assert.isFalse(status.readyTickets[0]!.judged);
@@ -1990,13 +1480,6 @@ describe("FactoryService pickup", () => {
   );
 });
 
-const SYNC_WORK = {
-  title: "Rework the sync engine",
-  brief: "The user asked for the sync rework.",
-  completionCondition: "Sync survives a restart mid-transfer.",
-  complexity: "large",
-} as const;
-
 describe("FactoryService commission", () => {
   it.effect("starts a large ticket the user asked for", () =>
     withDatabase(
@@ -2004,7 +1487,7 @@ describe("FactoryService commission", () => {
         const factory = yield* makeFactory;
         const { service, boards, attemptStarts } = factory;
         boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
+        const { manager, mark } = yield* setupDone(factory, yield* activeManager(factory));
         const work = SYNC_WORK;
 
         const assignment = yield* service.commission(manager.threadId!, {
@@ -2017,7 +1500,7 @@ describe("FactoryService commission", () => {
         assert.strictEqual(attemptStarts.length, 1);
         // The team's lead copy picks the model, whatever the ticket's size.
         assert.deepStrictEqual(attemptStarts[0]!.modelSelection, SONNET);
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["commission"]);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["commission"]);
       }),
     ),
   );
@@ -2033,11 +1516,12 @@ describe("FactoryService commission", () => {
         assert.strictEqual(assignment.source, "user");
         assert.isNull(assignment.issue);
         assert.isNull(assignment.attemptId);
-        assert.strictEqual(assignment.leadThreadId, "thread-3");
+        const lead = assignment.leadThreadId!;
+        assert.notStrictEqual(lead, manager.threadId);
         assert.deepStrictEqual(attemptStarts, []);
-        const launch = launches[2]!;
+        const launch = launches.at(-1)!;
         assert.strictEqual(launch.commandId, `factory-assignment:${assignment.id}`);
-        assert.strictEqual(launch.threadId, "thread-3");
+        assert.strictEqual(launch.threadId, lead);
         assert.strictEqual(launch.title, "Factory: Rework the sync engine");
         assert.deepStrictEqual(launch.modelSelection, SONNET);
         assert.strictEqual(launch.workspace.type, "worktree");
@@ -2051,7 +1535,7 @@ describe("FactoryService commission", () => {
         assert.include(launch.text, SYNC_WORK.brief);
         assert.deepStrictEqual(yield* memberRows, [
           {
-            thread_id: "thread-3",
+            thread_id: lead,
             assignment_id: assignment.id,
             role: "lead",
             parent_thread_id: manager.threadId!,
@@ -2059,7 +1543,6 @@ describe("FactoryService commission", () => {
           },
         ]);
 
-        const lead = ThreadId.make("thread-3");
         threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(9, false)] }));
         const claimed = yield* service.claimComplete(lead, {
           evidence: "A restart mid-transfer resumes.",
@@ -2074,18 +1557,6 @@ describe("FactoryService commission", () => {
   );
 });
 
-/** A lead thread at rest after a completed run, with no questions or pull requests. */
-const idleRun = (overrides: Partial<FactoryThreadRuns> = {}): FactoryThreadRuns => ({
-  deleted: false,
-  latestRunStatus: "completed",
-  runInProgress: false,
-  pendingRequests: 0,
-  pullRequests: [],
-  worktreePath: null,
-  ...overrides,
-});
-const failedRun = idleRun({ latestRunStatus: "failed" });
-
 describe("FactoryService lead reconciliation", () => {
   it.effect("stalls an assignment whose lead run failed and wakes the manager about it", () =>
     withDatabase(
@@ -2093,14 +1564,17 @@ describe("FactoryService lead reconciliation", () => {
         const factory = yield* makeFactory;
         const { service, boards, threadRuns, sentMessages } = factory;
         boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
+        const { manager, mark, sentBefore } = yield* setupDone(
+          factory,
+          yield* activeManager(factory),
+        );
         const assignment = (yield* startTicket(factory, manager.threadId!))!;
         const lead = ThreadId.make("lead-1");
 
         threadRuns.set(lead, idleRun());
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "active");
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup"]);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["pickup"]);
 
         threadRuns.set(lead, failedRun);
         yield* service.reconcileThread(lead);
@@ -2114,10 +1588,11 @@ describe("FactoryService lead reconciliation", () => {
         assert.isNull(wake!.deliveredAt);
 
         yield* service.sweep;
-        assert.strictEqual(sentMessages.length, 1);
-        assert.strictEqual(
-          sentMessages[0]!.text,
-          "Assignment Ticket 1 stalled: The lead's latest run failed. Investigate its lead thread, then call factory_recover to rebrief or replace the lead, or recommend to the user.",
+        assert.deepStrictEqual(
+          sentMessages.slice(sentBefore).map((message) => message.text),
+          [
+            "Assignment Ticket 1 stalled: The lead's latest run failed. Investigate its lead thread, then call factory_recover to rebrief or replace the lead, or recommend to the user.",
+          ],
         );
       }),
     ),
@@ -2130,12 +1605,15 @@ describe("FactoryService sweep", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, boards, sentMessages } = factory;
+        const { manager, mark, sentBefore } = yield* setupDone(
+          factory,
+          yield* activeManager(factory),
+        );
         boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
 
         yield* service.sweep;
-        assert.strictEqual(sentMessages.length, 1);
-        const message = sentMessages[0]!;
+        assert.strictEqual(sentMessages.length, sentBefore + 1);
+        const message = sentMessages.at(-1)!;
         assert.strictEqual(message.threadId, manager.threadId);
         assert.strictEqual(message.projectId, PROJECT_ID);
         assert.isTrue(message.commandId.startsWith(`factory-wake:${manager.id}:`));
@@ -2147,8 +1625,8 @@ describe("FactoryService sweep", () => {
         assert.isNotNull(wake!.deliveredAt);
 
         yield* service.sweep;
-        assert.strictEqual(sentMessages.length, 1);
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["wake"]);
+        assert.strictEqual(sentMessages.length, sentBefore + 1);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["wake"]);
       }),
     ),
   );
@@ -2158,18 +1636,18 @@ describe("FactoryService sweep", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, boards, sentMessages, controls } = factory;
+        const { manager, sentBefore } = yield* setupDone(factory, yield* activeManager(factory));
         boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
         controls.sendFailures = 1;
 
         yield* service.sweep;
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
         const [pending] = yield* service.listLog({ managerId: manager.id });
         assert.isNull(pending!.deliveredAt);
 
         yield* service.sweep;
-        assert.strictEqual(sentMessages.length, 1);
-        assert.include(sentMessages[0]!.text, "#1 Ticket 1");
+        assert.strictEqual(sentMessages.length, sentBefore + 1);
+        assert.include(sentMessages.at(-1)!.text, "#1 Ticket 1");
         const [delivered] = yield* service.listLog({ managerId: manager.id });
         assert.strictEqual(delivered!.sequence, pending!.sequence);
         assert.isNotNull(delivered!.deliveredAt);
@@ -2188,7 +1666,10 @@ describe("FactoryService sweep", () => {
             { number: 2, columnId: READY },
           ]),
         );
-        const manager = yield* activeManager(factory);
+        const { manager, mark, sentBefore } = yield* setupDone(
+          factory,
+          yield* activeManager(factory),
+        );
         yield* startTicket(factory, manager.threadId!);
         yield* service.pauseManager({
           requestId: "pause-1",
@@ -2202,8 +1683,8 @@ describe("FactoryService sweep", () => {
           (yield* service.assignmentForThread(ThreadId.make("lead-1")))!.state,
           "stalled",
         );
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup", "stalled"]);
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["pickup", "stalled"]);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
       }),
     ),
   );
@@ -2213,53 +1694,29 @@ describe("FactoryService sweep", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, boards, sentMessages } = factory;
+        const { manager, mark, sentBefore } = yield* setupDone(
+          factory,
+          yield* activeManager(factory),
+        );
+        // The tickets turn Ready after pickup starts, so only the sweep could offer them.
         boards.push(
           board([
             { number: 1, columnId: READY },
             { number: 2, columnId: READY },
           ]),
         );
-        const manager = yield* activeManager(factory);
         yield* startTicket(factory, manager.threadId!);
 
         yield* service.sweep;
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup"]);
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["pickup"]);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
       }),
     ),
   );
 });
 
-const pullRequest = (number: number, merged: boolean, updatedAt: string | null = EPOCH) => ({
-  host: "github.com",
-  repository: "acme/app",
-  number,
-  merged,
-  state: merged ? ("merged" as const) : ("open" as const),
-  updatedAt,
-});
-
 const RETRO_REQUEST =
   "All pull requests for Ticket 1 are merged. Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.";
-
-/** An active manager whose lead on ticket 1 runs in thread lead-1. */
-const startedAssignment = (factory: Factory, tickets: ReadonlyArray<number> = [1]) =>
-  Effect.gen(function* () {
-    factory.boards.push(board(tickets.map((number) => ({ number, columnId: READY }))));
-    const manager = yield* activeManager(factory);
-    const assignment = (yield* startTicket(factory, manager.threadId!))!;
-    return { manager, assignment, lead: ThreadId.make("lead-1") };
-  });
-
-const wakeReasons = (service: Service, managerId: string) =>
-  service.listLog({ managerId }).pipe(
-    Effect.map((entries) =>
-      entries
-        .filter((entry) => entry.kind === "wake")
-        .map((entry) => entry.reason)
-        .toReversed(),
-    ),
-  );
 
 const activity = (text: string, at: string): FactoryThreadActivity => ({
   role: "assistant",
@@ -2364,7 +1821,7 @@ describe("FactoryService completion claims", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, lead } = yield* startedAssignment(factory);
+        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
         threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, true)] }));
 
         const claimed = yield* service.claimComplete(lead, {
@@ -2376,10 +1833,10 @@ describe("FactoryService completion claims", () => {
           { host: "github.com", repository: "acme/app", number: 7 },
         ]);
         assert.strictEqual(claimed.claim!.evidence, "pnpm test passes; the empty list renders.");
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup", "claim", "wake"]);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["retro"]);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["claim", "wake"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["retro"]);
         assert.deepStrictEqual(
-          sentMessages.map((message) => [message.threadId, message.text]),
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
           [[lead, RETRO_REQUEST]],
         );
         assert.isTrue((yield* service.status(manager.id)).capacityFree);
@@ -2392,7 +1849,7 @@ describe("FactoryService completion claims", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, lead } = yield* startedAssignment(factory);
+        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
         threadRuns.set(
           lead,
           idleRun({ pullRequests: [pullRequest(7, false), pullRequest(8, true)] }),
@@ -2405,7 +1862,7 @@ describe("FactoryService completion claims", () => {
         assert.strictEqual(claimed.state, "waiting-user");
         assert.strictEqual(claimed.waitingReason, "Pull requests await the user's review: #7.");
         assert.strictEqual((yield* service.listManagers({}))[0]!.waitingOnYou, 1);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), []);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), []);
 
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "waiting-user");
@@ -2416,9 +1873,9 @@ describe("FactoryService completion claims", () => {
         );
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "retro");
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["retro"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["retro"]);
         assert.deepStrictEqual(
-          sentMessages.map((message) => message.text),
+          sentMessages.slice(sentBefore).map((message) => message.text),
           [RETRO_REQUEST],
         );
       }),
@@ -2432,7 +1889,7 @@ describe("FactoryService completion claims", () => {
         Effect.gen(function* () {
           const factory = yield* makeFactory;
           const { service, threadRuns } = factory;
-          const { manager, lead } = yield* startedAssignment(factory);
+          const { manager, lead, mark } = yield* startedAssignment(factory);
           threadRuns.set(
             lead,
             idleRun({
@@ -2452,7 +1909,7 @@ describe("FactoryService completion claims", () => {
           assert.strictEqual(unlinked.reason, "invalid");
           assert.strictEqual(unlinked.message, "Link #9 to this thread before claiming.");
           assert.isNull((yield* service.assignmentForThread(lead))!.claim);
-          assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup"]);
+          assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), []);
 
           const claimed = yield* service.claimComplete(lead, {
             evidence: "Checks pass.",
@@ -2470,7 +1927,10 @@ describe("FactoryService dependencies", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, sentMessages } = factory;
-        const { manager, assignment, lead } = yield* startedAssignment(factory, [1, 2]);
+        const { manager, assignment, lead, mark, sentBefore } = yield* startedAssignment(
+          factory,
+          [1, 2],
+        );
 
         const stranger = yield* service
           .reportDependency(manager.threadId!, {
@@ -2493,14 +1953,15 @@ describe("FactoryService dependencies", () => {
         const blocked = (yield* service.assignmentForThread(lead))!;
         assert.strictEqual(blocked.state, "blocked");
         assert.deepStrictEqual(blocked.dependencies, [dependency]);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["dependency"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["dependency"]);
 
         yield* service.sweep;
+        const [woken] = sentMessages.slice(sentBefore);
         assert.include(
-          sentMessages[0]!.text,
+          woken!.text,
           `Assignment Ticket 1 is blocked on Expose the sync cursor: GET /sync returns the cursor. Commission it with factory_commission (dependencyId ${dependency.id}) or tell the lead how to proceed.`,
         );
-        assert.include(sentMessages[0]!.text, "Add the cursor to GET /sync.");
+        assert.include(woken!.text, "Add the cursor to GET /sync.");
 
         // The blocked assignment fills the only slot; its delivery starts anyway.
         assert.isFalse((yield* service.status(manager.id)).capacityFree);
@@ -2546,7 +2007,7 @@ describe("FactoryService recovery", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        const { manager, assignment, lead, mark, sentBefore } = yield* startedAssignment(factory);
         threadRuns.set(lead, failedRun);
         yield* service.reconcileThread(lead);
 
@@ -2559,7 +2020,8 @@ describe("FactoryService recovery", () => {
         assert.strictEqual(recovered.recoveryUsed, 1);
         assert.isNull(recovered.waitingReason);
         assert.deepStrictEqual(
-          sentMessages.map((message) => [message.threadId, message.text]),
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
+
           [[lead, "Use the fixture in tests/empty-list and retry."]],
         );
 
@@ -2584,9 +2046,8 @@ describe("FactoryService recovery", () => {
           "Recovery allowance used; the manager recommends: Split the work in two.",
         );
         assert.strictEqual(spent.recoveryUsed, 1);
-        assert.strictEqual(sentMessages.length, 1);
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), [
-          "pickup",
+        assert.strictEqual(sentMessages.length, sentBefore + 1);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), [
           "stalled",
           "wake",
           "recovery",
@@ -2620,12 +2081,13 @@ describe("FactoryService recovery", () => {
         const replaced = yield* service.recover(manager.threadId!, replace);
         assert.strictEqual(replaced.state, "active");
         assert.strictEqual(replaced.recoveryUsed, 1);
-        assert.strictEqual(replaced.leadThreadId, "thread-3");
+        const newLead = replaced.leadThreadId!;
+        assert.notStrictEqual(newLead, lead);
         assert.strictEqual(replaced.attemptId, "attempt-1");
         assert.strictEqual(attemptStarts.length, 1);
-        const launch = launches[2]!;
+        const launch = launches.at(-1)!;
         assert.strictEqual(launch.commandId, `factory-assignment:${assignment.id}:recovery-1`);
-        assert.strictEqual(launch.threadId, "thread-3");
+        assert.strictEqual(launch.threadId, newLead);
         assert.deepStrictEqual(launch.workspace, {
           type: "existing_worktree",
           worktreePath: "/repo/.worktrees/issue-1",
@@ -2646,7 +2108,7 @@ describe("FactoryService recovery", () => {
           members.map((member) => [member.thread_id, member.ended]),
           [
             ["lead-1", 1],
-            ["thread-3", 0],
+            [newLead, 0],
           ],
         );
         const oldLead = yield* service.claimComplete(lead, { evidence: "Done." }).pipe(Effect.flip);
@@ -2662,7 +2124,7 @@ describe("FactoryService completion", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service } = factory;
-        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        const { manager, assignment, lead, mark } = yield* startedAssignment(factory);
         const verdict = { fit: "poor", reason: "Too many reviewers for a one-line fix." } as const;
 
         const early = yield* service
@@ -2680,7 +2142,7 @@ describe("FactoryService completion", () => {
         assert.deepStrictEqual(completed.teamVerdict, verdict);
         assert.isNotNull(completed.endedAt);
         assert.deepStrictEqual(yield* service.listAssignments({}), []);
-        assert.strictEqual((yield* logKinds(service, manager.id)).at(-1), "complete");
+        assert.strictEqual((yield* logKinds(service, manager.id, mark)).at(-1), "complete");
       }),
     ),
   );
@@ -2690,7 +2152,7 @@ describe("FactoryService completion", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, interrupts, sentMessages } = factory;
-        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        const { manager, assignment, lead, sentBefore } = yield* startedAssignment(factory);
         const input = {
           requestId: "cancel-1",
           assignmentId: assignment.id,
@@ -2705,7 +2167,7 @@ describe("FactoryService completion", () => {
           [[lead, "factory-cancel:cancel-1"]],
         );
         assert.strictEqual(
-          sentMessages[0]!.text,
+          sentMessages[sentBefore]!.text,
           "The user cancelled Ticket 1: The ticket was descoped. Stop the work. Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.",
         );
         const [wake] = yield* service.listLog({ managerId: manager.id });
@@ -2743,7 +2205,7 @@ describe("FactoryService takeover", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, lead } = yield* startedAssignment(factory);
+        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
 
         const stranger = yield* service
           .takeOver({ requestId: "take-0", threadId: manager.threadId! })
@@ -2759,18 +2221,17 @@ describe("FactoryService takeover", () => {
         threadRuns.set(lead, failedRun);
         yield* service.sweep;
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "stalled");
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), []);
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), []);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
 
         const handedBack = yield* service.handBack({ requestId: "hand-1", threadId: lead });
         assert.isFalse(handedBack.takenOver);
         yield* service.sweep;
         assert.deepStrictEqual(
-          sentMessages.map((message) => message.text),
+          sentMessages.slice(sentBefore).map((message) => message.text),
           ["The user handed back Ticket 1; it is now stalled. Check its thread for what changed."],
         );
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), [
-          "pickup",
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), [
           "takeover",
           "stalled",
           "handback",
@@ -2787,7 +2248,7 @@ describe("FactoryService questions", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, lead } = yield* startedAssignment(factory);
+        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
 
         threadRuns.set(lead, idleRun({ latestRunStatus: "interrupted", pendingRequests: 1 }));
         yield* service.reconcileThread(lead);
@@ -2803,8 +2264,8 @@ describe("FactoryService questions", () => {
         const resumed = (yield* service.assignmentForThread(lead))!;
         assert.strictEqual(resumed.state, "active");
         assert.isNull(resumed.waitingReason);
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup"]);
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), []);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
       }),
     ),
   );
@@ -2843,319 +2304,13 @@ describe("FactoryService project pause", () => {
   );
 });
 
-/** A Duo preset: one implementer on two models, and one reviewer on the role's model. */
-const DUO = {
-  id: "preset-duo",
-  name: "Duo",
-  useWhen: "Small changes worth a second look.",
-  members: [
-    { role: "implementer" as const, count: 1, models: [SONNET, OPUS] },
-    { role: "reviewer" as const, count: 1 },
-  ],
-  workflow: "Implement, then review before the pull request.",
-  createdBy: "user" as const,
-};
-
-const TEAM_FACTORY = decodeConfig({
-  concurrencyCap: 2,
-  modelPool: [OPUS, SONNET],
-  roleModels: { manager: OPUS, lead: { small: SONNET }, workers: { reviewer: [SONNET] } },
-  teamPresets: [DUO],
-});
-
-/** The Duo preset as a factory team: the lead runs Sonnet, and members delegate by name. */
-const DUO_TEAM: FactoryTeamDefinition = {
-  id: "duo",
-  name: "Duo",
-  useWhen: DUO.useWhen,
-  workflow: DUO.workflow,
-  mayEditProtectedPaths: false,
-  createdBy: "user",
-  lead: SONNET_LEAD,
-  members: [
-    {
-      id: "implementer",
-      name: "Implementer",
-      count: 1,
-      models: { dynamic: true, models: [refOf(SONNET), refOf(OPUS)] },
-      description: "Implements the change.",
-    },
-    {
-      id: "reviewer",
-      name: "Reviewer",
-      count: 1,
-      models: { dynamic: false, models: [refOf(SONNET)] },
-      description: "Reviews the pull request.",
-    },
-  ],
-};
-
-const makeTeamFactory = makeHarness({ config: TEAM_FACTORY, definitions: { teams: [DUO_TEAM] } });
-
-/** An active manager whose Duo team works ticket 1 from lead thread lead-1. */
-const startedTeam = (factory: Factory) =>
-  Effect.gen(function* () {
-    factory.boards.push(board([{ number: 1, columnId: READY }]));
-    const manager = yield* activeManager(factory);
-    const assignment = (yield* factory.service.pickup(manager.threadId!, {
-      ...START,
-      issueNumber: 1,
-      team: { preset: "Duo", members: [] },
-    }))!;
-    return { manager, assignment, lead: ThreadId.make("lead-1") };
-  });
-
-/**
- * Rewrites an assignment as one commissioned before teams came from the factory config: staffed
- * by role from the Duo preset, with no team snapshot.
- */
-const asLegacyTeam = (assignmentId: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`UPDATE factory_assignments
-        SET team_json=${JSON.stringify({ preset: "Duo", members: DUO.members })}
-        WHERE id=${assignmentId}`;
-  });
-
-const workspace = (service: Service) =>
-  service.subscribeWorkspace({}).pipe(
-    Stream.take(1),
-    Stream.runCollect,
-    Effect.map((feeds) => feeds[0]!),
-  );
-
-describe("FactoryService teams", () => {
-  it.effect("staffs the factory team an older preset name matches, and snapshots it", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeTeamFactory;
-        const { assignment } = yield* startedTeam(factory);
-
-        // The assignment keeps the whole snapshot...
-        const sql = yield* SqlClient.SqlClient;
-        const stored = yield* sql<{ team_json: string }>`SELECT team_json FROM factory_assignments
-            WHERE id=${assignment.id}`;
-        assert.deepStrictEqual(JSON.parse(stored[0]!.team_json), {
-          preset: "duo",
-          members: [],
-          definition: DUO_TEAM,
-        });
-        // ...but sends only its shape, so no event carries every member's brief.
-        const summarized = {
-          preset: "duo",
-          members: [],
-          summary: {
-            name: "Duo",
-            members: [
-              { name: "Implementer", count: 1 },
-              { name: "Reviewer", count: 1 },
-            ],
-            mayEditProtectedPaths: false,
-          },
-        };
-        assert.deepStrictEqual(assignment.team, summarized);
-        const [listed] = yield* factory.service.listAssignments({});
-        assert.deepStrictEqual(listed!.team, summarized);
-        assert.include(
-          factory.attemptStarts[0]!.prompt,
-          "# Team\n\nDuo\n\nImplement, then review before the pull request.",
-        );
-      }),
-    ),
-  );
-
-  it.effect(
-    "adds a manager's team of definition copies, refusing other models and duplicates",
-    () =>
-      withDatabase(
-        Effect.gen(function* () {
-          const factory = yield* makeTeamFactory;
-          const { service, configStore } = factory;
-          const manager = yield* activeManager(factory);
-          const opus = { driver: ProviderDriverKind.make("claudeAgent"), model: "claude-opus-5-5" };
-          const gpt = { driver: ProviderDriverKind.make("codex"), model: "gpt-5.5" };
-          const lead = {
-            id: "default",
-            name: "Default lead",
-            models: { dynamic: true, models: [opus] },
-            instructions: "Keep PRs small.",
-          };
-          const reviewer = {
-            id: "reviewer",
-            name: "Reviewer",
-            models: { dynamic: false, models: [opus] },
-            description: "Review the diff.",
-          };
-          yield* configStore.writeSettings({ version: 1, modelPool: [opus], recoveryAllowance: 1 });
-          yield* configStore.writeLead(lead);
-          yield* configStore.writeWorker(reviewer);
-          yield* configStore.writeWorker({
-            id: "coder",
-            name: "Coder",
-            models: { dynamic: false, models: [gpt] },
-            description: "Write the code.",
-          });
-
-          const created = yield* service.createTeam(manager.threadId!, {
-            name: "Review pair",
-            useWhen: "Risky changes.",
-            workflow: "Both review before the pull request.",
-            members: [
-              { workerId: "reviewer", count: 1 },
-              { workerId: "reviewer", count: 1, name: "Second opinion" },
-            ],
-          });
-          assert.deepStrictEqual(created, {
-            id: "review-pair",
-            name: "Review pair",
-            useWhen: "Risky changes.",
-            workflow: "Both review before the pull request.",
-            mayEditProtectedPaths: false,
-            createdBy: "manager",
-            lead,
-            members: [
-              { ...reviewer, count: 1 },
-              { ...reviewer, id: "second-opinion", name: "Second opinion", count: 1 },
-            ],
-          });
-          // A team holds copies: editing the worker later leaves the team as it was saved.
-          yield* configStore.writeWorker({ ...reviewer, description: "Review everything." });
-          const savedTeam = (yield* configStore.read).teams.find(
-            (team) => team.id === "review-pair",
-          );
-          assert.deepStrictEqual(savedTeam, created);
-          const [logged] = yield* service.listLog({ managerId: manager.id });
-          assert.strictEqual(logged!.kind, "team");
-          assert.strictEqual(logged!.reason, "Review pair");
-
-          const outside = yield* service
-            .createTeam(manager.threadId!, {
-              name: "Codex pair",
-              useWhen: "Anything.",
-              workflow: "",
-              members: [{ workerId: "coder", count: 2 }],
-            })
-            .pipe(Effect.flip);
-          assert.deepInclude(outside, {
-            reason: "invalid",
-            message:
-              'codex/gpt-5.5 is not in the model pool. Add it to the pool first, or remove it from the member "Coder".',
-          });
-          const duplicate = yield* service
-            .createTeam(manager.threadId!, {
-              name: "Review pair",
-              useWhen: "Again.",
-              workflow: "",
-              members: [{ workerId: "reviewer", count: 1 }],
-            })
-            .pipe(Effect.flip);
-          assert.strictEqual(duplicate.reason, "conflict");
-          // Neither refused team was written; the harness's own teams are not this test's concern.
-          assert.deepStrictEqual(
-            (yield* configStore.read).teams
-              .filter((team) => team.name === "Review pair" || team.name === "Codex pair")
-              .map((team) => team.id),
-            ["review-pair"],
-          );
-        }),
-      ),
-  );
-});
-
-describe("FactoryService delegation", () => {
-  it.effect("on a team staffed by role, plans a worker it has room for on an allowed model", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeTeamFactory;
-        const { service } = factory;
-        const { assignment, lead } = yield* startedTeam(factory);
-        yield* asLegacyTeam(assignment.id);
-
-        const verifier = yield* service
-          .planDelegation(lead, { role: "verifier", task: "Run the checks." })
-          .pipe(Effect.flip);
-        assert.strictEqual(verifier.reason, "invalid");
-        const offList = yield* service
-          .planDelegation(lead, { role: "reviewer", task: "Review it.", modelSelection: OPUS })
-          .pipe(Effect.flip);
-        assert.strictEqual(offList.reason, "invalid");
-
-        const plan = yield* service.planDelegation(lead, {
-          role: "implementer",
-          task: "Guard the empty list in List.tsx.",
-        });
-        assert.strictEqual(plan.role, "implementer");
-        assert.strictEqual(plan.title, "Implementer: Ticket 1");
-        assert.deepStrictEqual(plan.modelSelection, SONNET);
-        assert.deepStrictEqual(plan.allowedModels, [SONNET, OPUS]);
-        for (const heading of [
-          "# Implementer",
-          "## What you hand back",
-          "## Sub-agents and models",
-        ])
-          assert.include(plan.task, heading);
-        assert.include(plan.task, "- claude/claude-sonnet-5\n- claude/claude-opus-5-5");
-        assert.include(plan.task, START.completionCondition);
-        assert.include(plan.task, "- AGENTS.md");
-        assert.isTrue(plan.task.endsWith("\n\n# Task\n\nGuard the empty list in List.tsx."));
-        assert.notInclude(plan.task, "{{");
-
-        const reviewer = yield* service.planDelegation(lead, {
-          role: "reviewer",
-          task: "Review it.",
-          title: "Review the guard",
-        });
-        assert.strictEqual(reviewer.title, "Review the guard");
-        assert.deepStrictEqual(reviewer.allowedModels, [SONNET]);
-        assert.deepStrictEqual(yield* memberRows, [
-          {
-            thread_id: "lead-1",
-            assignment_id: assignment.id,
-            role: "lead",
-            parent_thread_id: "thread-2",
-            joined: "created",
-          },
-        ]);
-
-        const member = yield* service.recordMember(lead, {
-          threadId: ThreadId.make("worker-1"),
-          role: "implementer",
-          modelSelection: plan.modelSelection,
-          joined: "created",
-        });
-        assert.deepStrictEqual(member, {
-          threadId: ThreadId.make("worker-1"),
-          managerId: assignment.managerId,
-          assignmentId: assignment.id,
-          role: "implementer",
-          parentThreadId: lead,
-          joined: "created",
-          takenOver: false,
-          offPool: false,
-          endedAt: null,
-        });
-        assert.deepStrictEqual(
-          (yield* workspace(service)).members.map((row) => row.threadId),
-          ["lead-1", "worker-1"],
-        );
-
-        const busy = yield* service
-          .planDelegation(lead, { role: "implementer", task: "Another change." })
-          .pipe(Effect.flip);
-        assert.strictEqual(busy.reason, "conflict");
-        assert.strictEqual(busy.message, "The team allows 1 implementer and all are busy.");
-      }),
-    ),
-  );
-});
-
 describe("FactoryService observed threads", () => {
   it.effect("joins a sub-agent under its parent's role and member, never off the pool", () =>
     withDatabase(
       Effect.gen(function* () {
         const factory = yield* makeTeamFactory;
         const { service, sentMessages } = factory;
-        const { manager, lead } = yield* startedTeam(factory);
+        const { manager, lead, mark, sentBefore } = yield* startedTeam(factory);
         yield* service.recordMember(lead, {
           threadId: ThreadId.make("worker-1"),
           role: "worker",
@@ -3196,7 +2351,7 @@ describe("FactoryService observed threads", () => {
             member.offPool,
           ]),
           [
-            ["lead-1", "lead", undefined, "thread-2", "created", false],
+            ["lead-1", "lead", undefined, manager.threadId, "created", false],
             // The member name is stored as the team spells it.
             ["worker-1", "worker", "Reviewer", "lead-1", "created", false],
             ["sub-1", "lead", undefined, "lead-1", "observed", false],
@@ -3204,9 +2359,9 @@ describe("FactoryService observed threads", () => {
             ["sub-2", "worker", "Reviewer", "worker-1", "observed", false],
           ],
         );
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup"]);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), []);
         yield* service.sweep;
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
       }),
     ),
   );
@@ -3218,7 +2373,7 @@ describe("FactoryService checklist", () => {
       Effect.gen(function* () {
         const factory = yield* makeTeamFactory;
         const { service } = factory;
-        const { assignment, lead } = yield* startedTeam(factory);
+        const { assignment, lead, mark } = yield* startedTeam(factory);
         assert.deepStrictEqual(assignment.checklist, []);
         assert.isNull(assignment.digest);
 
@@ -3249,174 +2404,13 @@ describe("FactoryService checklist", () => {
           },
         ]);
         assert.strictEqual(feed.managers[0]!.waitingOnYou, 0);
-        assert.deepStrictEqual(yield* logKinds(service, assignment.managerId), ["pickup"]);
+        assert.deepStrictEqual(yield* logKinds(service, assignment.managerId, mark), []);
 
         const tooLong = Array.from({ length: 21 }, (_, index) => ({
           text: `Step ${index}`,
           state: "not-started",
         }));
         assert.isTrue(Option.isNone(decodeChecklistInput({ steps: tooLong })));
-      }),
-    ),
-  );
-});
-
-const PROTECTED_FILES = ["src/list.tsx", "apps/web/AGENTS.md", ".satellite/factory/roles/lead.md"];
-
-describe("FactoryService control paths", () => {
-  it.effect("holds a pull request that touches protected paths until a new push clears it", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeTeamFactory;
-        const { service, threadRuns, pullRequestFiles, fileReads, sentMessages } = factory;
-        const { manager, lead } = yield* startedTeam(factory);
-        pullRequestFiles.set(7, PROTECTED_FILES);
-        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
-
-        yield* service.reconcileThread(lead);
-        const held = (yield* service.assignmentForThread(lead))!;
-        assert.strictEqual(held.state, "waiting-user");
-        assert.strictEqual(
-          held.waitingReason,
-          "Pull request #7 changes protected paths: apps/web/AGENTS.md.",
-        );
-        assert.deepStrictEqual(held.controlViolations, [
-          {
-            pullRequest: { host: "github.com", repository: "acme/app", number: 7 },
-            paths: ["apps/web/AGENTS.md"],
-          },
-        ]);
-        assert.deepStrictEqual(fileReads, [
-          { projectId: PROJECT_ID, host: "github.com", repository: "acme/app", number: 7 },
-        ]);
-        const leadText =
-          "Pull request #7 changes protected paths (apps/web/AGENTS.md). Revert those changes; the factory cannot send this to the user as ready.";
-        assert.deepStrictEqual(
-          sentMessages.map((message) => [message.threadId, message.text]),
-          [[lead, leadText]],
-        );
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["control"]);
-
-        // A claim waits behind the protected paths rather than going to the user's review.
-        const claimed = yield* service.claimComplete(lead, {
-          evidence: "Tests pass.",
-          pullRequests: [{ host: "github.com", repository: "acme/app", number: 7 }],
-        });
-        assert.strictEqual(claimed.state, "waiting-user");
-        assert.strictEqual(claimed.waitingReason, held.waitingReason);
-
-        yield* service.reconcileThread(lead);
-        assert.strictEqual(fileReads.length, 1);
-
-        yield* service.sweep;
-        assert.strictEqual(sentMessages.at(-1)!.threadId, manager.threadId);
-        assert.strictEqual(sentMessages.at(-1)!.text, `Assignment Ticket 1: ${leadText}`);
-
-        pullRequestFiles.set(7, ["src/list.tsx"]);
-        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-2")] }));
-        yield* service.reconcileThread(lead);
-        const cleared = (yield* service.assignmentForThread(lead))!;
-        assert.deepStrictEqual(cleared.controlViolations, []);
-        assert.strictEqual(cleared.state, "waiting-user");
-        assert.strictEqual(cleared.waitingReason, "Pull requests await the user's review: #7.");
-      }),
-    ),
-  );
-
-  it.effect("returns an unclaimed assignment to work once its pull request is clean", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeTeamFactory;
-        const { service, threadRuns, pullRequestFiles } = factory;
-        const { lead } = yield* startedTeam(factory);
-        pullRequestFiles.set(7, PROTECTED_FILES);
-        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
-        yield* service.reconcileThread(lead);
-        assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "waiting-user");
-
-        pullRequestFiles.set(7, []);
-        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-2")] }));
-        yield* service.reconcileThread(lead);
-        const active = (yield* service.assignmentForThread(lead))!;
-        assert.strictEqual(active.state, "active");
-        assert.isNull(active.waitingReason);
-        assert.deepStrictEqual(active.controlViolations, []);
-      }),
-    ),
-  );
-
-  it.effect("skips the check for a team that may edit protected paths", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeTeamFactory;
-        const { service, threadRuns, pullRequestFiles, fileReads, sentMessages } = factory;
-        const { assignment, lead } = yield* startedTeam(factory);
-        const sql = yield* SqlClient.SqlClient;
-        // The snapshot an assignment keeps of a team from definitions, here an exempt one.
-        const exempt = {
-          preset: "workflow",
-          members: [],
-          definition: {
-            id: "workflow",
-            name: "Workflow",
-            useWhen: "The ticket changes how work is checked.",
-            workflow: "",
-            mayEditProtectedPaths: true,
-            createdBy: "user",
-            lead: {
-              id: "default",
-              name: "Default lead",
-              models: { dynamic: true, models: [] },
-              instructions: "",
-            },
-            members: [
-              {
-                id: "implementer",
-                name: "Implementer",
-                models: { dynamic: true, models: [] },
-                description: "Implement it.",
-                count: 1,
-              },
-            ],
-          },
-        };
-        yield* sql`UPDATE factory_assignments SET team_json=${JSON.stringify(exempt)}
-            WHERE id=${assignment.id}`;
-        pullRequestFiles.set(7, PROTECTED_FILES);
-        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
-
-        yield* service.reconcileThread(lead);
-
-        const unchecked = (yield* service.assignmentForThread(lead))!;
-        assert.strictEqual(unchecked.state, "active");
-        assert.deepStrictEqual(unchecked.controlViolations, []);
-        assert.deepStrictEqual(fileReads, []);
-        assert.deepStrictEqual(sentMessages, []);
-      }),
-    ),
-  );
-
-  it.effect("leaves a pull request unchecked when its files cannot be read", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeTeamFactory;
-        const { service, threadRuns, pullRequestFiles, fileReads, sentMessages, controls } =
-          factory;
-        const { manager, lead } = yield* startedTeam(factory);
-        pullRequestFiles.set(7, PROTECTED_FILES);
-        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
-        controls.fileReadFailures = 1;
-
-        yield* service.reconcileThread(lead);
-        const unchanged = (yield* service.assignmentForThread(lead))!;
-        assert.strictEqual(unchanged.state, "active");
-        assert.deepStrictEqual(unchanged.controlViolations, []);
-        assert.deepStrictEqual(sentMessages, []);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), []);
-
-        yield* service.reconcileThread(lead);
-        assert.strictEqual(fileReads.length, 2);
-        assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "waiting-user");
       }),
     ),
   );
@@ -3430,7 +2424,7 @@ describe("FactoryService findings", () => {
         Effect.gen(function* () {
           const factory = yield* makeTeamFactory;
           const { service, sentMessages } = factory;
-          const { manager, assignment, lead } = yield* startedTeam(factory);
+          const { manager, assignment, lead, mark } = yield* startedTeam(factory);
           yield* asLegacyTeam(assignment.id);
           const worker = ThreadId.make("worker-1");
           yield* service.recordMember(lead, {
@@ -3450,7 +2444,7 @@ describe("FactoryService findings", () => {
           assert.isFalse(fromWorker.escalated);
           assert.isNull(fromWorker.uncertainty);
           assert.isNull(fromWorker.draftId);
-          assert.deepStrictEqual(yield* wakeReasons(service, manager.id), []);
+          assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), []);
 
           const fromLead = yield* service.recordFinding(lead, {
             class: "project",
@@ -3461,7 +2455,7 @@ describe("FactoryService findings", () => {
           });
           assert.isTrue(fromLead.escalated);
           assert.strictEqual(fromLead.workaround, "Run it locally.");
-          assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["finding"]);
+          assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["finding"]);
           const [wake] = yield* service.listLog({ managerId: manager.id });
           assert.deepStrictEqual(wake!.payload, {
             assignmentId: assignment.id,
@@ -3470,7 +2464,7 @@ describe("FactoryService findings", () => {
             summary: "CI skips the e2e suite on forks",
           });
           assert.deepStrictEqual(
-            (yield* logKinds(service, manager.id)).filter((kind) => kind === "finding"),
+            (yield* logKinds(service, manager.id, mark)).filter((kind) => kind === "finding"),
             ["finding", "finding"],
           );
 
@@ -3509,7 +2503,7 @@ describe("FactoryService retro", () => {
         Effect.gen(function* () {
           const factory = yield* makeFactory;
           const { service, sentMessages } = factory;
-          const { manager, assignment, lead } = yield* startedAssignment(factory);
+          const { manager, assignment, lead, mark } = yield* startedAssignment(factory);
           const verdict = { fit: "good", reason: "One implementer was enough." } as const;
 
           const tooEarly = yield* service.retroDone(lead).pipe(Effect.flip);
@@ -3526,10 +2520,11 @@ describe("FactoryService retro", () => {
           assert.strictEqual(done.state, "retro");
           assert.isNotNull(done.retro.teamDoneAt);
           assert.isNull(done.retro.managerDoneAt);
-          assert.deepStrictEqual(yield* wakeReasons(service, manager.id), [
+          assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), [
             "retro",
             "manager-retro",
           ]);
+
           const [wake] = yield* service.listLog({ managerId: manager.id });
           assert.deepStrictEqual(wake!.payload, {
             assignmentId: assignment.id,
@@ -3617,7 +2612,7 @@ describe("FactoryService ticket drafts", () => {
               { number: 4, columnId: IN_PROGRESS, title: "Upgrade the date library" },
             ]),
           );
-          const manager = yield* activeManager(factory);
+          const { manager, mark } = yield* setupDone(factory, yield* activeManager(factory));
           const assignment = (yield* startTicket(factory, manager.threadId!))!;
           const lead = ThreadId.make("lead-1");
           yield* service.claimComplete(lead, { evidence: "Fixed without a pull request." });
@@ -3661,7 +2656,7 @@ describe("FactoryService ticket drafts", () => {
               url: null,
             },
           ]);
-          assert.strictEqual((yield* logKinds(service, manager.id)).at(-1), "draft");
+          assert.strictEqual((yield* logKinds(service, manager.id, mark)).at(-1), "draft");
 
           const unknown = yield* service
             .draftTicket(manager.threadId!, { ...DRAFT, title: "Other", findingIds: ["missing"] })
@@ -4038,8 +3033,6 @@ describe("FactoryService applied drafts", () => {
   );
 });
 
-const VERDICT = { fit: "good", reason: "The team fit the work." } as const;
-
 /** Claims ticket 1 with nothing open, so the assignment goes straight to its retro. */
 const toRetro = (factory: Factory, lead: ThreadId) =>
   factory.service.claimComplete(lead, { evidence: "Fixed without a pull request." });
@@ -4089,7 +3082,7 @@ describe("FactoryService skipped team retro", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        const { manager, assignment, lead, mark } = yield* startedAssignment(factory);
         yield* toRetro(factory, lead);
         threadRuns.set(lead, idleRun({ deleted: true }));
 
@@ -4109,7 +3102,10 @@ describe("FactoryService skipped team retro", () => {
         );
 
         yield* service.sweep;
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["retro", "manager-retro"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), [
+          "retro",
+          "manager-retro",
+        ]);
         const completed = yield* service.complete(manager.threadId!, {
           assignmentId: assignment.id,
           teamVerdict: VERDICT,
@@ -4469,280 +3465,6 @@ describe("FactoryService stats", () => {
   );
 });
 
-/** A team whose lead picks its model, with a builder on a menu and a checker on a priority list. */
-const WEB_TEAM: FactoryTeamDefinition = {
-  id: "web",
-  name: "Web",
-  useWhen: "Web client work.",
-  workflow: "Build, then check.",
-  mayEditProtectedPaths: false,
-  createdBy: "user",
-  lead: {
-    id: "picker",
-    name: "Picker lead",
-    models: { dynamic: true, models: [refOf(SONNET), refOf(OPUS)] },
-    instructions: "",
-  },
-  members: [
-    {
-      id: "builder",
-      name: "Builder",
-      count: 1,
-      models: { dynamic: true, models: [refOf(SONNET), refOf(OPUS)] },
-      description: "Builds until: {{completionCondition}}",
-    },
-    {
-      id: "checker",
-      name: "Checker",
-      count: 2,
-      // GPT is not in the pool, so the checker runs Opus.
-      models: { dynamic: false, models: [refOf(GPT), refOf(OPUS)] },
-      description: "Checks the build.",
-    },
-  ],
-};
-
-const makeStaffingFactory = (concurrencyCap = 3) =>
-  makeHarness({
-    config: decodeConfig({ concurrencyCap, modelPool: [OPUS, SONNET] }),
-    definitions: { teams: [STANDARD_TEAM, WEB_TEAM] },
-  });
-
-const pickupRefusal = (factory: Factory, threadId: ThreadId, input: Partial<FactoryPickupInput>) =>
-  factory.service.pickup(threadId, { ...START, issueNumber: 1, ...input }).pipe(
-    Effect.flip,
-    Effect.map((failure) => failure.message),
-  );
-
-describe("FactoryService staffing from the factory config", () => {
-  it.effect("commissions a team by id, its lead on a model picked from the lead's list", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeStaffingFactory();
-        factory.boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
-        const threadId = manager.threadId!;
-
-        assert.strictEqual(
-          yield* pickupRefusal(factory, threadId, { teamId: "nope" }),
-          'There is no team "nope". Teams: standard, web.',
-        );
-        assert.strictEqual(
-          yield* pickupRefusal(factory, threadId, { teamId: "web", leadModel: GPT }),
-          "codex/gpt-6 is not one this team's lead may run. Choose from: claude/claude-sonnet-5, claude/claude-opus-5-5.",
-        );
-        // The Standard lead lists no models, so it runs the pool in order.
-        assert.strictEqual(
-          yield* pickupRefusal(factory, threadId, { teamId: "standard", leadModel: SONNET }),
-          "This team's lead runs its models in order, so it starts on claude/claude-opus-5-5.",
-        );
-        assert.strictEqual(
-          yield* pickupRefusal(factory, threadId, {
-            team: { preset: "custom", members: [{ role: "implementer", count: 1 }] },
-          }),
-          "Teams come from the factory config. Pick a team id from factory_definitions.",
-        );
-
-        const assignment = (yield* factory.service.pickup(threadId, {
-          ...START,
-          issueNumber: 1,
-          teamId: "web",
-          leadModel: OPUS,
-        }))!;
-        assert.deepStrictEqual(assignment.team, {
-          preset: "web",
-          members: [],
-          summary: {
-            name: "Web",
-            members: [
-              { name: "Builder", count: 1 },
-              { name: "Checker", count: 2 },
-            ],
-            mayEditProtectedPaths: false,
-          },
-        });
-        assert.deepStrictEqual(factory.attemptStarts[0]!.modelSelection, OPUS);
-      }),
-    ),
-  );
-
-  it.effect("staffs only the teams the manager's onboarding result lists", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeStaffingFactory();
-        factory.boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory, { ...RESULT, teamIds: ["web"] });
-
-        assert.strictEqual(
-          yield* pickupRefusal(factory, manager.threadId!, { teamId: "standard" }),
-          "You may not staff Standard. Your teams: web.",
-        );
-        // With no team asked for, the first team it may staff.
-        const assignment = (yield* startTicket(factory, manager.threadId!))!;
-        assert.strictEqual(assignment.team.preset, "web");
-        assert.deepStrictEqual(factory.attemptStarts[0]!.modelSelection, SONNET);
-      }),
-    ),
-  );
-
-  it.effect("delegates to a member by name, counting places without its sub-agents", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeStaffingFactory();
-        const { service } = factory;
-        factory.boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
-        yield* service.pickup(manager.threadId!, { ...START, issueNumber: 1, teamId: "web" });
-        const lead = ThreadId.make("lead-1");
-        const refused = (input: Omit<FactoryDelegateInput, "task">) =>
-          service.planDelegation(lead, { ...input, task: "Check it." }).pipe(
-            Effect.flip,
-            Effect.map((failure) => failure.message),
-          );
-
-        assert.strictEqual(
-          yield* refused({}),
-          "Name the team member to delegate to: Builder, Checker.",
-        );
-        assert.strictEqual(
-          yield* refused({ member: "Tester" }),
-          'Web has no member named "Tester". Its members: Builder, Checker.',
-        );
-        assert.strictEqual(
-          yield* refused({ member: "checker", modelSelection: SONNET }),
-          "Checker runs its models in order, so it starts on claude/claude-opus-5-5.",
-        );
-        const checker = yield* service.planDelegation(lead, {
-          member: "checker",
-          task: "Check it.",
-        });
-        assert.deepStrictEqual(
-          [checker.role, checker.member, checker.modelSelection, checker.allowedModels],
-          ["worker", "Checker", OPUS, [OPUS]],
-        );
-
-        const builder = yield* service.planDelegation(lead, {
-          member: "BUILDER",
-          task: "Add the button.",
-        });
-        assert.deepStrictEqual(
-          [builder.role, builder.member, builder.title, builder.modelSelection],
-          ["worker", "Builder", "Builder: Ticket 1", SONNET],
-        );
-        assert.deepStrictEqual(builder.allowedModels, [SONNET, OPUS]);
-        assert.isTrue(builder.task.startsWith(`Builds until: ${START.completionCondition}`));
-        assert.isTrue(builder.task.endsWith("\n\n# Task\n\nAdd the button."));
-        // The plan holds Builder's only place until its worker is recorded, so a second
-        // delegation planned meanwhile cannot take it too.
-        assert.strictEqual(
-          yield* refused({ member: "Builder" }),
-          "The team allows 1 × Builder and it is busy.",
-        );
-
-        yield* service.recordMember(lead, {
-          threadId: ThreadId.make("worker-1"),
-          role: "worker",
-          memberName: "Builder",
-          modelSelection: SONNET,
-          joined: "created",
-        });
-        yield* service.observeThread({
-          threadId: ThreadId.make("sub-1"),
-          parentThreadId: ThreadId.make("worker-1"),
-          modelSelection: SONNET,
-        });
-        assert.strictEqual(
-          yield* refused({ member: "Builder" }),
-          "The team allows 1 × Builder and it is busy.",
-        );
-        // The builder finished, but its sub-agent still runs: that takes no place.
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`UPDATE factory_members SET ended_at=${EPOCH} WHERE thread_id='worker-1'`;
-        const again = yield* service.planDelegation(lead, {
-          member: "Builder",
-          task: "Again.",
-          modelSelection: OPUS,
-        });
-        assert.deepStrictEqual([again.member, again.modelSelection], ["Builder", OPUS]);
-        assert.strictEqual(
-          (yield* service
-            .recordMember(lead, {
-              threadId: ThreadId.make("worker-2"),
-              role: "implementer",
-              modelSelection: SONNET,
-              joined: "created",
-            })
-            .pipe(Effect.flip)).message,
-          "Record the worker as role worker under one of the team's member names.",
-        );
-      }),
-    ),
-  );
-});
-
-describe("FactoryService capacity", () => {
-  it.effect("refuses new work once the environment is full across managers", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeStaffingFactory(2);
-        factory.boards.push(
-          board([
-            { number: 1, columnId: READY },
-            { number: 2, columnId: READY },
-          ]),
-        );
-        const manager = yield* activeManager(factory, { ...RESULT, concurrencyCap: 5 });
-        // Another project's manager already runs one assignment on this environment.
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO factory_managers(id,project_id,name,state,created_at,updated_at)
-            VALUES('other','project-2','Grace','active',${EPOCH},${EPOCH})`;
-        yield* sql`INSERT INTO factory_assignments(id,manager_id,project_id,title,brief,
-            completion_condition,source,complexity,state,team_json,created_at,updated_at)
-            VALUES('other-work','other','project-2','Elsewhere','','','user','small','active',
-            '{"preset":"custom","members":[]}',${EPOCH},${EPOCH})`;
-
-        yield* startTicket(factory, manager.threadId!, 1);
-        const status = yield* factory.service.status(manager.id);
-        assert.deepStrictEqual(
-          [status.concurrencyCap, status.activeCount, status.capacityFree],
-          [5, 1, false],
-        );
-        assert.strictEqual(
-          yield* pickupRefusal(factory, manager.threadId!, { issueNumber: 2 }),
-          "All 2 assignment slots on this environment are in use across its projects. Wait for one to finish.",
-        );
-      }),
-    ),
-  );
-
-  it.effect("refuses new work once the manager's own cap is reached", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeStaffingFactory(3);
-        factory.boards.push(
-          board([
-            { number: 1, columnId: READY },
-            { number: 2, columnId: READY },
-          ]),
-        );
-        const manager = yield* activeManager(factory, { ...RESULT, concurrencyCap: 1 });
-        assert.isTrue((yield* factory.service.status(manager.id)).capacityFree);
-
-        yield* startTicket(factory, manager.threadId!, 1);
-        const status = yield* factory.service.status(manager.id);
-        assert.deepStrictEqual(
-          [status.concurrencyCap, status.activeCount, status.capacityFree],
-          [1, 1, false],
-        );
-        assert.strictEqual(
-          yield* pickupRefusal(factory, manager.threadId!, { issueNumber: 2 }),
-          "All 1 assignment slots are in use. Wait for one to finish.",
-        );
-      }),
-    ),
-  );
-});
-
 describe("FactoryService manager definitions", () => {
   it.effect("creates a manager with its own copy of a definition, on that definition's model", () =>
     withDatabase(
@@ -4932,34 +3654,6 @@ describe("FactoryService manager models", () => {
           modelSelection: SONNET,
         });
         assert.deepStrictEqual(created.modelSelection, SONNET);
-      }),
-    ),
-  );
-});
-
-describe("FactoryService delegation holds", () => {
-  it.effect("lets a held place go once the hold lapses without a recorded worker", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeStaffingFactory();
-        const { service } = factory;
-        factory.boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
-        yield* service.pickup(manager.threadId!, { ...START, issueNumber: 1, teamId: "web" });
-        const lead = ThreadId.make("lead-1");
-
-        yield* service.planDelegation(lead, { member: "Builder", task: "Add the button." });
-        const busy = yield* service
-          .planDelegation(lead, { member: "Builder", task: "Add the button." })
-          .pipe(Effect.flip);
-        assert.strictEqual(busy.reason, "conflict");
-        // The first launch never recorded its worker; after five minutes the place is free.
-        yield* TestClock.adjust("5 minutes");
-        const retried = yield* service.planDelegation(lead, {
-          member: "Builder",
-          task: "Add the button.",
-        });
-        assert.strictEqual(retried.member, "Builder");
       }),
     ),
   );
