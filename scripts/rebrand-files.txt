@@ -220,6 +220,6 @@ packages/source-control-gitcafe/src/server/GitCafePullRequestProvider.ts
 packages/source-control-github/src/server/githubStackRebase.ts
 packages/ssh/src/auth.ts
 scripts/build-desktop-artifact.ts  # hand-edited
-scripts/build-npm-launcher.ts
+scripts/build-npm-launcher.ts  # hand-edited
 scripts/dev-runner.ts  # hand-edited
 scripts/npm-launcher/t3.mjs  # hand-edited
