@@ -58,14 +58,15 @@ const { affected, outputs } = decide(files, packages, false);
 // Changed test files, and the test files beside a changed source file
 // (foo.ts -> foo.test.ts, foo.browser.test.tsx). Vitest's import-graph
 // `related` reaches most of a package: one leaf server file pulled in 252 of
-// 406 server test files and took 7 minutes. CI runs the rest.
+// 406 server test files and took 7 minutes. CI runs the rest. Git's paths use
+// `/`, so a Windows join would list the same test a second time.
 const TEST = /\.test\.[cm]?[jt]sx?$/;
 const tests = new Set(code.filter((file) => TEST.test(file)));
 for (const file of code) {
   const dir = NodePath.dirname(file);
   const prefix = `${NodePath.basename(file).replace(CODE, "")}.`;
   for (const entry of NodeFS.readdirSync(NodePath.join(root, dir))) {
-    if (entry.startsWith(prefix) && TEST.test(entry)) tests.add(NodePath.join(dir, entry));
+    if (entry.startsWith(prefix) && TEST.test(entry)) tests.add(NodePath.posix.join(dir, entry));
   }
 }
 
