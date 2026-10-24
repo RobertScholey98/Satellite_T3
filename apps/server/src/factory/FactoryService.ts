@@ -906,12 +906,16 @@ const declinedAgainText = (violation: FactoryControlViolation) =>
  * Unallowed flags remain but the assignment is not held for them, as a fresh flag would hold it:
  * from work or from waiting on the user for something else.
  */
+// A spent recovery allowance waits on the user's decision about a dead lead; a hold would hide it.
+const HOLDABLE_WAITS: ReadonlySet<string | null> = new Set([null, "review", "question"]);
+
 const needsHold = (
   row: { readonly state: string; readonly waiting_kind: string | null },
   effective: ReadonlyArray<FactoryControlViolation>,
 ) =>
   effective.length > 0 &&
-  (row.state === "active" || (row.state === "waiting-user" && row.waiting_kind !== "control"));
+  (row.state === "active" ||
+    (row.state === "waiting-user" && HOLDABLE_WAITS.has(row.waiting_kind)));
 
 /** How the user answered an ask, as the manager and the lead are told it. */
 const answerText = (
@@ -3364,7 +3368,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         // A path the previous check of the same pull request did not flag holds the assignment.
         let flagged = false;
         const fresh: FactoryControlViolation[] = [];
-        // Declined paths a new snapshot still changes; only the lead hears, once per snapshot.
+        // Declined paths a new snapshot still changes: the lead hears once per snapshot, and the
+        // manager is not woken.
         const stillDeclined: FactoryControlViolation[] = [];
         for (const { key, version, ...violation } of results) {
           nextChecked[key] = version;
@@ -4424,11 +4429,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
               yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},waiting_kind=NULL,
                   waiting_reason=NULL WHERE id=${row.id}`;
               cleared = true;
-            } else if (
-              !inControl &&
-              flaggedAgain &&
-              (row.state === "active" || row.state === "waiting-user")
-            )
+            } else if (flaggedAgain && needsHold(row, effective))
               yield* sql`UPDATE factory_assignments SET ${enterState("waiting-user", at)},
                   waiting_kind='control',waiting_reason=${reason} WHERE id=${row.id}`;
             else if (inControl)

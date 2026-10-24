@@ -557,6 +557,53 @@ describe("FactoryService control paths", () => {
     ),
   );
 
+  it.effect("leaves a spent recovery waiting on the user when a revoked file is held", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles } = factory;
+        const { manager, assignment, lead } = yield* startedTeam(factory);
+        const pullRequests = [pullRequest(7, false, "push-1")];
+        pullRequestFiles.set(7, ["AGENTS.md"]);
+        threadRuns.set(lead, idleRun({ pullRequests }));
+        yield* service.reconcileThread(lead);
+        const askId = (yield* service.assignmentForThread(lead))!.protectedPathAsks[0]!.id;
+        yield* answer(service, assignment, askId, "allow", "allow-1");
+
+        // The lead stalls, spends the one recovery, and stalls again.
+        threadRuns.set(lead, idleRun({ pullRequests, latestRunStatus: "failed" }));
+        yield* service.reconcileThread(lead);
+        yield* service.recover(manager.threadId!, {
+          assignmentId: assignment.id,
+          action: "rebrief",
+          brief: "Retry with the fixture.",
+        });
+        yield* service.reconcileThread(lead);
+        assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "stalled");
+
+        const spent = yield* service.recover(manager.threadId!, {
+          assignmentId: assignment.id,
+          action: "rebrief",
+          brief: "Split the work in two.",
+        });
+        assert.strictEqual(spent.state, "waiting-user");
+
+        const revoked = yield* answer(service, assignment, askId, "decline", "revoke-1");
+        assert.strictEqual(revoked.waitingReason, spent.waitingReason);
+        yield* service.reconcileThread(lead);
+        const waiting = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(waiting.state, "waiting-user");
+        assert.strictEqual(
+          waiting.waitingReason,
+          "Recovery allowance used; the manager recommends: Split the work in two.",
+        );
+        assert.deepStrictEqual(waiting.controlViolations, [
+          { pullRequest: PR_7, paths: ["AGENTS.md"] },
+        ]);
+      }),
+    ),
+  );
+
   it.effect("refuses an answer to an ask the assignment does not have", () =>
     withDatabase(
       Effect.gen(function* () {
