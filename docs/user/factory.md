@@ -97,14 +97,14 @@ above the teams; narrower still, the team cards hide and **Back to manager** sta
 and team threads leave the sidebar while their manager runs; search and the command palette still
 find them.
 
-On the manager's thread, a **Settings** card below the details shows what you approved, plus the
-manager's model. **Edit** changes them: pickup columns and labels, the cap, which teams it may
-staff (none ticked means all), protected paths, your answers to its rules, and its model. A save
-tells the manager what changed, and a new model applies from its next turn. Lowering the cap below
-what is running cancels nothing; new work waits for room. Turning pickup on waits for **Start
-picking up**, as after approval. You can edit a paused manager's settings too; it hears about the
-changes when it resumes. If the settings changed elsewhere since you opened them, the save is
-refused; cancel and edit again.
+On the manager's thread, a **Settings** card below the details shows what you approved. **Edit**
+changes it: pickup columns and labels, the cap, which teams it may staff (none ticked means all),
+protected paths, and your answers to its rules. A save tells the manager what changed. To change the
+manager's model, use the model switch in its thread's composer. Lowering the cap below what is
+running cancels nothing; new work waits for room. Turning pickup on waits for **Start picking up**,
+as after approval. You can edit a paused manager's settings too; it hears about the changes when it
+resumes. If the settings changed elsewhere since you opened them, the save is refused; cancel and
+edit again.
 
 Below that, a **Pull requests** card lists the teams' open pull requests, the ones ready to merge
 first, the longest waiting at the top. **Merge** appears once the lead has claimed the work done,

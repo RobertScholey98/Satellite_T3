@@ -2,33 +2,28 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   type EnvironmentId,
   FACTORY_CONCURRENCY_CAP_MAX,
-  type FactoryConfig,
   type FactoryManager,
   type FactoryOnboardingResult,
   type FactoryPickupColumn,
   issueReadyColumnIds,
-  type ModelSelection,
   type ProjectId,
 } from "@t3tools/contracts";
 import { XIcon } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { randomUUID } from "~/lib/utils";
-import { useEnvironmentProviders } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { issuesEnvironment } from "../work/issuesState";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Spinner } from "../ui/spinner";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { useFactoryDefinitions } from "./factoryDefinitionsState";
 import {
   effectiveManagerCap,
-  managerModelChoices,
   managerSettingsDirty,
   managerSettingsDraft,
   managerSettingsProblem,
@@ -37,7 +32,6 @@ import {
   type ManagerSettingsDraft,
 } from "./factoryManagerSettings.logic";
 import { sameColumn } from "./factoryOnboardingCard.logic";
-import { factoryModelOptions } from "./FactoryPageConfig";
 import {
   factoryEnvironment,
   factoryErrorMessage,
@@ -55,9 +49,7 @@ interface ReadyBoard {
   readonly readyColumns: ReadonlyArray<{ readonly id: string; readonly title: string }>;
 }
 
-const modelValue = (model: ModelSelection) => `${model.instanceId}\n${model.model}`;
-
-/** The approved manager's onboarding result and model, to read and edit; nothing before approval. */
+/** The approved manager's onboarding result, to read and edit; nothing before approval. */
 export function FactoryManagerSettingsCard(props: {
   readonly environmentId: EnvironmentId;
   readonly managerId: string;
@@ -86,11 +78,7 @@ function ManagerSettings(props: {
   const updateSettings = useAtomCommand(factoryEnvironment.updateSettings, {
     reportFailure: false,
   });
-  const getConfig = useAtomCommand(factoryEnvironment.getConfig, { reportFailure: false });
   const definitions = useFactoryDefinitions(environmentId).view;
-  const providers = useEnvironmentProviders().get(environmentId);
-  // Only for the instance preferences the model choices follow; the cap comes from the feed.
-  const [environment, setEnvironment] = useState<FactoryConfig | null>(null);
   const [draft, setDraft] = useState<ManagerSettingsDraft | null>(null);
   // The version the form was opened at, so a save over a change made meanwhile is refused.
   const [openedAt, setOpenedAt] = useState(manager.updatedAt);
@@ -110,28 +98,8 @@ function ManagerSettings(props: {
     (assignment) => assignment.managerId === manager.id && takesAssignmentSlot(assignment),
   ).length;
 
-  useEffect(() => {
-    let current = true;
-    void getConfig({ environmentId, input: {} }).then((loaded) => {
-      if (current && loaded._tag === "Success") setEnvironment(loaded.value.environment);
-    });
-    return () => {
-      current = false;
-    };
-  }, [environmentId, getConfig]);
-
   const paused = manager.state === "manager-paused" || manager.state === "project-paused";
   const teams = definitions?.teams ?? [];
-  const models = managerModelChoices(
-    definitions?.settings.modelPool ?? [],
-    factoryModelOptions(providers ?? []),
-    environment?.instancePreferences ?? {},
-  );
-  const modelLabel = (model: ModelSelection | null) =>
-    model === null
-      ? "The pool's manager model"
-      : (models.find((choice) => modelValue(choice.selection) === modelValue(model))?.label ??
-        `${model.model} (${model.instanceId})`);
   const columnLabel = (column: FactoryPickupColumn) =>
     column.title === undefined
       ? column.columnId
@@ -155,15 +123,11 @@ function ManagerSettings(props: {
     setError(null);
     setNewPath("");
     setOpenedAt(manager.updatedAt);
-    setDraft(managerSettingsDraft(result, manager.modelSelection));
+    setDraft(managerSettingsDraft(result));
   };
   const save = async (next: ManagerSettingsDraft) => {
     setSaving(true);
     setError(null);
-    const modelChanged =
-      next.model !== null &&
-      (manager.modelSelection === null ||
-        modelValue(next.model) !== modelValue(manager.modelSelection));
     const saved = await updateSettings({
       environmentId,
       input: {
@@ -171,7 +135,6 @@ function ManagerSettings(props: {
         expectedUpdatedAt: openedAt,
         managerId: manager.id,
         result: managerSettingsResult(result, next),
-        ...(modelChanged && next.model !== null ? { modelSelection: next.model } : {}),
       },
     })
       .then(unwrapFactoryResult)
@@ -240,7 +203,6 @@ function ManagerSettings(props: {
               {rule.answer}
             </Row>
           ))}
-          <Row term="Model">{modelLabel(manager.modelSelection)}</Row>
         </dl>
       </section>
     );
@@ -251,7 +213,7 @@ function ManagerSettings(props: {
     setDraft(next);
   };
   const problem = managerSettingsProblem(result, draft);
-  const dirty = managerSettingsDirty(result, manager.modelSelection, draft);
+  const dirty = managerSettingsDirty(result, draft);
   const disabled = saving || !canEdit;
   const addPath = () => {
     const path = newPath.trim();
@@ -259,11 +221,6 @@ function ManagerSettings(props: {
     update({ ...draft, controlPaths: [...draft.controlPaths, { path, reason: "" }] });
     setNewPath("");
   };
-  const modelChoices =
-    draft.model === null ||
-    models.some((choice) => modelValue(choice.selection) === modelValue(draft.model!))
-      ? models
-      : [{ selection: draft.model, label: modelLabel(draft.model) }, ...models];
   return (
     <section aria-label="Manager settings" className={`${FACTORY_CARD_CLASS} space-y-3 p-3.5`}>
       <h3 className="text-2xs font-medium text-muted-foreground select-none">Settings</h3>
@@ -439,28 +396,6 @@ function ManagerSettings(props: {
           ))}
         </Field>
       )}
-      <Field title="Model">
-        <Select
-          value={draft.model === null ? "" : modelValue(draft.model)}
-          disabled={disabled}
-          onValueChange={(value) => {
-            const choice = modelChoices.find((entry) => modelValue(entry.selection) === value);
-            if (choice !== undefined) update({ ...draft, model: choice.selection });
-          }}
-        >
-          <SelectTrigger size="sm" aria-label="Manager model">
-            <SelectValue>{() => modelLabel(draft.model)}</SelectValue>
-          </SelectTrigger>
-          <SelectPopup align="start" alignItemWithTrigger={false}>
-            {modelChoices.map((choice) => (
-              <SelectItem key={modelValue(choice.selection)} value={modelValue(choice.selection)}>
-                {choice.label}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
-        <p className="text-2xs text-muted-foreground">Applies from the manager's next turn.</p>
-      </Field>
       {error === null ? null : (
         <p role="alert" className="text-xs text-destructive-foreground">
           {error}

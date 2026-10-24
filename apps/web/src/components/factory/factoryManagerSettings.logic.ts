@@ -1,14 +1,10 @@
 import {
   FACTORY_CONCURRENCY_CAP_MAX,
-  type FactoryConfig,
   type FactoryControlPath,
-  type FactoryModelRef,
   type FactoryOnboardingResult,
   type FactoryPickupColumn,
-  type ModelSelection,
 } from "@t3tools/contracts";
 
-import type { FactoryModelOption } from "./FactoryPageConfig";
 import { sameColumn } from "./factoryOnboardingCard.logic";
 
 /** What the settings card edits. Text fields hold what the user typed until it is saved. */
@@ -25,13 +21,9 @@ export interface ManagerSettingsDraft {
   readonly controlPaths: ReadonlyArray<FactoryControlPath>;
   /** By rule id. */
   readonly answers: Readonly<Record<string, string>>;
-  readonly model: ModelSelection | null;
 }
 
-export function managerSettingsDraft(
-  result: FactoryOnboardingResult,
-  model: ModelSelection | null,
-): ManagerSettingsDraft {
+export function managerSettingsDraft(result: FactoryOnboardingResult): ManagerSettingsDraft {
   return {
     purpose: result.purpose,
     pickupEnabled: result.pickup.enabled,
@@ -42,7 +34,6 @@ export function managerSettingsDraft(
     teamIds: result.teamIds,
     controlPaths: result.controlPaths,
     answers: Object.fromEntries(result.rules.map((rule) => [rule.id, rule.answer])),
-    model,
   };
 }
 
@@ -93,16 +84,11 @@ export function managerSettingsResult(
   };
 }
 
-const sameModel = (a: ModelSelection | null, b: ModelSelection | null) =>
-  a?.instanceId === b?.instanceId && a?.model === b?.model;
-
 export function managerSettingsDirty(
   stored: FactoryOnboardingResult,
-  storedModel: ModelSelection | null,
   draft: ManagerSettingsDraft,
 ): boolean {
   return (
-    !sameModel(storedModel, draft.model) ||
     JSON.stringify(managerSettingsResult(stored, draft)) !== JSON.stringify(stored) ||
     // A cap the user typed but that is out of range still counts as an edit.
     draft.concurrencyCap.trim() !== String(stored.concurrencyCap)
@@ -124,23 +110,4 @@ export function effectiveManagerCap(managerCap: number, environmentCap: number) 
     cap: Math.min(managerCap, environmentCap),
     limitedByEnvironment: environmentCap < managerCap,
   };
-}
-
-/**
- * The pool as the server resolves it: each model on its driver's preferred instance when that can
- * run it, else the first instance that can.
- */
-export function managerModelChoices(
-  pool: ReadonlyArray<FactoryModelRef>,
-  options: ReadonlyArray<FactoryModelOption>,
-  preferences: FactoryConfig["instancePreferences"],
-): ReadonlyArray<FactoryModelOption> {
-  return pool.flatMap((ref) => {
-    const runs = options.filter(
-      (option) => option.driverKind === ref.driver && option.selection.model === ref.model,
-    );
-    const preferred = preferences[ref.driver];
-    const chosen = runs.find((option) => option.selection.instanceId === preferred) ?? runs[0];
-    return chosen === undefined ? [] : [chosen];
-  });
 }
