@@ -190,12 +190,14 @@ function ManagerSettings(props: {
           <h3 className="flex-1 text-2xs font-medium text-muted-foreground select-none">
             Settings
           </h3>
-          <Button variant="ghost" size="xs" disabled={!canEdit || paused} onClick={edit}>
+          <Button variant="ghost" size="xs" disabled={!canEdit} onClick={edit}>
             Edit
           </Button>
         </div>
         {paused ? (
-          <p className="text-2xs text-muted-foreground">Resume the manager to edit its settings.</p>
+          <p className="text-2xs text-muted-foreground">
+            Paused. Changes you save apply when the manager resumes.
+          </p>
         ) : null}
         <dl className="space-y-1.5 text-xs">
           {result.purpose === "" ? null : <Row term="Purpose">{result.purpose}</Row>}
