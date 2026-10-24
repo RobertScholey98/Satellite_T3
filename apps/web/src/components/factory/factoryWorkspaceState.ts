@@ -106,6 +106,27 @@ const managerWaitingAtom = Atom.family((threadKey: string) =>
   }).pipe(Atom.withLabel(`web-factory-manager-waiting:${threadKey}`)),
 );
 
+// A boolean per thread, so a digest or checklist change re-renders no thread's timeline.
+const managerThreadAtom = Atom.family((threadKey: string) =>
+  Atom.make((get) => {
+    for (const [environmentId, feed] of get(workspaceFeedsAtom)) {
+      for (const manager of feed.managers) {
+        if (
+          manager.threadId !== null &&
+          scopedThreadKey(scopeThreadRef(environmentId, manager.threadId)) === threadKey
+        )
+          return true;
+      }
+    }
+    return false;
+  }).pipe(Atom.withLabel(`web-factory-manager-thread:${threadKey}`)),
+);
+
+/** Whether the thread is a manager's current thread on a factory environment. */
+export function useIsFactoryManagerThread(threadKey: string | null): boolean {
+  return useAtomValue(managerThreadAtom(threadKey ?? ""));
+}
+
 /** The workspace feed of an environment that has the factory; `undefined` elsewhere or until loaded. */
 export function useFactoryWorkspaceFeed(
   environmentId: EnvironmentId | null,
@@ -172,11 +193,13 @@ export async function createFactoryManagerFromDraft(input: {
   if (threadId === null) return input.onError("The manager's thread did not start.");
   setFactoryManagerDraft(input.draftId, false);
   input.onCreated({ ...manager, threadId });
-  const threadRef = scopeThreadRef(input.environmentId, threadId);
-  if (
-    !readEnvironmentSupportsPinning(input.environmentId) ||
-    !(await waitForThreadShell(threadRef))
-  )
+  await pinFactoryManagerThread(input.environmentId, threadId);
+}
+
+/** Pins a manager's thread at the top of the pinned threads, once the thread has arrived. */
+export async function pinFactoryManagerThread(environmentId: EnvironmentId, threadId: ThreadId) {
+  const threadRef = scopeThreadRef(environmentId, threadId);
+  if (!readEnvironmentSupportsPinning(environmentId) || !(await waitForThreadShell(threadRef)))
     return;
   const firstPinKey = readThreadShells().reduce<string | null>(
     (first, shell) =>
@@ -187,16 +210,27 @@ export async function createFactoryManagerFromDraft(input: {
         : shell.pinOrderKey,
     null,
   );
-  const orderKey = readEnvironmentSupportsPinReorder(input.environmentId)
+  const orderKey = readEnvironmentSupportsPinReorder(environmentId)
     ? (pinOrderKeyBetween(null, firstPinKey) ?? undefined)
     : undefined;
   await runAtomCommand(
     appAtomRegistry,
     threadEnvironment.pin,
     {
-      environmentId: input.environmentId,
+      environmentId,
       input: { threadId, ...(orderKey === undefined ? {} : { orderKey }) },
     },
     { label: "factory pin manager thread" },
+  );
+}
+
+/** Unpins a thread the manager has moved on from, such as its settled onboarding thread. */
+export async function unpinFactoryThread(environmentId: EnvironmentId, threadId: ThreadId) {
+  if (!readEnvironmentSupportsPinning(environmentId)) return;
+  await runAtomCommand(
+    appAtomRegistry,
+    threadEnvironment.unpin,
+    { environmentId, input: { threadId } },
+    { label: "factory unpin onboarding thread" },
   );
 }

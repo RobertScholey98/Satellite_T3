@@ -1,11 +1,12 @@
 import type {
   FactoryAssignment,
   FactoryAssignmentState,
+  FactoryDefinitionsView,
   FactoryDraftTicketResult,
   FactoryOperationError,
   FactoryRoleBrief,
   FactoryStatus,
-  FactoryWorkerRole,
+  FactoryRole,
   OrchestratorMcpDelegateTaskInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -13,6 +14,7 @@ import * as Effect from "effect/Effect";
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
+import { FactoryConfigStore } from "../config/FactoryConfigStore.ts";
 import { FactoryService } from "../FactoryService.ts";
 import { FactoryToolFailedError, FactoryToolkit } from "./tools.ts";
 
@@ -22,11 +24,13 @@ const toolFailure = ({ reason, message }: FactoryOperationError) =>
 const briefSource: Record<FactoryRoleBrief["source"], string> = {
   project: "this project's role file",
   environment: "the environment's role file",
-  default: "the built-in default",
+  default: "the built-in protocol",
+  definition: "the factory config's definition",
 };
 
 const NOT_A_MANAGER = "This thread is not an engineering manager.";
 const NOT_A_LEAD = "This thread is not a factory lead.";
+const NOT_A_MANAGER_OR_LEAD = "This thread is not an engineering manager or a factory lead.";
 const NOT_A_MEMBER = "This thread is not a member of a live factory team.";
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -38,8 +42,21 @@ const statusMessage = ({
   readyTickets,
 }: FactoryStatus) => {
   const unjudged = readyTickets.filter((ticket) => !ticket.judged).length;
-  const capacity = capacityFree ? "capacity is free" : "no capacity is free";
+  // `capacityFree` covers the environment's cap too, so no room while under the manager's own cap
+  // means the environment, shared by every project, is full.
+  const capacity = capacityFree
+    ? "capacity is free"
+    : activeCount < concurrencyCap
+      ? "no capacity is free: this environment's cap, shared by every project, is full"
+      : "no capacity is free";
   return `${activeCount} of ${plural(concurrencyCap, "slot")} in use, so ${capacity}; ${plural(unjudged, "Ready ticket")} await judgement.`;
+};
+
+const definitionsMessage = ({ configured, workers, teams, problems }: FactoryDefinitionsView) => {
+  if (!configured) return "No factory config is saved on this environment yet.";
+  const unread =
+    problems.length === 0 ? "" : ` ${plural(problems.length, "file")} could not be read.`;
+  return `${plural(teams.length, "team")} and ${plural(workers.length, "worker")}.${unread}`;
 };
 
 const started = (assignment: FactoryAssignment) =>
@@ -55,11 +72,9 @@ const recoverMessage = (assignment: FactoryAssignment) =>
     ? `The recovery allowance is spent, so "${assignment.title}" is with the user, with your brief as the recommendation.`
     : `Recovered "${assignment.title}" (${assignment.recoveryUsed} recovery used). Its lead is ${assignment.leadThreadId}.`;
 
-const taskRole: Record<FactoryWorkerRole, NonNullable<OrchestratorMcpDelegateTaskInput["role"]>> = {
-  implementer: "implementation",
-  reviewer: "review",
-  verifier: "test",
-};
+/** A member copied from a worker definition does whatever its description says: implementation. */
+const taskRole = (role: FactoryRole): NonNullable<OrchestratorMcpDelegateTaskInput["role"]> =>
+  role === "reviewer" ? "review" : role === "verifier" ? "test" : "implementation";
 
 const draftMessage = ({ draft, similar }: FactoryDraftTicketResult) =>
   similar.length === 0
@@ -73,14 +88,22 @@ const endedAs: Partial<Record<FactoryAssignmentState, string>> = {
 
 const make = Effect.gen(function* () {
   const factory = yield* FactoryService;
+  const configStore = yield* FactoryConfigStore;
 
   const callingManager = Effect.fn("FactoryMcp.callingManager")(function* (notMember: string) {
     const scope = yield* McpInvocationContext.requireMcpCapability("orchestration");
     const { threadId } = (yield* McpInvocationContext.requireThreadScope(scope, "This tool"))
       .thread;
     const manager = yield* factory.managerForThread(threadId).pipe(Effect.mapError(toolFailure));
-    if (manager === null)
-      return yield* new FactoryToolFailedError({ reason: "not-found", message: notMember });
+    if (manager === null) {
+      const finished = yield* factory
+        .finishedOnboardingMessage(threadId)
+        .pipe(Effect.mapError(toolFailure));
+      return yield* new FactoryToolFailedError({
+        reason: "not-found",
+        message: finished ?? notMember,
+      });
+    }
     return { threadId, manager };
   });
 
@@ -100,6 +123,12 @@ const make = Effect.gen(function* () {
       return yield* new FactoryToolFailedError({ reason: "not-found", message: notMember });
     return { threadId, assignment };
   });
+
+  const callingManagerOrLead = () =>
+    callingManager(NOT_A_MANAGER_OR_LEAD).pipe(
+      Effect.catch(() => callingLead(NOT_A_MANAGER_OR_LEAD)),
+      Effect.asVoid,
+    );
 
   /** A lead or worker. The service still refuses a member whose own thread has ended. */
   const callingMember = Effect.fn("FactoryMcp.callingMember")(function* () {
@@ -138,26 +167,27 @@ const make = Effect.gen(function* () {
     if (led === null || led.leadThreadId !== threadId)
       return yield* new FactoryToolFailedError({
         reason: "not-found",
-        message: "This thread is not an engineering manager or a factory lead.",
+        message: NOT_A_MANAGER_OR_LEAD,
       });
     if (led.id !== assignmentId) return yield* notFound;
     return led;
   });
 
   return {
-    factory_propose_onboarding: McpToolAccess.actsAsCaller((report) =>
+    factory_propose_onboarding: McpToolAccess.actsAsCaller((proposal) =>
       Effect.gen(function* () {
         const { threadId } = yield* callingManager(NOT_A_MANAGER);
         const manager = yield* factory
-          .proposeOnboarding(threadId, report)
+          .proposeOnboarding(threadId, proposal)
           .pipe(Effect.mapError(toolFailure));
         return {
           managerId: manager.id,
           managerName: manager.name,
           state: manager.state,
-          controlPaths: manager.onboardingReport?.controlPaths ?? [],
+          // The service just stored the proposal, so it is present.
+          detected: manager.onboardingProposal!.detected,
           message:
-            "The onboarding report is with the user. Ask them in this thread to review and approve it in Satellite.",
+            "The proposal is with the user. Tell them in this thread that it is ready for review in Satellite.",
         };
       }),
     ),
@@ -171,6 +201,13 @@ const make = Effect.gen(function* () {
           ...brief,
           message: `The ${role} brief, from ${briefSource[brief.source]}.`,
         };
+      }),
+    ),
+    factory_definitions: McpToolAccess.reads(() =>
+      Effect.gen(function* () {
+        yield* callingManagerOrLead();
+        const view = yield* configStore.read.pipe(Effect.mapError(toolFailure));
+        return { ...view, message: definitionsMessage(view) };
       }),
     ),
     factory_status: McpToolAccess.reads(() =>
@@ -271,7 +308,7 @@ const make = Effect.gen(function* () {
             providerInstanceId: plan.modelSelection.instanceId,
             model: plan.modelSelection.model,
           },
-          role: taskRole[plan.role],
+          role: taskRole(plan.role),
           isolation: "shared",
           mode: "async",
         });
@@ -279,6 +316,7 @@ const make = Effect.gen(function* () {
           .recordMember(threadId, {
             threadId: task.childThreadId,
             role: plan.role,
+            ...(plan.member === undefined ? {} : { memberName: plan.member }),
             modelSelection: plan.modelSelection,
             joined: "created",
           })
@@ -315,13 +353,16 @@ const make = Effect.gen(function* () {
     ),
     factory_create_team: McpToolAccess.actsAsCaller((input) =>
       Effect.gen(function* () {
-        const { threadId } = yield* callingManager(NOT_A_MANAGER);
-        const preset = yield* factory
-          .createTeam(threadId, input)
-          .pipe(Effect.mapError(toolFailure));
+        const { threadId, manager } = yield* callingManager(NOT_A_MANAGER);
+        const team = yield* factory.createTeam(threadId, input).pipe(Effect.mapError(toolFailure));
+        // An onboarding result that lists teams limits this manager to them; an empty list allows all.
+        const teamIds = manager.onboardingResult?.teamIds ?? [];
+        const staffable = teamIds.length === 0 || teamIds.includes(team.id);
         return {
-          preset,
-          message: `Added the team preset "${preset.name}". Name it as the team when you pick up or commission work.`,
+          team,
+          message: staffable
+            ? `Added the team "${team.name}" with the id ${team.id}. Pass it as teamId when you pick up or commission work.`
+            : `Added the team "${team.name}" with the id ${team.id}, but you cannot staff it yet: your onboarding result limits you to other teams. Ask the user to add ${team.id} to your teams in Satellite.`,
         };
       }),
     ),

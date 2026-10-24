@@ -3,12 +3,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type {
-  EnvironmentId,
-  FactoryRole,
-  FactoryWorkspaceAssignment,
-  ThreadId,
-} from "@t3tools/contracts";
+import type { EnvironmentId, FactoryWorkspaceAssignment, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowLeftIcon, RefreshCwIcon } from "lucide-react";
 import {
@@ -48,7 +43,7 @@ import {
   checklistProgress,
   FACTORY_ASSIGNMENT_STATE_LABEL,
   FACTORY_DIGEST_STALE_MS,
-  FACTORY_ROLE_LABEL,
+  factoryMemberLabel,
   resolveFactoryWorkspaceView,
   type FactoryWorkspaceTeam,
 } from "./factoryWorkspaceLogic";
@@ -378,7 +373,7 @@ function FactoryTeamThreadsCard(props: {
                       key={thread.threadId}
                       environmentId={props.environmentId}
                       threadId={thread.threadId}
-                      role={thread.role}
+                      label={factoryMemberLabel(thread)}
                       current={thread.threadId === props.threadId}
                       onOpen={() => open(thread.threadId)}
                     />
@@ -396,7 +391,7 @@ function FactoryTeamThreadsCard(props: {
 function TeamThreadRow(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
-  readonly role: FactoryRole;
+  readonly label: string;
   readonly current: boolean;
   readonly onOpen: () => void;
 }) {
@@ -415,9 +410,7 @@ function TeamThreadRow(props: {
           {status ? <ThreadStatusLabel status={status} compact /> : null}
         </span>
         <span className="min-w-0 flex-1 truncate">{title}</span>
-        <span className="shrink-0 text-2xs text-muted-foreground">
-          {FACTORY_ROLE_LABEL[props.role]}
-        </span>
+        <span className="shrink-0 text-2xs text-muted-foreground">{props.label}</span>
       </ThreadDetailsControl>
     </li>
   );

@@ -3,6 +3,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import type * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import { FactoryDefinitionsEditor } from "../factory/config/definitionsEditor.ts";
+import { FactoryTeamUses } from "../factory/config/teamUses.ts";
+import { FactoryConfigTransfer } from "../factory/config/exportImport.ts";
+import { FactoryConfigRepo } from "../factory/config/FactoryConfigRepo.ts";
+import { FactoryConfigStore } from "../factory/config/FactoryConfigStore.ts";
 import { FactoryService } from "../factory/FactoryService.ts";
 import { IssueService } from "../issues/IssueService.ts";
 
@@ -11,6 +16,11 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
     Effect.gen(function* () {
       const issues = yield* IssueService;
       const factory = yield* FactoryService;
+      const configStore = yield* FactoryConfigStore;
+      const configRepo = yield* FactoryConfigRepo;
+      const configTransfer = yield* FactoryConfigTransfer;
+      const definitionsEditor = yield* FactoryDefinitionsEditor;
+      const teamUses = yield* FactoryTeamUses;
       return WsSatelliteRpcGroup.of({
         [SATELLITE_WS_METHODS.issuesList]: (input) => issues.list(input),
         [SATELLITE_WS_METHODS.issuesGet]: (input) => issues.get(input),
@@ -36,6 +46,7 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.factoryManagersRetire]: (input) => factory.retireManager(input),
         [SATELLITE_WS_METHODS.factoryManagersApproveOnboarding]: (input) =>
           factory.approveOnboarding(input),
+        [SATELLITE_WS_METHODS.factoryManagersStartPickup]: (input) => factory.startPickup(input),
         [SATELLITE_WS_METHODS.factoryAssignmentsList]: (input) => factory.listAssignments(input),
         [SATELLITE_WS_METHODS.factoryAssignmentsSubscribe]: (input) =>
           factory.subscribeAssignments(input),
@@ -56,6 +67,27 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.factoryDraftsRestore]: (input) => factory.restoreDraft(input),
         [SATELLITE_WS_METHODS.factoryStatsGet]: (input) => factory.getStats(input),
         [SATELLITE_WS_METHODS.factoryDraftsApply]: (input) => factory.applyDraft(input),
+        [SATELLITE_WS_METHODS.factoryDefinitionsGet]: () => configStore.read,
+        [SATELLITE_WS_METHODS.factoryConfigRepoStatus]: () => configRepo.status,
+        [SATELLITE_WS_METHODS.factoryConfigRepoConnect]: (input) => configRepo.connect(input),
+        [SATELLITE_WS_METHODS.factoryConfigRepoCheck]: () => configRepo.check,
+        [SATELLITE_WS_METHODS.factoryConfigRepoPush]: (input) => configRepo.push(input.message),
+        [SATELLITE_WS_METHODS.factoryConfigRepoPull]: () => configRepo.pull,
+        [SATELLITE_WS_METHODS.factoryConfigRepoResolve]: (input) =>
+          configRepo.resolve(input.path, input.side),
+        [SATELLITE_WS_METHODS.factoryConfigRepoDiscard]: () => configRepo.discard,
+        [SATELLITE_WS_METHODS.factoryConfigRepoDisconnect]: (input) => configRepo.disconnect(input),
+        [SATELLITE_WS_METHODS.factoryConfigExport]: (input) => configTransfer.export(input),
+        [SATELLITE_WS_METHODS.factoryConfigImportPreview]: (input) => configTransfer.preview(input),
+        [SATELLITE_WS_METHODS.factoryConfigImportApply]: (input) =>
+          configTransfer.apply(input.bundle, input.decision),
+        [SATELLITE_WS_METHODS.factoryDefinitionsSave]: (input) => definitionsEditor.save(input),
+        [SATELLITE_WS_METHODS.factoryDefinitionsRemove]: (input) => definitionsEditor.remove(input),
+        [SATELLITE_WS_METHODS.factoryDefinitionsTeamUses]: (input) => teamUses.read(input.teamId),
+        [SATELLITE_WS_METHODS.factoryConfigCreateStarter]: (input) =>
+          definitionsEditor.createStarter(input.modelPool),
+        [SATELLITE_WS_METHODS.factoryConfigSaveSettings]: (input) =>
+          definitionsEditor.saveSettings(input),
       });
     }),
   );

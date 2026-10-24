@@ -77,7 +77,13 @@ function timelineEntryRunId(entry: TimelineEntry): RunId | null {
   if (entry.kind === "proposed-plan") {
     return entry.proposedPlan.runId;
   }
-  if (entry.kind === "html-render" || entry.kind === "mcp-app") return entry.runId;
+  if (
+    entry.kind === "html-render" ||
+    entry.kind === "mcp-app" ||
+    entry.kind === "factory-onboarding"
+  ) {
+    return entry.runId;
+  }
   return entry.kind === "work" ? (entry.entry.runId ?? null) : null;
 }
 
@@ -631,6 +637,21 @@ type MessagesTimelineRowContent =
       htmlRender: HtmlRenderReference;
     }
   | {
+      kind: "factory-onboarding";
+      id: string;
+      createdAt: string;
+      // Only the newest proposal call in the thread can act; earlier ones collapse.
+      latest: boolean;
+    }
+  | {
+      kind: "factory-priming";
+      id: string;
+      createdAt: string;
+      prompt: ChatMessage | null;
+      reply: ChatMessage | null;
+      continued: boolean;
+    }
+  | {
       kind: "mcp-app";
       id: string;
       createdAt: string;
@@ -805,6 +826,8 @@ function deriveSupersededAttemptFolds(
       (entry.kind === "message" && entry.message.role === "user") ||
       entry.kind === "html-render" ||
       entry.kind === "mcp-app" ||
+      entry.kind === "factory-onboarding" ||
+      entry.kind === "factory-priming" ||
       timelineEntryIsPersistentResourceCard(entry) ||
       liveSubagentEntryIds.has(entry.id) ||
       (entry.kind === "work" && entry.entry.itemType === "system_notice")
@@ -1444,6 +1467,9 @@ export function deriveMessagesTimelineRows(input: {
   );
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(timelineEntries);
   const failedRunIds = failedTimelineRunIds(timelineEntries, input.latestRun ?? null);
+  const latestFactoryOnboardingEntryId = timelineEntries.findLast(
+    (entry) => entry.kind === "factory-onboarding",
+  )?.id;
   const liveSubagentEntryIds = liveSubagentCardEntryIds(timelineEntries);
   const completeSupersededReplyIds = completeSupersededReplyEntryIds(timelineEntries);
   const supersededFoldsByAnchorEntryId = deriveSupersededAttemptFolds(
@@ -1827,6 +1853,28 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         proposedPlan: timelineEntry.proposedPlan,
+      });
+      continue;
+    }
+
+    if (timelineEntry.kind === "factory-priming") {
+      nextRows.push({
+        kind: "factory-priming",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        prompt: timelineEntry.prompt,
+        reply: timelineEntry.reply,
+        continued: timelineEntry.continued,
+      });
+      continue;
+    }
+
+    if (timelineEntry.kind === "factory-onboarding") {
+      nextRows.push({
+        kind: "factory-onboarding",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        latest: timelineEntry.id === latestFactoryOnboardingEntryId,
       });
       continue;
     }
@@ -2277,6 +2325,16 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       // Entries rebuild on any tool update; an equal page must keep its mounted frame.
       const bh = b as typeof a;
       return a.createdAt === bh.createdAt && htmlRenderReferencesEqual(a.htmlRender, bh.htmlRender);
+    }
+
+    case "factory-onboarding": {
+      const bf = b as typeof a;
+      return a.createdAt === bf.createdAt && a.latest === bf.latest;
+    }
+
+    case "factory-priming": {
+      const bp = b as typeof a;
+      return a.prompt === bp.prompt && a.reply === bp.reply && a.continued === bp.continued;
     }
 
     case "mcp-app": {

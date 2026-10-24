@@ -3,7 +3,8 @@ import {
   FactoryClaimCompleteInput,
   FactoryCommissionInput,
   FactoryCompleteInput,
-  FactoryCreateTeamInput,
+  FactoryCreateTeamFromDefinitionsInput,
+  FactoryDefinitionsView,
   FactoryDelegateInput,
   FactoryDependency,
   FactoryDraftTicketInput,
@@ -11,7 +12,8 @@ import {
   FactoryFinding,
   FactoryFindingsListInput,
   FactoryManagerState,
-  FactoryOnboardingReport,
+  FactoryOnboardingDetected,
+  FactoryOnboardingProposalInput,
   FactoryOperationError,
   FactoryPickupInput,
   FactoryRecordFindingInput,
@@ -20,9 +22,8 @@ import {
   FactoryRole,
   FactoryRoleBrief,
   FactoryStatus,
-  FactoryTeamPreset,
+  FactoryTeamDefinition,
   FactoryUpdateChecklistInput,
-  FactoryWorkerRole,
   McpCapabilityUnavailableError,
   ModelSelection,
   NodeId,
@@ -36,6 +37,7 @@ import * as Toolkit from "effect/ai/Toolkit";
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
+import { FactoryConfigStore } from "../config/FactoryConfigStore.ts";
 import { FactoryService } from "../FactoryService.ts";
 
 export class FactoryToolFailedError extends Schema.TaggedError<FactoryToolFailedError>()(
@@ -53,15 +55,16 @@ export const ProposeOnboardingResult = Schema.Struct({
   managerId: Schema.String,
   managerName: Schema.String,
   state: FactoryManagerState,
-  controlPaths: Schema.Array(Schema.String),
+  /** What Satellite read itself, so the manager sees the boards the user will choose from. */
+  detected: FactoryOnboardingDetected,
   message: Schema.String,
 });
 export type ProposeOnboardingResult = typeof ProposeOnboardingResult.Type;
 
 const ProposeOnboardingTool = Tool.make("factory_propose_onboarding", {
   description:
-    "For an engineering manager that is onboarding. Submit your onboarding report: the control paths you propose to protect (glob patterns relative to the repository root that no team may edit), gaps in how the issue board maps to the factory, open choices the user needs to make, and a short summary. Nothing is picked up until the user approves the report in Satellite. Call it again to revise the report. After calling it, ask the user in this thread to review and approve it.",
-  parameters: FactoryOnboardingReport,
+    "For an engineering manager that is onboarding. Submit your onboarding proposal: a short summary, the project's purpose, the control paths you propose to protect (glob patterns relative to the repository root that no team may edit, each with its reason), findings that need no decision, and whether pickup should be on with the guidance you would judge tickets by. Put each open choice in as a question with 2 to 4 options and the 0-based index of the one you recommend, with your reason; the user answers each one when they review the proposal. Do not report board columns or the default branch: Satellite detects them itself and returns what it found. Nothing is picked up until the user reviews and approves the proposal in Satellite. Call it again to revise it.",
+  parameters: FactoryOnboardingProposalInput,
   success: ProposeOnboardingResult,
   failure: FactoryToolFailure,
   // The access check loads the calling thread to confirm it still owns a live run.
@@ -97,6 +100,26 @@ const RoleBriefTool = Tool.make("factory_role_brief", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+export const DefinitionsResult = Schema.Struct({
+  ...FactoryDefinitionsView.fields,
+  message: Schema.String,
+});
+export type DefinitionsResult = typeof DefinitionsResult.Type;
+
+const DefinitionsTool = Tool.make("factory_definitions", {
+  description:
+    "For an engineering manager or a factory lead. Return the factory config: the model pool, the workers, leads and managers, and each team with its own copies of its lead and members, plus any definition file that could not be read. Only the user changes these definitions, in Satellite; never edit the factory config files directly.",
+  parameters: Tool.EmptyParams,
+  success: DefinitionsResult,
+  failure: FactoryToolFailure,
+  dependencies: [McpInvocationContext.McpInvocationContext, FactoryService, FactoryConfigStore],
+})
+  .annotate(Tool.Title, "Read factory definitions")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const StatusResult = Schema.Struct({
   ...FactoryStatus.fields,
   message: Schema.String,
@@ -105,7 +128,7 @@ export type StatusResult = typeof StatusResult.Type;
 
 const StatusTool = Tool.make("factory_status", {
   description:
-    "For an engineering manager. Return your capacity under the concurrency cap, your live assignments, the Ready tickets on connected boards with no live assignment (each marked judged once you picked it up or skipped it as it is now), and the project's pickup guidance. Call it before judging tickets.",
+    "For an engineering manager. Return your capacity under the concurrency cap, your live assignments, the tickets in your pickup columns with no live assignment (each marked judged once you picked it up or skipped it as it is now), `pickupEnabled`, and the `pickupGuidance` the user approved at onboarding. No ticket is returned while `pickupEnabled` is false, or before the user starts pickup. Call it before judging tickets.",
   parameters: Tool.EmptyParams,
   success: StatusResult,
   failure: FactoryToolFailure,
@@ -126,7 +149,7 @@ export type PickupResult = typeof PickupResult.Type;
 
 const PickupTool = Tool.make("factory_pickup", {
   description:
-    "For an engineering manager. Judge one Ready ticket against the pickup guidance from factory_status. `start` launches a lead on the ticket and needs a brief, a completion condition and a complexity that is not `large`; recommend a large ticket to the user instead. `skip` records your reason so the ticket is not offered again until it changes. The server re-checks the concurrency cap and that the ticket is still in a Ready column, and refuses with a reason if either fails.",
+    "For an engineering manager. Judge one ticket from factory_status against your pickup guidance. `start` launches a lead on the ticket and needs a brief, a completion condition and a complexity that is not `large`; recommend a large ticket to the user instead. `skip` records your reason so the ticket is not offered again until it changes. The server re-checks the concurrency cap and that the ticket is still in one of your confirmed pickup columns, and refuses with a reason if either fails. While pickup is off, or before the user starts it, it refuses every ticket.",
   parameters: FactoryPickupInput,
   success: PickupResult,
   failure: FactoryToolFailure,
@@ -136,7 +159,7 @@ const PickupTool = Tool.make("factory_pickup", {
     FactoryService,
   ],
 })
-  .annotate(Tool.Title, "Judge a Ready ticket")
+  .annotate(Tool.Title, "Judge a pickup ticket")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
@@ -150,7 +173,7 @@ export type CommissionResult = typeof CommissionResult.Type;
 
 const CommissionTool = Tool.make("factory_commission", {
   description:
-    "For an engineering manager. Start an assignment the user asked for in this thread. It skips the pickup guidance and the rule against starting `large` tickets, but still respects the concurrency cap. Pass the number of a ticket in a Ready column to work on it; without one the lead gets its own worktree on a new branch. Pass `dependencyId` to deliver an open dependency another lead reported; that start ignores the cap, because the blocked assignment already holds a slot.",
+    "For an engineering manager. Start an assignment the user asked for in this thread. It skips the pickup guidance and the rule against starting `large` tickets, but still respects the concurrency cap. Pass the number of a ticket in any Ready column of a connected board, not only your pickup columns, to work on it; without one the lead gets its own worktree on a new branch. Pass `dependencyId` to deliver an open dependency another lead reported; that start ignores the cap, because the blocked assignment already holds a slot.",
   parameters: FactoryCommissionInput,
   success: CommissionResult,
   failure: FactoryToolFailure,
@@ -254,7 +277,7 @@ const CompleteTool = Tool.make("factory_complete", {
 export const DelegateResult = Schema.Struct({
   taskId: NodeId,
   childThreadId: ThreadId,
-  role: FactoryWorkerRole,
+  role: FactoryRole,
   model: ModelSelection,
   message: Schema.String,
 });
@@ -304,15 +327,15 @@ const UpdateChecklistTool = Tool.make("factory_update_checklist", {
   .annotate(Tool.OpenWorld, false);
 
 export const CreateTeamResult = Schema.Struct({
-  preset: FactoryTeamPreset,
+  team: FactoryTeamDefinition,
   message: Schema.String,
 });
 export type CreateTeamResult = typeof CreateTeamResult.Type;
 
 const CreateTeamTool = Tool.make("factory_create_team", {
   description:
-    "For an engineering manager. Add a team preset, only after the user agreed to it in this thread. Every model a member names must be in the model pool, and the name must not match an existing preset. It cannot edit or remove presets; the user does that in Satellite.",
-  parameters: FactoryCreateTeamInput,
+    "For an engineering manager. Add a team to the factory config, only after the user agreed to it in this thread. The team is built from copies of existing definitions: the lead by leadId (absent means the first lead) and each member from a worker by workerId, with its count and an optional member name, which defaults to the worker's name. Read the ids with factory_definitions. Every model the copies list must be in the model pool, and the name must not match an existing team. It returns the new team's id, which you pass as teamId. When your onboarding result names the teams you may use, a new team is not among them until the user adds its id; the result message says so. It cannot edit or remove teams; the user does that in Satellite.",
+  parameters: FactoryCreateTeamFromDefinitionsInput,
   success: CreateTeamResult,
   failure: FactoryToolFailure,
   dependencies: [
@@ -321,7 +344,7 @@ const CreateTeamTool = Tool.make("factory_create_team", {
     FactoryService,
   ],
 })
-  .annotate(Tool.Title, "Add a factory team preset")
+  .annotate(Tool.Title, "Add a factory team")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
@@ -416,6 +439,7 @@ const DraftTicketTool = Tool.make("factory_draft_ticket", {
 export const FactoryToolkit = Toolkit.make(
   ProposeOnboardingTool,
   RoleBriefTool,
+  DefinitionsTool,
   StatusTool,
   PickupTool,
   CommissionTool,

@@ -1,4 +1,10 @@
-import { DEFAULT_FACTORY_CONFIG, EnvironmentId, type FactoryConfigView } from "@t3tools/contracts";
+import {
+  DEFAULT_FACTORY_CONFIG,
+  EnvironmentId,
+  type FactoryConfigView,
+  ProviderDriverKind,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import type { ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
@@ -6,7 +12,6 @@ import { userEvent } from "vite-plus/test/browser";
 const state = vi.hoisted(() => ({
   getConfig: vi.fn(),
   updateConfig: vi.fn(),
-  getStats: vi.fn(),
   listBoards: vi.fn(),
 }));
 
@@ -20,9 +25,7 @@ vi.mock(import("../../state/use-atom-command"), async (original) => {
         ? state.getConfig
         : command === factoryEnvironment.updateConfig
           ? state.updateConfig
-          : command === factoryEnvironment.getStats
-            ? state.getStats
-            : state.listBoards) as never,
+          : state.listBoards) as never,
   };
 });
 // The real rows read settings permissions from live environment state; this suite is about the
@@ -56,27 +59,38 @@ vi.mock(import("../settings/settingsLayout"), async (original) => ({
   SettingResetButton: (() => null) as never,
 }));
 
+// The file-based config sections load through their own commands and have their own tests.
+vi.mock(import("./FactoryPoolSection"), () => ({ FactoryPoolSection: (() => null) as never }));
+vi.mock(import("./FactoryDefinitionsSection"), () => ({
+  FactoryDefinitionsSection: (() => null) as never,
+}));
+vi.mock(import("./FactoryTeamsFileSection"), () => ({
+  FactoryTeamsFileSection: (() => null) as never,
+}));
+vi.mock(import("./FactoryConfigRepoSection"), () => ({
+  FactoryConfigRepoSection: (() => null) as never,
+}));
+vi.mock(import("./FactoryConfigShareSection"), () => ({
+  FactoryConfigShareSection: (() => null) as never,
+}));
+
 import { render } from "../../../test/render";
 import { FactoryPageConfiguration } from "./FactoryPageConfiguration";
 
 const environmentId = EnvironmentId.make("env");
-const saved = { ...DEFAULT_FACTORY_CONFIG, pickupGuidance: "Small bugs only." };
+const saved = { ...DEFAULT_FACTORY_CONFIG, concurrencyCap: 2 };
 const view: FactoryConfigView = { environment: saved, effective: saved, configured: true };
 
 function setup() {
   state.getConfig.mockReset().mockResolvedValue({ _tag: "Success", value: view });
   state.updateConfig.mockReset().mockResolvedValue({ _tag: "Success", value: view });
-  state.getStats.mockReset().mockResolvedValue({
-    _tag: "Success",
-    value: { teams: [], assignments: [] },
-  });
   state.listBoards.mockReset().mockResolvedValue({
     _tag: "Success",
     value: [{ id: "board", projectId: "project", title: "Board" }],
   });
 }
 
-it("saves the edited pickup guidance to the environment config", async () => {
+it("saves the edited concurrency cap to the environment config", async () => {
   setup();
   await using screen = await render(
     <FactoryPageConfiguration
@@ -86,19 +100,61 @@ it("saves the edited pickup guidance to the environment config", async () => {
       canEdit
     />,
   );
-  const guidance = screen.getByRole("textbox", { name: "Pickup guidance" });
-  await expect.element(guidance).toHaveValue("Small bugs only.");
+  const cap = screen.getByRole("textbox", { name: "Concurrent assignments" });
+  await expect.element(cap).toHaveValue("2");
   await expect.element(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
-  await userEvent.clear(guidance);
-  await userEvent.type(guidance, "Pick up bugs labelled agent.");
+  await userEvent.click(screen.getByRole("button", { name: "Increase Concurrent assignments" }));
   await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
   expect(state.updateConfig).toHaveBeenCalledExactlyOnceWith({
     environmentId,
+    input: { scope: "environment", config: { ...saved, concurrencyCap: 3 } },
+  });
+});
+
+it("saves the instance a driver runs on, and First available removes the preference", async () => {
+  setup();
+  // Save answers with what was sent, so the form's next edit starts from it.
+  state.updateConfig.mockImplementation(
+    async ({ input }: { input: { config: FactoryConfigView["environment"] } }) => ({
+      _tag: "Success",
+      value: { environment: input.config, effective: input.config, configured: true },
+    }),
+  );
+  const claude = (instanceId: string, label: string) => ({
+    selection: { instanceId: ProviderInstanceId.make(instanceId), model: "claude-opus-5-5" },
+    label: `${label} · Opus 5.5`,
+    driverKind: ProviderDriverKind.make("claudeAgent"),
+  });
+  await using screen = await render(
+    <FactoryPageConfiguration
+      environmentId={environmentId}
+      environmentLabel="Build workstation"
+      modelOptions={[
+        claude("claude-home", "Claude (home)"),
+        claude("claude-work", "Claude (work)"),
+      ]}
+      canEdit
+    />,
+  );
+
+  await userEvent.click(screen.getByRole("combobox", { name: "Claude runs on" }));
+  await userEvent.click(screen.getByRole("option", { name: "Claude (work)" }));
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(state.updateConfig).toHaveBeenLastCalledWith({
+    environmentId,
     input: {
       scope: "environment",
-      config: { ...saved, pickupGuidance: "Pick up bugs labelled agent." },
+      config: { ...saved, instancePreferences: { claudeAgent: "claude-work" } },
     },
+  });
+
+  await userEvent.click(screen.getByRole("combobox", { name: "Claude runs on" }));
+  await userEvent.click(screen.getByRole("option", { name: "First available" }));
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(state.updateConfig).toHaveBeenLastCalledWith({
+    environmentId,
+    input: { scope: "environment", config: { ...saved, instancePreferences: {} } },
   });
 });

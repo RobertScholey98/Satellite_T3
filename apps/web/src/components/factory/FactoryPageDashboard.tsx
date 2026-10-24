@@ -56,6 +56,7 @@ const STATE_BADGES: Record<
   { readonly label: string; readonly variant: "info" | "success" | "warning" }
 > = {
   onboarding: { label: "Onboarding", variant: "info" },
+  ready: { label: "Ready", variant: "info" },
   active: { label: "Active", variant: "success" },
   "manager-paused": { label: "Paused", variant: "warning" },
   "project-paused": { label: "Paused with teams", variant: "warning" },
@@ -225,7 +226,9 @@ function FactoryManagersSection({
                           Resume
                         </MenuItem>
                       ) : null}
-                      {manager.state === "active" || manager.state === "onboarding" ? (
+                      {manager.state === "active" ||
+                      manager.state === "ready" ||
+                      manager.state === "onboarding" ? (
                         <MenuItem
                           disabled={!canPause}
                           onClick={() =>

@@ -48,11 +48,6 @@ export function factoryTeamRows(result: FactoryStatsResult): ReadonlyArray<Facto
     );
 }
 
-/** Times each preset name was used, for the Teams summary lines. */
-export function factoryPresetUses(result: FactoryStatsResult): ReadonlyMap<string, number> {
-  return new Map(result.teams.map((team) => [team.team, team.tasks]));
-}
-
 const ink = (percent: number) =>
   `color-mix(in oklab, var(--foreground) ${percent}%, var(--background))`;
 
@@ -62,6 +57,7 @@ const ROLE_COLORS: Record<FactoryRole, string> = {
   implementer: ink(72),
   reviewer: ink(48),
   verifier: ink(30),
+  worker: ink(72),
 };
 
 const totalTokens = (tokens: FactoryAssignmentStats["tokens"]) => tokens.input + tokens.output;

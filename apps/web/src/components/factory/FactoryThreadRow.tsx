@@ -34,7 +34,7 @@ import {
   describePickupDecision,
   FACTORY_ASSIGNMENT_STATE_LABEL,
   FACTORY_MANAGER_STATE_LABEL,
-  FACTORY_ROLE_LABEL,
+  factoryMemberLabel,
   isLiveAssignment,
   resolveFactoryThreadPlace,
   takesAssignmentSlot,
@@ -73,7 +73,7 @@ export function FactoryThreadRow(props: {
         ) : (
           <FactoryRowLayout
             icon={<UsersRoundIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
-            title={`${FACTORY_ROLE_LABEL[place.member.role]} for ${place.assignment?.title ?? place.manager.name}`}
+            title={`${factoryMemberLabel(place.member)} for ${place.assignment?.title ?? place.manager.name}`}
             detail={null}
             menu={null}
           />
@@ -199,16 +199,10 @@ function FactoryManagerRow(props: {
   const retireCommand = useAtomCommand(factoryEnvironment.retireManager, {
     reportFailure: false,
   });
-  const approveCommand = useAtomCommand(factoryEnvironment.approveOnboarding, {
-    reportFailure: false,
-  });
-  const canApprove = useAtomValue(
-    factoryEnvironment.approveOnboarding.permissionAtom(environmentId),
-  );
-  // The workspace feed carries no report; the managers feed does.
-  const report =
-    useFactoryManagers(environmentId)?.find((entry) => entry.id === manager.id)?.onboardingReport ??
-    null;
+  // The workspace feed carries no proposal; the managers feed does.
+  const hasProposal =
+    (useFactoryManagers(environmentId)?.find((entry) => entry.id === manager.id)
+      ?.onboardingProposal ?? null) !== null;
   const canPause = useAtomValue(factoryEnvironment.pauseManager.permissionAtom(environmentId));
   const canResume = useAtomValue(factoryEnvironment.resumeManager.permissionAtom(environmentId));
   const canRetire = useAtomValue(factoryEnvironment.retireManager.permissionAtom(environmentId));
@@ -278,26 +272,6 @@ function FactoryManagerRow(props: {
         }),
       ),
     );
-  const approve = async () => {
-    if (report === null) return;
-    const paths =
-      report.controlPaths.length > 0 ? `\nProtected paths: ${report.controlPaths.join(", ")}` : "";
-    const message = `Approve ${manager.name}'s onboarding report?\nIt then judges Ready tickets against your pickup guidance.${paths}`;
-    const confirmed = (await requestConfirmDialog(message)) ?? window.confirm(message);
-    if (!confirmed) return;
-    await run("Could not approve onboarding", async () =>
-      unwrapFactoryResult(
-        await approveCommand({
-          environmentId,
-          input: {
-            requestId: randomUUID(),
-            managerId: manager.id,
-            controlPaths: report.controlPaths,
-          },
-        }),
-      ),
-    );
-  };
   const retire = async () => {
     const message = `Retire ${manager.name}?\nThe project can then get a new engineering manager.`;
     const confirmed =
@@ -330,23 +304,24 @@ function FactoryManagerRow(props: {
     <FactoryRowLayout
       icon={<UserCogIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
       title={`${FACTORY_MANAGER_STATE_LABEL[manager.state]} · ${running}${capText} running`}
-      detail={pickup?.key === logKey ? pickup.text : null}
+      detail={
+        manager.state === "onboarding"
+          ? hasProposal
+            ? "Onboarding proposal ready for review"
+            : "Waiting for its onboarding proposal"
+          : pickup?.key === logKey
+            ? pickup.text
+            : null
+      }
       menu={
         <RowMenu label="Engineering manager actions">
-          {manager.state === "onboarding" ? (
-            <>
-              <MenuItem
-                disabled={busy || !canApprove || report === null}
-                onClick={() => void approve()}
-              >
-                {report === null ? "Approve onboarding (no report yet)" : "Approve onboarding"}
-              </MenuItem>
-              <MenuSeparator />
-            </>
-          ) : null}
           <MenuItem
             disabled={
-              busy || !canPause || (manager.state !== "onboarding" && manager.state !== "active")
+              busy ||
+              !canPause ||
+              (manager.state !== "onboarding" &&
+                manager.state !== "active" &&
+                manager.state !== "ready")
             }
             onClick={() => pause("manager")}
           >
