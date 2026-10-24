@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import { ThreadDetailsControl } from "../chat/ThreadDetailsControl";
 import { THREAD_DETAILS_PANEL_ICON_CLASS } from "../chat/threadDetailsPanelStyles";
+import { FactoryManagerSettingsCard } from "./FactoryManagerSettingsCard";
 import { FactoryMergeCard } from "./FactoryMergeCard";
 import {
   FACTORY_BACK_CONTROL_HEIGHT,
@@ -42,8 +43,13 @@ export const FACTORY_THREAD_STACK: ReadonlyArray<FactoryStackEntry> = [
     ),
   },
   { key: FACTORY_DETAILS_SLOT, visibleOn: ["manager", "team"], render: null },
-  // A slot for a card other work builds; it renders nothing yet.
-  { key: "manager-settings", visibleOn: ["manager"], render: () => null },
+  {
+    key: "manager-settings",
+    visibleOn: ["manager"],
+    render: ({ environmentId, view }) => (
+      <FactoryManagerSettingsCard environmentId={environmentId} managerId={view.manager.id} />
+    ),
+  },
   {
     key: "pr-merge",
     visibleOn: ["manager"],

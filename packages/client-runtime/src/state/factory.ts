@@ -35,6 +35,7 @@ export function createFactoryEnvironmentAtoms<R, E>(
       WS_METHODS.factoryManagersApproveOnboarding,
     ),
     startPickup: command("managers:start-pickup", WS_METHODS.factoryManagersStartPickup),
+    updateSettings: command("managers:update-settings", WS_METHODS.factoryManagersUpdateSettings),
     listAssignments: command("assignments:list", WS_METHODS.factoryAssignmentsList),
     assignments: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:factory:assignments",
