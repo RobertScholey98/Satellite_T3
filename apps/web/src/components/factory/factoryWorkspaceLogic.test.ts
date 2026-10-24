@@ -15,7 +15,7 @@ import {
   collapseFactoryPriming,
   factoryMemberThreadKeys,
   factoryWorkspacePlace,
-  resolveFactoryDetailsCardLeft,
+  resolveFactoryDetailsCardPlacement,
   resolveFactoryDetailsCardSide,
   resolveFactoryWorkspaceView,
 } from "./factoryWorkspaceLogic";
@@ -194,20 +194,20 @@ describe("resolveFactoryDetailsCardSide", () => {
     expect(side(1011, false)).toBe("right");
   });
 
-  it("leaves room for Back to manager above the card on team threads", () => {
-    const canvas = { container: { width: 1600 }, lane };
+  it("keeps Back to manager above the card on team threads, on either side", () => {
+    const team = { backToManager: true, teamColumn: true };
+    const at = (width: number) => ({ container: { width }, lane });
+    expect(resolveFactoryDetailsCardPlacement(team, at(1600))).toEqual({
+      side: "left",
+      topInset: 56,
+    });
+    expect(resolveFactoryDetailsCardPlacement(team, at(1200))).toEqual({
+      side: "right",
+      topInset: 56,
+    });
     expect(
-      resolveFactoryDetailsCardLeft({ backToManager: true, teamColumn: true }, canvas),
-    ).toEqual({ topInset: 56 });
-    expect(
-      resolveFactoryDetailsCardLeft({ backToManager: false, teamColumn: true }, canvas),
-    ).toEqual({ topInset: 0 });
-    expect(
-      resolveFactoryDetailsCardLeft(
-        { backToManager: true, teamColumn: true },
-        { ...canvas, container: { width: 1200 } },
-      ),
-    ).toBeNull();
+      resolveFactoryDetailsCardPlacement({ backToManager: false, teamColumn: true }, at(1200)),
+    ).toEqual({ side: "right", topInset: 0 });
   });
 });
 

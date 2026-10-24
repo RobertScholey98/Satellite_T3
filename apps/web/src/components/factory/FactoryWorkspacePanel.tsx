@@ -5,6 +5,7 @@ import { ArrowLeftIcon } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 
 import { observeResize } from "~/lib/observeResize";
+import { cn } from "~/lib/utils";
 import { selectThreadPanelOpen, useRightPanelStore } from "~/rightPanelStore";
 import { useThreadShell } from "~/state/entities";
 import { buildThreadRouteParams } from "~/threadRoutes";
@@ -71,8 +72,8 @@ function useObstacleReport(
 
 /**
  * What a manager's workspace adds around a factory thread's chat: a card per live team on the
- * right and, on team threads, Back to manager. When the details card takes the top-left gutter,
- * Back to manager sits above it there; otherwise both stay at the top right, above the teams.
+ * right and, on team threads, Back to manager above the details card. When the details card takes
+ * the top-left gutter both sit there; otherwise both stay at the top right, above the teams.
  */
 export function FactoryWorkspacePanel(props: {
   readonly environmentId: EnvironmentId;
@@ -123,18 +124,28 @@ export function FactoryWorkspacePanel(props: {
 
   const backToManager = place?.backToManager === true;
   const backOnLeft = backToManager && side === "left";
+  const backOnRight = backToManager && side === "right" && placement !== null;
+  const backSpace = FACTORY_BACK_CONTROL_HEIGHT + THREAD_DETAILS_CARD_GAP;
   const top = placement
-    ? placement.y + (stacked && detailsHeight > 0 ? detailsHeight + THREAD_DETAILS_CARD_GAP : 0)
+    ? placement.y +
+      (backOnRight ? backSpace : 0) +
+      (stacked && detailsHeight > 0 ? detailsHeight + THREAD_DETAILS_CARD_GAP : 0)
     : 0;
   const height = placement && canvas ? canvas.container.height - top - THREAD_DETAILS_CARD_GAP : 0;
-  const hasColumnContent = (view?.teams.length ?? 0) > 0 || (backToManager && !backOnLeft);
-  const visible = placement !== null && hasColumnContent && height >= MIN_COLUMN_HEIGHT;
+  const visible =
+    placement !== null && (view?.teams.length ?? 0) > 0 && height >= MIN_COLUMN_HEIGHT;
+  const rightBottom = visible
+    ? top + height
+    : backOnRight
+      ? placement.y + FACTORY_BACK_CONTROL_HEIGHT
+      : null;
 
-  // With the details card on the left, the column is the only card on the right.
+  // With the details card on the left, the column and Back to manager are the only cards on the
+  // right.
   useObstacleReport(
     canvas?.reportDetailsCard,
-    visible && !stacked
-      ? { left: placement.x, right: placement.x + placement.width, bottom: top + height }
+    placement && rightBottom !== null && !stacked
+      ? { left: placement.x, right: placement.x + placement.width, bottom: rightBottom }
       : null,
     stacked,
   );
@@ -174,6 +185,24 @@ export function FactoryWorkspacePanel(props: {
           {back}
         </nav>
       ) : null}
+      {backOnRight ? (
+        <nav
+          aria-label="Manager workspace"
+          // Moves down with the details card below it while the find bar is open.
+          className={cn(
+            "absolute z-20",
+            topInset > 0 && "transition-[top] duration-150 ease-out motion-reduce:transition-none",
+          )}
+          style={{
+            right: placement.right,
+            top: placement.y,
+            width: placement.width,
+            height: FACTORY_BACK_CONTROL_HEIGHT,
+          }}
+        >
+          {back}
+        </nav>
+      ) : null}
       {visible ? (
         <aside
           aria-label="Manager teams"
@@ -183,7 +212,6 @@ export function FactoryWorkspacePanel(props: {
         >
           <ScrollArea scrollFade className="h-full">
             <div className="flex flex-col gap-3">
-              {backOnLeft ? null : back}
               {view.teams.map((team) => (
                 <TeamCard
                   key={team.assignment.id}

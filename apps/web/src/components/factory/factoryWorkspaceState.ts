@@ -34,7 +34,7 @@ import {
 import {
   factoryMemberThreadKeys,
   factoryWorkspacePlace,
-  resolveFactoryDetailsCardLeft,
+  resolveFactoryDetailsCardPlacement,
   resolveFactoryWorkspaceView,
   type FactoryWorkspacePlace,
 } from "./factoryWorkspaceLogic";
@@ -156,16 +156,13 @@ export function useFactoryWorkspacePlace(
   return useAtomValue(workspacePlaceAtom(environmentId)(threadId));
 }
 
-/** For the details card: its top-left placement on a factory thread; undefined on any other. */
-export function useFactoryDetailsCardLeftPlacement(
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-) {
+/** For the details card: its placement on a factory thread; undefined on any other. */
+export function useFactoryDetailsCardPlacement(environmentId: EnvironmentId, threadId: ThreadId) {
   const place = useFactoryWorkspacePlace(environmentId, threadId);
   return place === null
     ? undefined
-    : (canvas: Parameters<typeof resolveFactoryDetailsCardLeft>[1]) =>
-        resolveFactoryDetailsCardLeft(place, canvas);
+    : (canvas: Parameters<typeof resolveFactoryDetailsCardPlacement>[1]) =>
+        resolveFactoryDetailsCardPlacement(place, canvas);
 }
 
 /** Whether the thread is a manager's current thread on a factory environment. */

@@ -18,7 +18,7 @@ export function ThreadDetailsCard({
   anchor,
   handle,
   onPresentationChange,
-  resolveLeftPlacement,
+  resolvePlacement,
   children,
 }: {
   threadRef: ScopedThreadRef;
@@ -26,23 +26,24 @@ export function ThreadDetailsCard({
   handle: ReturnType<typeof PopoverCreateHandle>;
   onPresentationChange: (presentation: ThreadPanelPresentation) => void;
   /**
-   * Returns a placement in the top-left gutter, `topInset` below the canvas top, to put the card
-   * there and report it as the lane's left obstacle; null keeps it at the top right. Given the
-   * canvas measurements only, so the choice never depends on the lane it changes.
+   * Picks the card's corner and how far below that corner's usual top it sits. `left` puts it in
+   * the top-left gutter and reports it as the lane's left obstacle; null keeps the top right.
+   * Given the canvas measurements only, so the choice never depends on the lane it changes.
    */
-  resolveLeftPlacement?:
+  resolvePlacement?:
     | ((
         canvas: Pick<NonNullable<ReturnType<typeof useChatCanvas>>, "container" | "lane">,
-      ) => { readonly topInset: number } | null)
+      ) => { readonly side: "left" | "right"; readonly topInset: number } | null)
     | undefined;
   children: (density: "full" | "compact" | "essential") => ReactNode;
 }) {
   const canvas = useChatCanvas();
-  const left = canvas && resolveLeftPlacement ? resolveLeftPlacement(canvas) : null;
-  const side = left ? "left" : "right";
+  const resolved = canvas && resolvePlacement ? resolvePlacement(canvas) : null;
+  const side = resolved?.side ?? "right";
+  const left = side === "left";
   const topInset = canvas?.detailsCardTopInset ?? 0;
   // The find bar sits at the top right, so only a right-hand card moves down for it.
-  const cardTopInset = left ? left.topInset : topInset;
+  const cardTopInset = (left ? 0 : topInset) + (resolved?.topInset ?? 0);
   const preferredPlacement = canvas
     ? resolveThreadDetailsCardLayout({
         container: canvas.container,

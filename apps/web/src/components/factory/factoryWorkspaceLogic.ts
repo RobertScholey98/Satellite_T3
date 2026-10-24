@@ -194,7 +194,7 @@ export const factoryWorkspacePlace = (
   teamColumn: view.teams.length > 0,
 });
 
-/** Back to manager's height in the top-left gutter, above the details card. */
+/** Back to manager's height above the details card, in whichever corner the card takes. */
 export const FACTORY_BACK_CONTROL_HEIGHT = 44;
 
 /**
@@ -216,14 +216,16 @@ export function resolveFactoryDetailsCardSide(input: {
   return laneRight - laneLeft >= input.lane.minChatWidth ? "left" : "right";
 }
 
-/** The details card's left placement on a factory thread, or null to keep it at the top right. */
-export function resolveFactoryDetailsCardLeft(
+/**
+ * The details card's corner on a factory thread. Back to manager sits above the card on either
+ * side, so on team threads the card starts below it.
+ */
+export function resolveFactoryDetailsCardPlacement(
   place: FactoryWorkspacePlace,
   canvas: Omit<Parameters<typeof resolveFactoryDetailsCardSide>[0], "teamColumn">,
-): { readonly topInset: number } | null {
-  if (resolveFactoryDetailsCardSide({ ...canvas, teamColumn: place.teamColumn }) === "right")
-    return null;
+): { readonly side: "left" | "right"; readonly topInset: number } {
   return {
+    side: resolveFactoryDetailsCardSide({ ...canvas, teamColumn: place.teamColumn }),
     topInset: place.backToManager ? FACTORY_BACK_CONTROL_HEIGHT + THREAD_DETAILS_CARD_GAP : 0,
   };
 }

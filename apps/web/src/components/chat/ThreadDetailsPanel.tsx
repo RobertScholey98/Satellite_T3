@@ -23,7 +23,7 @@ import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 import { FactoryThreadRow } from "../factory/FactoryThreadRow";
-import { useFactoryDetailsCardLeftPlacement } from "../factory/factoryWorkspaceState";
+import { useFactoryDetailsCardPlacement } from "../factory/factoryWorkspaceState";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -76,10 +76,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
     props.activeProjectScripts ? props.gitCwd : null,
   );
   const activeThreadRef = { environmentId: props.environmentId, threadId: props.threadId };
-  const resolveLeftPlacement = useFactoryDetailsCardLeftPlacement(
-    props.environmentId,
-    props.threadId,
-  );
+  const resolvePlacement = useFactoryDetailsCardPlacement(props.environmentId, props.threadId);
   const branchToolbarProps = {
     showGitControls: props.isGitRepo,
     environmentId: props.environmentId,
@@ -112,7 +109,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       anchor={props.anchor}
       handle={props.handle}
       onPresentationChange={props.onPresentationChange}
-      resolveLeftPlacement={resolveLeftPlacement}
+      resolvePlacement={resolvePlacement}
     >
       {(density) => (
         <>
