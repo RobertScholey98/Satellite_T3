@@ -28,6 +28,10 @@ default lead and manager, and one **Standard** team.
 - The environment's **concurrency cap**, the digest interval and the git identity stay on this
   machine. A manager also has its own cap, set when you approve its onboarding; work starts only
   when both have room.
+- **Runs on** appears when this machine has more than one instance of a provider, such as two Claude
+  accounts. It picks which one runs the factory's models for that provider; **First available** uses
+  whichever comes first. It stays on this machine. If the chosen instance goes away, the factory uses
+  the first available one and Settings says so.
 
 The factory config is a folder of Markdown files under `factory/` in Satellite's data directory,
 one per worker, lead, manager and team. You can edit them by hand; Settings shows any file it

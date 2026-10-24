@@ -1,4 +1,10 @@
-import { DEFAULT_FACTORY_CONFIG, EnvironmentId, type FactoryConfigView } from "@t3tools/contracts";
+import {
+  DEFAULT_FACTORY_CONFIG,
+  EnvironmentId,
+  type FactoryConfigView,
+  ProviderDriverKind,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import type { ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
@@ -104,5 +110,51 @@ it("saves the edited concurrency cap to the environment config", async () => {
   expect(state.updateConfig).toHaveBeenCalledExactlyOnceWith({
     environmentId,
     input: { scope: "environment", config: { ...saved, concurrencyCap: 3 } },
+  });
+});
+
+it("saves the instance a driver runs on, and First available removes the preference", async () => {
+  setup();
+  // Save answers with what was sent, so the form's next edit starts from it.
+  state.updateConfig.mockImplementation(
+    async ({ input }: { input: { config: FactoryConfigView["environment"] } }) => ({
+      _tag: "Success",
+      value: { environment: input.config, effective: input.config, configured: true },
+    }),
+  );
+  const claude = (instanceId: string, label: string) => ({
+    selection: { instanceId: ProviderInstanceId.make(instanceId), model: "claude-opus-5-5" },
+    label: `${label} · Opus 5.5`,
+    driverKind: ProviderDriverKind.make("claudeAgent"),
+  });
+  await using screen = await render(
+    <FactoryPageConfiguration
+      environmentId={environmentId}
+      environmentLabel="Build workstation"
+      modelOptions={[
+        claude("claude-home", "Claude (home)"),
+        claude("claude-work", "Claude (work)"),
+      ]}
+      canEdit
+    />,
+  );
+
+  await userEvent.click(screen.getByRole("combobox", { name: "Claude runs on" }));
+  await userEvent.click(screen.getByRole("option", { name: "Claude (work)" }));
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(state.updateConfig).toHaveBeenLastCalledWith({
+    environmentId,
+    input: {
+      scope: "environment",
+      config: { ...saved, instancePreferences: { claudeAgent: "claude-work" } },
+    },
+  });
+
+  await userEvent.click(screen.getByRole("combobox", { name: "Claude runs on" }));
+  await userEvent.click(screen.getByRole("option", { name: "First available" }));
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(state.updateConfig).toHaveBeenLastCalledWith({
+    environmentId,
+    input: { scope: "environment", config: { ...saved, instancePreferences: {} } },
   });
 });

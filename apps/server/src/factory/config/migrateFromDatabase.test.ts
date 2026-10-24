@@ -40,7 +40,8 @@ const gpt = { instanceId: "codex", model: "gpt-5.5" };
 const gptWork = { instanceId: "codex-work", model: "gpt-5.5" };
 const removed = { instanceId: "removed-instance", model: "old-model" };
 
-const liveEnvironment = Schema.decodeSync(FactoryConfig)({
+const decodeFactoryConfig = Schema.decodeSync(FactoryConfig);
+const liveEnvironment = decodeFactoryConfig({
   concurrencyCap: 3,
   recoveryAllowance: 2,
   digestIntervalMinutes: 15,
@@ -170,6 +171,24 @@ describe("planFactoryConfigMigration", () => {
       assert.deepStrictEqual(plan.notCarriedOver, [
         { projectId: null, key: "modelPool", value: removed },
       ]);
+    }),
+  );
+
+  it.effect("prefers the instance an old pool named for a driver, unless it is the default", () =>
+    Effect.sync(() => {
+      // Read as plain strings, so the expectations can be literals.
+      const plan = (modelPool: ReadonlyArray<typeof opus>): Readonly<Record<string, string>> =>
+        planFactoryConfigMigration({
+          environment: decodeFactoryConfig({ modelPool }),
+          projectOverrides: [],
+          roleSkills: {},
+          driverOf,
+        }).instancePreferences;
+      // The default Codex instance comes first, so the first other one is the preference.
+      assert.deepStrictEqual(plan([opus, gpt, gptWork]), { codex: "codex-work" });
+      assert.deepStrictEqual(plan([opus, sonnet, gpt]), {});
+      // An instance with no known driver is reported elsewhere and preferred for nothing.
+      assert.deepStrictEqual(plan([removed]), {});
     }),
   );
 
@@ -376,9 +395,13 @@ describe("migrateFactoryConfigFromDatabase", () => {
           yield* fs.readFileString(path.join(directory, "roles", "reviewer.md")),
           "# Our reviewer\n",
         );
-        assert.deepStrictEqual(yield* savedRows, [
-          { scope_key: "environment", config_json: saved },
-        ]);
+        // The row gains which instance the pool's Codex models ran on, and keeps everything else
+        // as stored, the retired pickup guidance included: it stays the rollback copy.
+        const rows = yield* savedRows;
+        assert.deepStrictEqual(
+          rows.map((row) => [row.scope_key, JSON.parse(row.config_json)]),
+          [["environment", { ...JSON.parse(saved), instancePreferences: { codex: "codex-work" } }]],
+        );
       }),
     ),
   );

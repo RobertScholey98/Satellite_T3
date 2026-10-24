@@ -11,9 +11,20 @@ import {
   chooseModel,
   resolveModelList,
   resolveModelRef,
+  stalePreferences,
   usableModelPool,
+  withInstancePreferences,
   type FactoryModelCatalog,
+  type InstancePreferences,
 } from "./modelResolution.ts";
+
+const prefer = (preferences: Record<string, string>): InstancePreferences =>
+  Object.fromEntries(
+    Object.entries(preferences).map(([driver, instanceId]) => [
+      ProviderDriverKind.make(driver),
+      ProviderInstanceId.make(instanceId),
+    ]),
+  );
 
 const ref = (driver: string, model: string): FactoryModelRef => ({
   driver: ProviderDriverKind.make(driver),
@@ -71,7 +82,7 @@ describe("factory model resolution", () => {
     assert.strictEqual(resolveModelRef(GROK, CATALOG), null);
   });
 
-  it("names each driver that more than one instance can serve", () => {
+  it("names each driver that more than one instance can serve and no preference settles", () => {
     assert.deepStrictEqual(ambiguousDrivers(CATALOG), [
       {
         driver: ProviderDriverKind.make("claudeAgent"),
@@ -81,6 +92,52 @@ describe("factory model resolution", () => {
         ],
       },
     ]);
+    assert.deepStrictEqual(ambiguousDrivers(CATALOG, prefer({ claudeAgent: "claude-home" })), []);
+  });
+
+  it("runs a driver's models on its preferred instance, then on the first that serves them", () => {
+    const home = withInstancePreferences(CATALOG, prefer({ claudeAgent: "claude-home" }));
+    assert.deepStrictEqual(
+      resolveModelRef(OPUS, home),
+      selection("claude-home", "claude-opus-5-5"),
+    );
+    assert.deepStrictEqual(
+      resolveModelRef(GPT, home),
+      selection("codex", "gpt-6"),
+      "other drivers are untouched",
+    );
+    // claude-work lacks Sonnet, so Sonnet falls back to the first instance that has it.
+    const work = withInstancePreferences(CATALOG, prefer({ claudeAgent: "claude-work" }));
+    assert.deepStrictEqual(
+      resolveModelRef(OPUS, work),
+      selection("claude-work", "claude-opus-5-5"),
+    );
+    assert.deepStrictEqual(
+      resolveModelRef(SONNET, work),
+      selection("claude-home", "claude-sonnet-5"),
+    );
+  });
+
+  it("falls back from a preference it cannot honour, and reports it as stale", () => {
+    // One instance is gone; the other belongs to a different driver.
+    const preferences = prefer({ claudeAgent: "claude-gone", codex: "claude-home" });
+    const catalog = withInstancePreferences(CATALOG, preferences);
+    assert.deepStrictEqual(
+      resolveModelRef(OPUS, catalog),
+      selection("claude-work", "claude-opus-5-5"),
+    );
+    assert.deepStrictEqual(resolveModelRef(GPT, catalog), selection("codex", "gpt-6"));
+    assert.deepStrictEqual(stalePreferences(preferences, CATALOG), [
+      {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        instanceId: ProviderInstanceId.make("claude-gone"),
+      },
+      {
+        driver: ProviderDriverKind.make("codex"),
+        instanceId: ProviderInstanceId.make("claude-home"),
+      },
+    ]);
+    assert.deepStrictEqual(stalePreferences(prefer({ claudeAgent: "claude-home" }), CATALOG), []);
   });
 
   it("narrows the pool to what this environment can run", () => {

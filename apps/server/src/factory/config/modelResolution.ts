@@ -35,11 +35,52 @@ export function factoryModelCatalog(providers: ReadonlyArray<ServerProvider>): F
     }));
 }
 
+/** Which instance runs a driver's models on this environment, from its database config. */
+export type InstancePreferences = Readonly<Record<ProviderDriverKind, ProviderInstanceId>>;
+
+const isPreferred = (entry: FactoryModelCatalogEntry, preferences: InstancePreferences) =>
+  preferences[entry.driver] === entry.instanceId;
+
 /**
- * Drivers with more than one instance that can run now. A name resolves to the first of them that
- * offers its model, which may not be the instance the user means.
+ * The catalog with each driver's preferred instance ahead of its others. Resolution takes the first
+ * instance of a driver that serves a model, so this makes it the preferred one when that serves it
+ * and otherwise the first usable one, in the registry's order. A preference naming an instance the
+ * catalog lacks moves nothing, so it falls back the same way.
  */
-export function ambiguousDrivers(catalog: FactoryModelCatalog): ReadonlyArray<{
+export function withInstancePreferences(
+  catalog: FactoryModelCatalog,
+  preferences: InstancePreferences,
+): FactoryModelCatalog {
+  return catalog.toSorted(
+    (left, right) =>
+      Number(isPreferred(right, preferences)) - Number(isPreferred(left, preferences)),
+  );
+}
+
+/** Preferences naming an instance that is not usable now, or not this driver's: the UI flags them. */
+export function stalePreferences(
+  preferences: InstancePreferences,
+  catalog: FactoryModelCatalog,
+): ReadonlyArray<{ readonly driver: ProviderDriverKind; readonly instanceId: ProviderInstanceId }> {
+  return Object.entries(preferences)
+    .filter(
+      ([driver, instanceId]) =>
+        !catalog.some((entry) => entry.driver === driver && entry.instanceId === instanceId),
+    )
+    .map(([driver, instanceId]) => ({
+      driver: driver as ProviderDriverKind,
+      instanceId: instanceId as ProviderInstanceId,
+    }));
+}
+
+/**
+ * Drivers with more than one usable instance and no preference between them. A name resolves to
+ * the first of them that offers its model, which may not be the instance the user means.
+ */
+export function ambiguousDrivers(
+  catalog: FactoryModelCatalog,
+  preferences: InstancePreferences = {},
+): ReadonlyArray<{
   readonly driver: ProviderDriverKind;
   readonly instanceIds: ReadonlyArray<ProviderInstanceId>;
 }> {
@@ -48,7 +89,7 @@ export function ambiguousDrivers(catalog: FactoryModelCatalog): ReadonlyArray<{
     byDriver.set(entry.driver, [...(byDriver.get(entry.driver) ?? []), entry.instanceId]);
   }
   return [...byDriver]
-    .filter(([, instanceIds]) => instanceIds.length > 1)
+    .filter(([driver, instanceIds]) => instanceIds.length > 1 && preferences[driver] === undefined)
     .map(([driver, instanceIds]) => ({ driver, instanceIds }));
 }
 

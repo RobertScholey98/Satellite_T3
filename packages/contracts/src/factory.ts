@@ -35,6 +35,7 @@ import {
 } from "./factoryDefinitions.ts";
 import { IssueBoardColumn, IssueRef, IssueSummary } from "./issues.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 import { ThreadPullRequestKey } from "./threadPullRequest.ts";
 
@@ -226,6 +227,13 @@ export const FactoryConfig = Schema.Struct({
   gitIdentity: FactoryGitIdentity.pipe(
     Schema.withDecodingDefault(Effect.succeed({ kind: "user" as const })),
   ),
+  /**
+   * Which provider instance runs a driver's models on this environment, when it has several. Never
+   * written to the factory config files, since instance ids differ between machines.
+   */
+  instancePreferences: Schema.Record(ProviderDriverKind, ProviderInstanceId).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
 });
 export type FactoryConfig = typeof FactoryConfig.Type;
 
@@ -274,6 +282,13 @@ export const FactoryConfigView = Schema.Struct({
   effective: FactoryConfig,
   /** False until the environment config was saved once; the client offers a starting point. */
   configured: Schema.Boolean,
+  /**
+   * Instance preferences naming an instance this environment cannot use now, so its driver's
+   * models fall back to the first instance that serves them. Absent when there are none.
+   */
+  stalePreferences: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ driver: ProviderDriverKind, instanceId: ProviderInstanceId })),
+  ),
 });
 export type FactoryConfigView = typeof FactoryConfigView.Type;
 

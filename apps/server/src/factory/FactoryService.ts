@@ -147,7 +147,9 @@ import {
   ambiguousDrivers,
   factoryModelCatalog,
   resolveModelList,
+  stalePreferences,
   usableModelPool,
+  withInstancePreferences,
   type FactoryModelCatalog,
   type ModelChoice,
   type ResolvedModelList,
@@ -1468,10 +1470,38 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       : unmigratedConfigMessage(failure),
   );
 
+  // Drivers already warned about, by their set of instances, so reading the catalog on every call
+  // does not repeat the warning.
+  const warnedDrivers = new Set<string>();
+
+  /**
+   * Its catalog puts each driver's preferred instance first, from the environment's database
+   * config, so every resolution through it honours the preference.
+   */
   const factoryFiles = Effect.fnUntraced(function* () {
     const view = yield* deps.configStore.read;
-    const catalog = yield* deps.readModelCatalog;
+    const preferences = (yield* environmentConfig()).config.instancePreferences;
+    const usable = yield* deps.readModelCatalog;
+    yield* Effect.forEach(ambiguousDrivers(usable, preferences), ({ driver, instanceIds }) => {
+      const key = `${driver}:${instanceIds.join(",")}`;
+      if (warnedDrivers.has(key)) return Effect.void;
+      warnedDrivers.add(key);
+      return Effect.logWarning(
+        "A factory model name matches more than one provider instance; the first is used",
+        { driver, chosen: instanceIds[0], instances: instanceIds },
+      );
+    });
+    const catalog = withInstancePreferences(usable, preferences);
     return { view, catalog, pool: usableModelPool(view.settings, catalog) };
+  });
+
+  /** A config view as clients read it, with the preferences this environment cannot honour now. */
+  const withStalePreferences = Effect.fnUntraced(function* (view: FactoryConfigView) {
+    const stale = stalePreferences(
+      view.environment.instancePreferences,
+      yield* deps.readModelCatalog,
+    );
+    return stale.length === 0 ? view : { ...view, stalePreferences: stale };
   });
 
   /**
@@ -1550,7 +1580,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   });
 
   const getConfig: FactoryServiceShape["getConfig"] = (input) =>
-    protect(configView(input.projectId));
+    protect(configView(input.projectId).pipe(Effect.flatMap(withStalePreferences)));
 
   /** Every project's effective config has to stay sound, since each can narrow the pool. */
   const assertProjectsSound = Effect.fnUntraced(function* (environment: FactoryConfig) {
@@ -1598,7 +1628,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         yield* writeConfigRow(scopeKey, encodeOverride(input.override));
         return yield* configView(input.projectId);
       }),
-    );
+    ).pipe(Effect.flatMap(withStalePreferences));
 
   const decodeManager = Effect.fnUntraced(function* (row: ManagerRow) {
     return yield* decodeManagerValue({
@@ -5060,7 +5090,6 @@ export const make = Effect.gen(function* () {
   const { stateDir } = yield* ServerConfig.ServerConfig;
   const configStore = yield* FactoryConfigStore;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
-  const warnedDrivers = new Set<string>();
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   return yield* makeFactoryService({
@@ -5096,21 +5125,8 @@ export const make = Effect.gen(function* () {
         ),
     readRoleSkill: (role) => Effect.succeed(roleSkillSource(role)),
     configStore,
-    readModelCatalog: providerRegistry.getProviders.pipe(
-      Effect.map(factoryModelCatalog),
-      Effect.tap((catalog) =>
-        Effect.forEach(ambiguousDrivers(catalog), ({ driver, instanceIds }) => {
-          // Once per set of instances, so a catalog read on every call does not repeat it.
-          const key = `${driver}:${instanceIds.join(",")}`;
-          if (warnedDrivers.has(key)) return Effect.void;
-          warnedDrivers.add(key);
-          return Effect.logWarning(
-            "A factory model name matches more than one provider instance; the first is used",
-            { driver, chosen: instanceIds[0], instances: instanceIds },
-          );
-        }),
-      ),
-    ),
+    // Instance preferences live in the environment's config, so the service warns about ambiguity.
+    readModelCatalog: providerRegistry.getProviders.pipe(Effect.map(factoryModelCatalog)),
     readBoards: (projectId) =>
       issues.listBoards({ projectId, connectedOnly: true }).pipe(Effect.mapError(fromIssueError)),
     // Serves the stored copy; one older than 30 seconds also queues a background refresh, which

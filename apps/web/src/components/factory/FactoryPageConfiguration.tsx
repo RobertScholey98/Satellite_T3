@@ -22,6 +22,7 @@ import { issuesEnvironment } from "../work/issuesState";
 import { FactoryConfigRepoSection } from "./FactoryConfigRepoSection";
 import { FactoryConfigShareSection } from "./FactoryConfigShareSection";
 import { FactoryDefinitionsSection } from "./FactoryDefinitionsSection";
+import { FactoryInstancePreferences } from "./FactoryInstancePreferences";
 import type { FactoryModelOption } from "./FactoryPageConfig";
 import { FactoryPoolSection } from "./FactoryPoolSection";
 import { FactoryTeamsFileSection } from "./FactoryTeamsFileSection";
@@ -219,6 +220,15 @@ export function FactoryPageConfiguration({
                     : `GitHub App ${config.gitIdentity.appId}`}
                 </span>
               }
+            />
+            <FactoryInstancePreferences
+              config={config}
+              modelOptions={modelOptions}
+              disabled={disabled}
+              onChange={(next) => {
+                setSaveError(null);
+                setDraft(next);
+              }}
             />
           </SettingsSection>
         </>

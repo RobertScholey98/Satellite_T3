@@ -54,13 +54,21 @@ skipped at delegation. Imports cannot widen the pool without the user's say-so, 
 empties a model list to fit it, since an empty list would stand for the whole pool. On each
 environment the usable pool is the pool filtered to what that environment can run.
 
+A driver name picks no particular provider instance, and a machine can have several instances of
+one driver, for example a default Claude and a work Claude with its own key and billing. Each
+environment keeps a **runs-on** preference per driver in its database, seeded once from the
+database pool the migration replaced. A model runs on the preferred instance when it can, else on
+the first usable instance of its driver. A preference that names an instance this environment no
+longer has falls back the same way and is shown as stale rather than dropped. Instance ids are
+machine-specific, so the preference never reaches the files, the repo or an export.
+
 ## What stays out of the config
 
 | Kept elsewhere                                                               | Owner                                |
 | ---------------------------------------------------------------------------- | ------------------------------------ |
 | Protected paths, pickup guidance, project rules, teams used, concurrency cap | The manager's onboarding result      |
 | A manager's own instructions and models                                      | The manager record                   |
-| Environment concurrency cap, digest interval                                 | The environment, in its database     |
+| Environment concurrency cap, digest interval, runs-on instance per driver    | The environment, in its database     |
 | Git identity and every secret                                                | The environment and its secret store |
 
 There are no project-level overrides of definitions, and project role-skill files

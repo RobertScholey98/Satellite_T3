@@ -81,6 +81,11 @@ export interface FactoryConfigMigrationInput {
 export interface FactoryConfigMigrationPlan {
   readonly definitions: FactoryDefinitions;
   readonly notCarriedOver: ReadonlyArray<NotCarriedOver>;
+  /**
+   * Which instance each driver's models ran on, where the old pool named a driver's non-default
+   * instance. Instance ids stay out of the files, so these go to the environment's database config.
+   */
+  readonly instancePreferences: FactoryConfig["instancePreferences"];
 }
 
 /**
@@ -119,10 +124,20 @@ export const planFactoryConfigMigration = (
     models: toRefs(selections),
   });
 
+  // Definitions name only a driver, so a pool that named a driver's other instance would lose which
+  // one ran. Its first such entry becomes the driver's preference; a default instance needs none.
+  const instancePreferences: Record<ProviderDriverKind, ProviderInstanceId> = {};
   for (const selection of environment?.modelPool ?? []) {
-    if (input.driverOf(selection.instanceId) === null) {
+    const driver = input.driverOf(selection.instanceId);
+    if (driver === null) {
       notCarriedOver.push({ projectId: null, key: "modelPool", value: selection });
+      continue;
     }
+    if (
+      instancePreferences[driver] === undefined &&
+      selection.instanceId !== defaultInstanceIdForDriver(driver)
+    )
+      instancePreferences[driver] = selection.instanceId;
   }
 
   const roleModels = environment?.roleModels;
@@ -195,6 +210,7 @@ export const planFactoryConfigMigration = (
       teams,
     },
     notCarriedOver,
+    instancePreferences,
   };
 };
 
@@ -267,6 +283,10 @@ const DEFAULT_INSTANCE_DRIVERS = new Map<ProviderInstanceId, ProviderDriverKind>
 const storageError = (message: string) => new FactoryOperationError({ reason: "storage", message });
 const decodeConfig = Schema.decodeEffect(Schema.fromJsonString(FactoryConfig));
 const decodeOverride = Schema.decodeEffect(Schema.fromJsonString(FactoryConfigOverride));
+// The row as stored, so a merge keeps every key it holds, decoded or not.
+const StoredRow = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
+const decodeRow = Schema.decodeEffect(StoredRow);
+const encodeRow = Schema.encodeSync(StoredRow);
 
 const failureOf = <A>(decoded: Result.Result<A, FactoryConfigProblem>) =>
   Result.isFailure(decoded) ? decoded.failure : null;
@@ -401,7 +421,7 @@ export const migrateFactoryConfigFromDatabase = Effect.fn("FactoryConfigMigratio
     const driverOf = (instanceId: ProviderInstanceId): ProviderDriverKind | null =>
       providerInstances[instanceId]?.driver ?? DEFAULT_INSTANCE_DRIVERS.get(instanceId) ?? null;
 
-    const { definitions, notCarriedOver } = planFactoryConfigMigration({
+    const { definitions, notCarriedOver, instancePreferences } = planFactoryConfigMigration({
       environment,
       projectOverrides,
       roleSkills,
@@ -411,6 +431,21 @@ export const migrateFactoryConfigFromDatabase = Effect.fn("FactoryConfigMigratio
     if (unloadable !== null) {
       return yield* storageError(
         `The migrated ${unloadable.path} would not load, so nothing was written: ${unloadable.message}`,
+      );
+    }
+    // Merged into the row's own JSON, which otherwise stays the rollback copy. Written before any
+    // file, so a run interrupted before factory.yaml seeds them again on the next start.
+    if (environmentRow !== undefined && Object.keys(instancePreferences).length > 0) {
+      const stored = yield* decodeRow(environmentRow.config_json).pipe(
+        Effect.mapError(() => storageError("The saved factory config could not be read.")),
+      );
+      const merged = {
+        ...stored,
+        instancePreferences: { ...environment?.instancePreferences, ...instancePreferences },
+      };
+      yield* sql`UPDATE factory_config SET config_json=${encodeRow(merged)}
+          WHERE scope_key='environment'`.pipe(
+        Effect.mapError(() => storageError("Could not record which instances the pool ran on.")),
       );
     }
     for (const worker of definitions.workers) yield* store.writeWorker(worker);

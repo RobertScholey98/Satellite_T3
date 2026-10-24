@@ -4944,3 +4944,56 @@ describe("FactoryService delegation holds", () => {
     ),
   );
 });
+
+describe("FactoryService instance preferences", () => {
+  it.effect("runs a driver's models on its preferred instance and reports a stale preference", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const claudeWork = ProviderInstanceId.make("claude-work");
+        const factory = yield* makeHarness({
+          config: decodeConfig({
+            modelPool: [OPUS, SONNET],
+            instancePreferences: { claudeAgent: claudeWork },
+          }),
+        });
+        const { service, controls } = factory;
+        // A second Claude instance, listed after the first: only the preference picks it.
+        controls.catalog = [
+          ...CATALOG,
+          {
+            instanceId: claudeWork,
+            driver: ProviderDriverKind.make("claudeAgent"),
+            models: [OPUS.model],
+          },
+        ];
+
+        const created = yield* create(service);
+        assert.deepStrictEqual(created.modelSelection, {
+          instanceId: claudeWork,
+          model: OPUS.model,
+        });
+        assert.strictEqual((yield* service.getConfig({})).stalePreferences, undefined);
+
+        const environment = (yield* service.getConfig({})).environment;
+        const updated = yield* service.updateConfig({
+          scope: "environment",
+          config: {
+            ...environment,
+            instancePreferences: {
+              ...environment.instancePreferences,
+              [ProviderDriverKind.make("codex")]: ProviderInstanceId.make("codex-gone"),
+            },
+          },
+        });
+        const stale = [
+          {
+            driver: ProviderDriverKind.make("codex"),
+            instanceId: ProviderInstanceId.make("codex-gone"),
+          },
+        ];
+        assert.deepStrictEqual(updated.stalePreferences, stale);
+        assert.deepStrictEqual((yield* service.getConfig({})).stalePreferences, stale);
+      }),
+    ),
+  );
+});
