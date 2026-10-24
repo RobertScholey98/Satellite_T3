@@ -40,10 +40,12 @@ import {
   resolveMacWebAuthnEntitlements,
   resolveMacPasskeySigningConfiguration,
   resolveMergedStageDependencies,
+  resolveDesktopRuntimeDependencies,
   resolveBuildOptions,
   stageWslRuntimeArchive,
   ancestorNodeModulesPaths,
   copyDirectoryPreservingSymlinks,
+  createStagePatchedDependencies,
   LinuxBrowserSecretHostError,
   stageBrowserSecret,
   validateWindowsPackagedPayload,
@@ -61,6 +63,9 @@ import {
   WSL_RUNTIME_ARCHIVE_NAME,
   wslRuntimeArchiveStem,
 } from "./build-desktop-artifact.ts";
+import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
+import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 import {
   ReleasePackageManifestError,
   releasePackageFiles,
@@ -539,6 +544,41 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           `allowBuilds names a missing tarball: ${key}`,
         );
       }
+    }),
+  );
+
+  it.effect("pins every patched staged external to its patched version", () =>
+    Effect.gen(function* () {
+      const {
+        catalog = {},
+        overrides = {},
+        patchedDependencies = {},
+      } = yield* readWorkspaceConfig();
+      const stageDependencies = resolveMergedStageDependencies({
+        platform: "mac",
+        serverDependencies: resolveCatalogDependencies(
+          serverPackageJson.dependencies,
+          catalog,
+          "apps/server",
+        ),
+        desktopDependencies: resolveDesktopRuntimeDependencies(
+          desktopPackageJson.dependencies,
+          catalog,
+        ),
+        arch: "universal",
+        fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
+      });
+      const resolvedOverrides = resolveCatalogDependencies(overrides, catalog, "apps/desktop");
+      const mismatches = Object.keys(
+        createStagePatchedDependencies(patchedDependencies, stageDependencies),
+      ).flatMap((patchKey) => {
+        const versionSeparator = patchKey.lastIndexOf("@");
+        const name = patchKey.slice(0, versionSeparator);
+        const patchedVersion = patchKey.slice(versionSeparator + 1);
+        const spec = resolvedOverrides[name] ?? stageDependencies[name];
+        return spec === patchedVersion ? [] : [`${name}: ${spec} (patched ${patchedVersion})`];
+      });
+      assert.deepStrictEqual(mismatches, []);
     }),
   );
 
