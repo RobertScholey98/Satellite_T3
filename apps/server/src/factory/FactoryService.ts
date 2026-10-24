@@ -3499,7 +3499,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    * A sync that shows it mergeable again ends that conflict, so a later one is asked about anew.
    * `unknown` ends nothing: hosts report it while they recompute after any push or base move, so
    * it says nothing about whether the conflict was resolved. The ask waits while the manager is
-   * paused, the user has the lead, or the lead waits on the user, and is recorded only once sent.
+   * paused, the user has the lead, or the lead waits on the user. It is recorded after the send is
+   * attempted: a failed send is only logged, so that ask is lost rather than retried.
    */
   const askToRebase = Effect.fnUntraced(function* (
     row: LeadAssignmentRow & { readonly manager_state: string },

@@ -716,7 +716,10 @@ export const FactoryLogKind = Schema.Literals([
   "ticket",
   /** Onboarding approved; the payload names the onboarding thread and the manager's new one. */
   "onboarded",
-  /** A lead was asked to rebase a conflicting pull request; the payload keys that version of it. */
+  /**
+   * A lead was asked to rebase a pull request, or it stopped conflicting; the payload names the
+   * pull request and whether it is now asked about.
+   */
   "conflict",
 ]);
 export type FactoryLogKind = typeof FactoryLogKind.Type;
