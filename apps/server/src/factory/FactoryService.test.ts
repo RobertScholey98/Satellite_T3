@@ -2523,6 +2523,7 @@ describe("FactoryService checklist", () => {
             waitingReason: null,
             claimedAt: null,
             controlViolations: [],
+            previousLeadThreadIds: [],
           },
         ]);
         assert.strictEqual(feed.managers[0]!.waitingOnYou, 0);
