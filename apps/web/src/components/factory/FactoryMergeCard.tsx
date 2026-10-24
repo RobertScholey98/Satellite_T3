@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 
 import { requestConfirmDialog } from "~/confirmDialog";
@@ -45,6 +46,11 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
     props.environmentId,
     row.projectId,
   );
+  // The host's answer comes before the sync that marks the pull request merged, so the row holds
+  // until that sync replaces the snapshot it merged from: then it leaves the card, or offers Merge
+  // again if the host still reports it open.
+  const [mergedFrom, setMergedFrom] = useState<string | null>(null);
+  const merging = mergedFrom !== null && mergedFrom === row.syncedAt;
   // The same merge as the pull request list's quick action, with the repository's method.
   const { actionPending, perform } = usePullRequestActionRunner({
     environmentId: props.environmentId,
@@ -54,6 +60,7 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
       repository: row.repository,
       number: row.number,
     },
+    onSuccess: () => setMergedFrom(row.syncedAt),
     resolveMergeMethod: (detail) => {
       const allowed = detail.capabilities.mergeMethods.filter(
         (method) => detail.mergeCapabilities[method],
@@ -90,7 +97,9 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
           </p>
         ) : null}
       </div>
-      {row.status === "ready" ? (
+      {merging ? (
+        <span className="shrink-0 text-2xs text-muted-foreground">Merging…</span>
+      ) : row.status === "ready" ? (
         <Button
           variant="outline"
           size="xs"

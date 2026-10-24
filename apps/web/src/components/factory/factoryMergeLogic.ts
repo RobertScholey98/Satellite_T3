@@ -37,6 +37,8 @@ export interface FactoryMergeRow {
   readonly number: number;
   readonly title: string | null;
   readonly url: string;
+  /** When the host was last read for this pull request; a sync replaces it. */
+  readonly syncedAt: string;
   readonly status: FactoryMergeRowStatus;
   /** Protected paths the pull request changes; merging it overrides the factory's hold. */
   readonly protectedPaths: ReadonlyArray<string>;
@@ -128,6 +130,7 @@ export function resolveFactoryMergeRows(
         number: link.number,
         title: link.snapshot?.title ?? null,
         url: link.url,
+        syncedAt: link.snapshot!.syncedAt,
         status: mergeStatus(assignment, link),
         protectedPaths: violation?.paths ?? [],
         claimedAt: assignment.claimedAt ?? null,
