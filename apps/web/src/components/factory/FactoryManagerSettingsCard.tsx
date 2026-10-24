@@ -89,9 +89,9 @@ function ManagerSettings(props: {
   const getConfig = useAtomCommand(factoryEnvironment.getConfig, { reportFailure: false });
   const definitions = useFactoryDefinitions(environmentId).view;
   const providers = useEnvironmentProviders().get(environmentId);
+  // Only for the instance preferences the model choices follow; the cap comes from the feed.
   const [environment, setEnvironment] = useState<FactoryConfig | null>(null);
   const [draft, setDraft] = useState<ManagerSettingsDraft | null>(null);
-  // Only for the instance preferences the model choices follow; the cap comes from the feed.
   // The version the form was opened at, so a save over a change made meanwhile is refused.
   const [openedAt, setOpenedAt] = useState(manager.updatedAt);
   const [newPath, setNewPath] = useState("");
