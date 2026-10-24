@@ -59,8 +59,8 @@ yours first.
 On the new-thread screen, turn on the **Engineering manager** toggle left of the checkout selector.
 Type a name for the manager and send. The manager's thread opens pinned and starts onboarding: it
 reads the project and proposes how it should work. A project can have several managers. Each picks
-up only from its own pickup columns, two managers can't pick up the same column unless their
-labels differ, and a ticket one manager is working on is not offered to another.
+up only from its own pickup columns, and a ticket one manager is working on is not offered to
+another. Two managers can't pick up the same column unless their labels differ.
 
 The proposal appears as a card in the manager's thread. Review it there:
 
@@ -102,8 +102,8 @@ manager's model. **Edit** changes them: pickup columns and labels, the cap, whic
 staff (none ticked means all), protected paths, your answers to its rules, and its model. A save
 tells the manager what changed, and a new model applies from its next turn. Lowering the cap below
 what is running cancels nothing; new work waits for room. Turning pickup on waits for **Start
-picking up**, as after approval. Settings can't be edited while the manager is paused, and a save
-is refused if they changed elsewhere since you opened them.
+picking up**, as after approval. Settings can't be edited while the manager is paused. If they
+changed elsewhere since you opened them, the save is refused; cancel and edit again.
 
 Below that, a **Pull requests** card lists the teams' open pull requests, the ones ready to merge
 first, the longest waiting at the top. **Merge** appears once the lead has claimed the work done,
