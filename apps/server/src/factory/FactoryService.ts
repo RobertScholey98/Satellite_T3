@@ -1515,8 +1515,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    * launch that failed never keeps the place for good.
    *
    * A place counts work running at once, not delegations: a member whose task finished frees its
-   * place without ending its row, so its stats and feed stay, and a follow-up on its thread takes
-   * the place again while it runs.
+   * place without ending its row, so its stats and feed stay. Only delegation is checked here: a
+   * follow-up sent to a finished member's thread is never refused, so the lead skill routes more
+   * work through delegation, and such a follow-up still counts against the place while it runs.
    */
   const heldPlaces = new Map<string, ReadonlyArray<number>>();
   const PLACE_HOLD_MS = 5 * 60_000;

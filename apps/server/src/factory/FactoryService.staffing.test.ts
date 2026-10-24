@@ -213,6 +213,11 @@ describe("FactoryService staffing from the factory config", () => {
           });
           threadRuns.set(worker, idleRun({ latestRunStatus: "running", runInProgress: true }));
           assert.strictEqual(yield* busy(), "The team allows 1 × Builder and it is busy.");
+          // Waiting on the user, or recorded before its first run, is still work in progress.
+          threadRuns.set(worker, idleRun({ pendingRequests: 1 }));
+          assert.strictEqual(yield* busy(), "The team allows 1 × Builder and it is busy.");
+          threadRuns.set(worker, idleRun({ latestRunStatus: null }));
+          assert.strictEqual(yield* busy(), "The team allows 1 × Builder and it is busy.");
 
           threadRuns.set(worker, idleRun());
           const again = yield* service.planDelegation(lead, { member: "Builder", task: "Again." });
