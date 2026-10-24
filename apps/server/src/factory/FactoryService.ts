@@ -169,6 +169,7 @@ import {
   type RoleSkillSource,
   withProjectSection,
   workerBrief,
+  workerTask,
 } from "./roleSkills.ts";
 import { ONBOARDING_BRIEF } from "./roles/index.ts";
 import * as FactoryTicketHost from "./tickets/FactoryTicketHost.ts";
@@ -4313,7 +4314,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             ? `${renderRoleSkill(
                 (yield* deps.readRoleSkill(memberRole, shell.workspaceRoot)).text,
                 fill,
-              )}\n\n# Task\n\n${input.task}`
+              )}\n\n${workerTask(input.task)}`
             : workerBrief(migrated, {
                 ...fill,
                 result: manager.onboardingResult,

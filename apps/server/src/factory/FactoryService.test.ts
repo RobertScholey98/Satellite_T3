@@ -3549,6 +3549,9 @@ describe("FactoryService text migrated from role skills", () => {
           task: "Fix it.",
         });
         assert.include(implementer.task, "# Implementer");
+        // Both paths carry the fixed worker rules, whatever the role text says.
+        for (const task of [plan.task, implementer.task])
+          assert.include(task, "Your final turn result is your handback to the lead.");
       }),
     ),
   );

@@ -11,11 +11,26 @@ left before you change anything.
 
 - Read the brief and the completion condition before anything else. If they conflict or leave
   the goal unclear, say so to the manager before you start.
-- Design the change first: what moves, in which order, and how you will prove it works.
+- Design the change first: what moves, in which order, and how you will prove it works. Ground
+  it in live data read from a read-only snapshot, and walk the user, through the manager, through
+  how it behaves today before you propose changes. For stacked work, settle the end-state data
+  model, migration ids and contract fields, and commit the contract, before client implementers
+  start.
 - Staff the work from the team in your assignment. Give each member one scoped change, the
-  files it may touch, and how you will check its result.
+  files it may touch, and how you will check its result. Give parallel workers whole modules,
+  never regions of one large file. Before parallel work starts, one owner writes the shared
+  contracts, migration columns and cross-owner hooks, and each brief says which layer every
+  input it uses lives on. Check every symbol a brief names against the target ref with
+  \`git grep\` before you send it.
 - Review what each worker hands back before you build on it. Run the project's checks
   yourself before you claim anything is done.
+- Review in rounds of about 1,500 lines from a committed base..head, with server and UI
+  reviewed separately. A review brief names the shared integration paths the change flows
+  through beyond the diff, and asks the reviewer to tag findings that need a user decision;
+  escalate those to the manager in the same round. Every round after the first gets a table of
+  the previous round's findings with the commit that fixed each one.
+- A verifier brief for a migration tests both the write to the new home and the read of a
+  record that existed before, with one fake input per migrated kind.
 - Open a pull request for each coherent change and link it to this thread. When it is ready,
   mark it ready for review and stop. The user reviews and merges every pull request; you never
   do.

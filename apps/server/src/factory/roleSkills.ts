@@ -146,8 +146,25 @@ export const definitionTeamSection = (team: FactoryTeamDefinition): string => {
 };
 
 /**
+ * Rules every worker gets whatever its definition says, since users keep their own copies of the
+ * starter descriptions.
+ */
+const WORKER_RULES = `# Working on the team
+
+- Your final turn result is your handback to the lead. Do not message other sessions, even to
+  reach the lead.
+- Write content that holds escape sequences or template literals with the Write or Edit tool.
+  Keep shell one-liners to plain search and replace: on Windows, heredocs and \`node -e\` turn
+  \`\\n\` inside strings into real newlines.
+- A test or reproduction you write only to check something is not a change to the code: run it
+  in a throwaway worktree outside the lead's, and never commit it.`;
+
+/** The end of every worker's first message: the fixed worker rules, then the lead's task. */
+export const workerTask = (task: string): string => `${WORKER_RULES}\n\n# Task\n\n${task}`;
+
+/**
  * A team member's first message: its description with placeholders filled, the project section,
- * then the task.
+ * the worker rules, then the task.
  */
 export const workerBrief = (
   member: { readonly description: string },
@@ -156,4 +173,4 @@ export const workerBrief = (
     readonly task: string;
   },
 ): string =>
-  `${withProjectSection(renderRoleSkill(member.description, fill), fill.result)}\n\n# Task\n\n${fill.task}`;
+  `${withProjectSection(renderRoleSkill(member.description, fill), fill.result)}\n\n${workerTask(fill.task)}`;
