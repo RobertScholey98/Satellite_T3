@@ -676,6 +676,20 @@ export const DUO = {
   createdBy: "user" as const,
 };
 
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+/**
+ * Rewrites an assignment as one commissioned before teams came from the factory config: staffed
+ * by role from the Duo preset, with no team snapshot.
+ */
+export const asLegacyTeam = (assignmentId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE factory_assignments
+        SET team_json=${encodeJson({ preset: "Duo", members: DUO.members })}
+        WHERE id=${assignmentId}`;
+  });
+
 export const TEAM_FACTORY = decodeConfig({
   concurrencyCap: 2,
   modelPool: [OPUS, SONNET],

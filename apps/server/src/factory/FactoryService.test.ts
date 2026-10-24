@@ -86,6 +86,7 @@ import {
   VERDICT,
   makeStaffingFactory,
   pickupRefusal,
+  asLegacyTeam,
 } from "./FactoryService.testkit.ts";
 
 const UNKNOWN_PROJECT_ID = ProjectId.make("project-missing");
@@ -2306,18 +2307,6 @@ describe("FactoryService project pause", () => {
     ),
   );
 });
-
-/**
- * Rewrites an assignment as one commissioned before teams came from the factory config: staffed
- * by role from the Duo preset, with no team snapshot.
- */
-const asLegacyTeam = (assignmentId: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`UPDATE factory_assignments
-        SET team_json=${JSON.stringify({ preset: "Duo", members: DUO.members })}
-        WHERE id=${assignmentId}`;
-  });
 
 describe("FactoryService teams", () => {
   it.effect("staffs the factory team an older preset name matches, and snapshots it", () =>
