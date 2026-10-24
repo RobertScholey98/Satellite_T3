@@ -193,9 +193,21 @@ const make = Effect.gen(function* () {
     ),
     factory_role_brief: McpToolAccess.reads(({ role }) =>
       Effect.gen(function* () {
-        const { manager } = yield* callingManager("This thread is not part of the factory.");
+        const { projectId, managerId } = yield* callingManager(NOT_A_MANAGER_OR_LEAD).pipe(
+          Effect.map(({ manager }) => ({ projectId: manager.projectId, managerId: manager.id })),
+          // The manager's refusal is kept, since it says when the manager's onboarding finished.
+          Effect.catch((notManager) =>
+            callingLead(NOT_A_MANAGER_OR_LEAD).pipe(
+              Effect.map(({ assignment }) => ({
+                projectId: assignment.projectId,
+                managerId: assignment.managerId,
+              })),
+              Effect.catch(() => Effect.fail(notManager)),
+            ),
+          ),
+        );
         const brief = yield* factory
-          .roleBrief(manager.projectId, role, manager.id)
+          .roleBrief(projectId, role, managerId)
           .pipe(Effect.mapError(toolFailure));
         return {
           ...brief,

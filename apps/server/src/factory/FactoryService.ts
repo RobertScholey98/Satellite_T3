@@ -1513,6 +1513,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    * server is one process and planning already runs under its lock; pending rows in
    * `factory_members` would leak into the feed, stats and sub-agent lookups. A hold lapses, so a
    * launch that failed never keeps the place for good.
+   *
+   * A place counts work running at once, not delegations: a member whose task finished frees its
+   * place without ending its row, so its stats and feed stay. Only delegation is checked here: a
+   * follow-up sent to a finished member's thread is never refused, so the lead skill routes more
+   * work through delegation, and such a follow-up still counts against the place while it runs.
    */
   const heldPlaces = new Map<string, ReadonlyArray<number>>();
   const PLACE_HOLD_MS = 5 * 60_000;
@@ -1521,6 +1526,15 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     | { readonly kind: "role"; readonly role: string };
   const placeKey = (assignmentId: string, place: Place) =>
     `${assignmentId}\n${place.kind === "member" ? `member:${place.name}` : `role:${place.role}`}`;
+
+  /**
+   * Whether a live member's thread is working. A thread not readable yet was just created, and one
+   * with no run yet is about to start, so both count as working.
+   */
+  const threadHoldsPlace = (runs: FactoryThreadRuns | null) =>
+    runs === null ||
+    (!runs.deleted &&
+      (runs.runInProgress || runs.pendingRequests > 0 || runs.latestRunStatus === null));
 
   /** Holds one of the place's seats for a plan, or fails when every seat is taken or held. */
   const reservePlace = (
@@ -1536,14 +1550,17 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         // Sub-agents join observed under their parent's place but never take one.
         const live =
           place.kind === "member"
-            ? yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM factory_members
+            ? yield* sql<{ thread_id: string }>`SELECT thread_id FROM factory_members
                 WHERE assignment_id=${assignmentId} AND member_name=${place.name}
                 AND joined != 'observed' AND ended_at IS NULL`
-            : yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM factory_members
+            : yield* sql<{ thread_id: string }>`SELECT thread_id FROM factory_members
                 WHERE assignment_id=${assignmentId} AND role=${place.role}
                 AND joined != 'observed' AND ended_at IS NULL`;
-        if ((live[0]?.count ?? 0) + held.length >= place.count)
-          return yield* error("conflict", place.busy);
+        let busy = held.length;
+        for (const member of live)
+          if (threadHoldsPlace(yield* deps.readThreadRuns(ThreadId.make(member.thread_id))))
+            busy += 1;
+        if (busy >= place.count) return yield* error("conflict", place.busy);
         heldPlaces.set(key, [...held, nowMs + PLACE_HOLD_MS]);
       }),
     );

@@ -645,6 +645,17 @@ describe("factory_role_brief", () => {
     }),
   );
 
+  it.effect("reads the brief for the calling lead's project", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_role_brief", { role: "reviewer" }, LEAD_THREAD);
+      assert.deepStrictEqual(yield* Ref.get(harness.briefRequests), [
+        { projectId: assignment.projectId, role: "reviewer", managerId: assignment.managerId },
+      ]);
+      assert.strictEqual(result.text, "# reviewer brief");
+    }),
+  );
+
   it.effect("refuses a thread outside the factory", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
@@ -654,7 +665,7 @@ describe("factory_role_brief", () => {
       assert.deepInclude(failure, {
         _tag: "FactoryToolFailedError",
         reason: "not-found",
-        message: "This thread is not part of the factory.",
+        message: "This thread is not an engineering manager or a factory lead.",
       });
       assert.deepStrictEqual(yield* Ref.get(harness.briefRequests), []);
     }),
