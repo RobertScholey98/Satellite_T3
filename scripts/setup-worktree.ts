@@ -46,13 +46,48 @@ if (!projectRoot) {
   throw new Error("T3CODE_PROJECT_ROOT is not set. Run this through the t3.json setup action.");
 }
 
-// `shell` resolves `vp` through PATH, including Windows command shims.
+// The README's quick start installs with pnpm and leaves the global `vp`
+// optional, and an app started before vp was installed keeps its old PATH.
+// pnpm installs the same lockfile: it switches to the version package.json
+// pins, as `vp i` does. With neither on PATH, the marker names the fix.
+const onPath = (command: string) => {
+  // Windows always sets PATHEXT, the extensions cmd.exe tries for a bare name,
+  // and cmd.exe also finds a PATH entry written in quotes.
+  const extensions = process.env.PATHEXT?.split(";").filter(Boolean) ?? [""];
+  return (process.env.PATH ?? "")
+    .split(NodePath.delimiter)
+    .map((dir) => dir.replace(/^"(.*)"$/, "$1"))
+    .filter(Boolean)
+    .some((dir) => extensions.some((ext) => NodeFS.existsSync(NodePath.join(dir, command + ext))));
+};
+const installer = onPath("vp")
+  ? { tool: "vp", command: "vp i --frozen-lockfile -- --yes" }
+  : onPath("pnpm")
+    ? { tool: "pnpm", command: "pnpm install --frozen-lockfile --yes" }
+    : undefined;
+if (!installer) {
+  failureDetail = [
+    "Neither vp nor pnpm is on PATH, so dependencies were not installed.",
+    "Install one of them (README.md, Install vp):",
+    "  Windows PowerShell: irm https://vite.plus/ps1 | iex",
+    "  macOS and Linux:    curl -fsSL https://vite.plus | bash",
+    "  or pnpm:            npm install -g pnpm",
+    "Restart Satellite so it sees the new PATH and rerun Setup Worktree,",
+    "or run `pnpm install --frozen-lockfile` in this worktree.",
+  ].join("\n");
+  process.exit(1);
+}
+if (installer.tool !== "vp") {
+  process.stderr.write(`vp is not on PATH; installing with: ${installer.command}\n`);
+}
+
+// `shell` resolves the command through PATH, including Windows command shims.
 // Setup has no one answering install prompts. Pass pnpm's confirmation flag
-// through vp and leave stdin closed so other prompts fail instead of hanging.
+// and leave stdin closed so other prompts fail instead of hanging.
 // Install exactly the locked dependencies so setup never rewrites the lockfile.
 // A stale lockfile must fail setup rather than silently resolving a new one.
 // Output is piped, not inherited, so a failure can keep its tail in the marker.
-const install = NodeChildProcess.spawn("vp i --frozen-lockfile -- --yes", {
+const install = NodeChildProcess.spawn(installer.command, {
   cwd: worktree,
   shell: true,
   stdio: ["ignore", "pipe", "pipe"],
