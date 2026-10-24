@@ -47,7 +47,7 @@ import {
   RETRO_TRIAGE_COLUMN_ID,
   draftDragId,
   draftIdOfDrag,
-  projectManager,
+  projectManagers,
   triageColumnDrafts,
 } from "../factory/FactoryTriageState";
 import {
@@ -648,10 +648,11 @@ export function IssuesBoard({
   const query = useDeferredValue(preferences.query);
 
   // Retro findings wait in a local-only column until approved; only a managed project has them.
-  const factoryManager = projectManager(useFactoryManagers(environmentId), projectId);
-  const factoryDrafts = useFactoryDrafts(factoryManager ? environmentId : null);
+  const factoryManagers = projectManagers(useFactoryManagers(environmentId), projectId);
+  const factoryManaged = factoryManagers.length > 0;
+  const factoryDrafts = useFactoryDrafts(factoryManaged ? environmentId : null);
   const showDismissed = preferences.showDismissed === true;
-  const triage = factoryManager
+  const triage = factoryManaged
     ? triageColumnDrafts(factoryDrafts, projectId, { showDismissed, query })
     : [];
   const [openDraftId, setOpenDraftId] = useState<string | null>(null);
@@ -885,13 +886,16 @@ export function IssuesBoard({
         {view ? (
           <BoardSyncStatus sync={displaySync} retryDisabled={!connected} onRetry={refreshBoard} />
         ) : null}
-        {factoryManager && environmentId ? (
-          <FactoryIssuesManagerStatus
-            environmentId={environmentId}
-            manager={factoryManager}
-            connected={connected}
-          />
-        ) : null}
+        {environmentId
+          ? factoryManagers.map((manager) => (
+              <FactoryIssuesManagerStatus
+                key={manager.id}
+                environmentId={environmentId}
+                manager={manager}
+                connected={connected}
+              />
+            ))
+          : null}
         <div className="min-w-0 flex-1" />
         <Button
           size="icon-sm"
@@ -953,7 +957,7 @@ export function IssuesBoard({
               }
             />
           ) : null}
-          {mode === "board" && factoryManager ? (
+          {mode === "board" && factoryManaged ? (
             <Button
               size="sm"
               variant={showDismissed ? "secondary" : "ghost"}
@@ -1209,7 +1213,7 @@ export function IssuesBoard({
           <DndContext onDragEnd={dragEnd}>
             <div className="min-h-0 flex-1 overflow-auto">
               <div className="flex min-h-full w-max min-w-full items-stretch gap-3 pb-4">
-                {factoryManager ? (
+                {factoryManaged ? (
                   <BoardColumnFrame
                     id={RETRO_TRIAGE_COLUMN_ID}
                     title="Retro triage"
@@ -1283,7 +1287,12 @@ export function IssuesBoard({
           key={openDraft.id}
           environmentId={environmentId}
           draft={openDraft}
-          manager={factoryManager}
+          // A finding from a since-retired manager is discussed with one still managing the project.
+          manager={
+            factoryManagers.find((manager) => manager.id === openDraft.managerId) ??
+            factoryManagers[0] ??
+            null
+          }
           connected={connected}
           onClose={() => setOpenDraftId(null)}
           onApproved={refreshBoard}

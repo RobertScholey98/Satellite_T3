@@ -58,8 +58,9 @@ yours first.
 
 On the new-thread screen, turn on the **Engineering manager** toggle left of the checkout selector.
 Type a name for the manager and send. The manager's thread opens pinned and starts onboarding: it
-reads the project and proposes how it should work. A project has one manager; retire it from its
-**Factory** row to create another.
+reads the project and proposes how it should work. A project can have several managers. Each picks
+up only from its own pickup columns, and a ticket one manager is working on is not offered to
+another.
 
 The proposal appears as a card in the manager's thread. Review it there:
 

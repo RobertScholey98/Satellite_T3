@@ -3794,7 +3794,6 @@ export default function ChatView(props: ChatViewProps) {
                                   isLocalDraftThread && draftId && activeProject && isGitRepo ? (
                                     <FactoryManagerToggle
                                       environmentId={activeThread.environmentId}
-                                      projectId={activeProject.id}
                                       draftId={draftId}
                                     />
                                   ) : null

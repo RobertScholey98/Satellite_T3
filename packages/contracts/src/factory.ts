@@ -40,7 +40,7 @@ import { RuntimeMode } from "./providerPolicy.ts";
 import { ThreadPullRequestKey } from "./threadPullRequest.ts";
 
 /**
- * The engineering factory: a standing manager per project that commissions assignments to leads.
+ * The engineering factory: standing managers in a project that commission assignments to leads.
  * Satellite-owned; nothing here enters upstream's thread contracts or event log.
  */
 export const FACTORY_WS_METHODS = {
