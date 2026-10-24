@@ -4783,6 +4783,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         SELECT m.assignment_id,m.thread_id FROM factory_members m
         JOIN factory_assignments a ON a.id=m.assignment_id
         WHERE m.role='lead' AND m.ended_at IS NOT NULL
+          -- Completion ends the current lead's membership too.
+          AND m.thread_id IS NOT a.lead_thread_id
           AND (${sql.in("a.state", ACTIVE_ASSIGNMENT_STATES)} OR a.ended_at >= ${since})
         ORDER BY m.created_at, m.rowid`)
       previousLeads.set(lead.assignment_id, [

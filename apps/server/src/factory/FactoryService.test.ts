@@ -1999,6 +1999,21 @@ describe("FactoryService completion claims", () => {
 
         yield* service.reconcileMerge({ repository: "acme/app", number: 7 });
         assert.strictEqual((yield* service.assignmentForThread(newLead))!.state, "retro");
+
+        // Completing ends the current lead's membership too; it is still the lead, not a previous one.
+        yield* service.retroDone(newLead);
+        yield* service.complete(manager.threadId!, {
+          assignmentId: assignment.id,
+          teamVerdict: { fit: "good", reason: "The replacement finished it." },
+        });
+        assert.deepStrictEqual(
+          (yield* workspace(service)).assignments.map((entry) => [
+            entry.state,
+            entry.leadThreadId,
+            entry.previousLeadThreadIds,
+          ]),
+          [["completed", newLead, [lead]]],
+        );
       }),
     ),
   );
