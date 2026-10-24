@@ -51,8 +51,8 @@ if (!projectRoot) {
 // pnpm installs the same lockfile: it switches to the version package.json
 // pins, as `vp i` does. With neither on PATH, the marker names the fix.
 const onPath = (command: string) => {
-  const extensions =
-    process.platform === "win32" ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";") : [""];
+  // Windows always sets PATHEXT, the extensions cmd.exe tries for a bare name.
+  const extensions = process.env.PATHEXT?.split(";") ?? [""];
   return (process.env.PATH ?? "")
     .split(NodePath.delimiter)
     .filter(Boolean)
