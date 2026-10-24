@@ -11,6 +11,7 @@ import {
   ThreadId,
   type FactoryConfigSettings,
   type FactoryLeadDefinition,
+  type FactoryManager,
   type FactoryManagerDefinition,
   type FactoryModelRef,
   type FactoryTeamDefinition,
@@ -554,12 +555,12 @@ export const approve = (
       managerId,
       result,
     });
+    const manager =
+      approved.state === "ready"
+        ? yield* factory.service.startPickup({ requestId: `start-${managerId}`, managerId })
+        : approved;
     if (!connected) factory.boards.pop();
-    if (approved.state !== "ready") return approved;
-    // Starting pickup has its own tests; the rest begin active, without its first wake.
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`UPDATE factory_managers SET state='active' WHERE id=${managerId}`;
-    return { ...approved, state: "active" as const };
+    return manager;
   });
 
 export const activeManager = (factory: Factory, result?: FactoryOnboardingResult) =>
@@ -579,15 +580,29 @@ export const START = {
 export const startTicket = (factory: Factory, threadId: ThreadId, issueNumber = 1) =>
   factory.service.pickup(threadId, { ...START, issueNumber });
 
-/** What happened since approval, oldest first; the approval itself has its own tests. */
-export const logKinds = (service: Service, managerId: string) =>
-  service.listLog({ managerId }).pipe(
-    Effect.map((entries) =>
-      entries
-        .map((entry) => entry.kind)
-        .filter((kind) => kind !== "onboarded")
-        .toReversed(),
-    ),
+/** The manager's newest log sequence, so a test reads only the entries its own steps wrote. */
+export const logMark = (service: Service, managerId: string) =>
+  service.listLog({ managerId, limit: 1 }).pipe(Effect.map(([newest]) => newest?.sequence ?? 0));
+
+/** The manager's log entries after `mark`, oldest first. */
+const logSince = (service: Service, managerId: string, mark: number) =>
+  service
+    .listLog({ managerId })
+    .pipe(Effect.map((entries) => entries.filter((entry) => entry.sequence > mark).toReversed()));
+
+/** What a test measures its own steps from once setup is done. */
+export const setupDone = (factory: Factory, manager: FactoryManager) =>
+  Effect.gen(function* () {
+    return {
+      manager,
+      mark: yield* logMark(factory.service, manager.id),
+      sentBefore: factory.sentMessages.length,
+    };
+  });
+
+export const logKinds = (service: Service, managerId: string, mark: number) =>
+  logSince(service, managerId, mark).pipe(
+    Effect.map((entries) => entries.map((entry) => entry.kind)),
   );
 
 export const memberRows = Effect.gen(function* () {
@@ -629,22 +644,22 @@ export const pullRequest = (number: number, merged: boolean, updatedAt: string |
   updatedAt,
 });
 
-/** An active manager whose lead on ticket 1 runs in thread lead-1. */
+/**
+ * An active manager whose lead on ticket 1 runs in thread lead-1, with the log mark and message
+ * count after setup.
+ */
 export const startedAssignment = (factory: Factory, tickets: ReadonlyArray<number> = [1]) =>
   Effect.gen(function* () {
     factory.boards.push(board(tickets.map((number) => ({ number, columnId: READY }))));
     const manager = yield* activeManager(factory);
     const assignment = (yield* startTicket(factory, manager.threadId!))!;
-    return { manager, assignment, lead: ThreadId.make("lead-1") };
+    return { ...(yield* setupDone(factory, manager)), assignment, lead: ThreadId.make("lead-1") };
   });
 
-export const wakeReasons = (service: Service, managerId: string) =>
-  service.listLog({ managerId }).pipe(
+export const wakeReasons = (service: Service, managerId: string, mark: number) =>
+  logSince(service, managerId, mark).pipe(
     Effect.map((entries) =>
-      entries
-        .filter((entry) => entry.kind === "wake")
-        .map((entry) => entry.reason)
-        .toReversed(),
+      entries.filter((entry) => entry.kind === "wake").map((entry) => entry.reason),
     ),
   );
 
@@ -700,7 +715,10 @@ export const makeTeamFactory = makeHarness({
   definitions: { teams: [DUO_TEAM] },
 });
 
-/** An active manager whose Duo team works ticket 1 from lead thread lead-1. */
+/**
+ * An active manager whose Duo team works ticket 1 from lead thread lead-1, with the log mark and
+ * message count after setup.
+ */
 export const startedTeam = (factory: Factory) =>
   Effect.gen(function* () {
     factory.boards.push(board([{ number: 1, columnId: READY }]));
@@ -710,7 +728,7 @@ export const startedTeam = (factory: Factory) =>
       issueNumber: 1,
       team: { preset: "Duo", members: [] },
     }))!;
-    return { manager, assignment, lead: ThreadId.make("lead-1") };
+    return { ...(yield* setupDone(factory, manager)), assignment, lead: ThreadId.make("lead-1") };
   });
 
 export const workspace = (service: Service) =>

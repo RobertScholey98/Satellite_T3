@@ -65,6 +65,8 @@ import {
   START,
   startTicket,
   logKinds,
+  logMark,
+  setupDone,
   memberRows,
   SYNC_WORK,
   idleRun,
@@ -272,13 +274,16 @@ describe("FactoryService managers", () => {
   it.effect("creates a manager in onboarding and replays a repeated request", () =>
     withDatabase(
       Effect.gen(function* () {
-        const service = yield* makeManagerService;
+        const { service, launches } = yield* makeHarness({ config: ENVIRONMENT });
 
         const created = yield* create(service);
         assert.strictEqual(created.state, "onboarding");
         assert.strictEqual(created.projectId, PROJECT_ID);
         assert.strictEqual(created.name, "Ada");
-        assert.strictEqual(created.threadId, "thread-1");
+        assert.include(
+          launches.map((launch) => launch.threadId),
+          created.threadId,
+        );
         assert.strictEqual(created.activeAssignments, 0);
         assert.strictEqual(created.waitingOnYou, 0);
 
@@ -364,10 +369,9 @@ describe("FactoryService managers", () => {
   it.effect("resumes an active manager to active", () =>
     withDatabase(
       Effect.gen(function* () {
-        const service = yield* makeManagerService;
-        const sql = yield* SqlClient.SqlClient;
-        const { id: managerId } = yield* create(service);
-        yield* sql`UPDATE factory_managers SET state='active' WHERE id=${managerId}`;
+        const factory = yield* makeFactory;
+        const { service } = factory;
+        const { id: managerId } = yield* activeManager(factory);
 
         const paused = yield* service.pauseManager({
           requestId: "pause-1",
@@ -825,18 +829,22 @@ describe("FactoryService primed manager thread", () => {
   const FINISHED = "This thread's onboarding is finished; the manager now runs in a new thread.";
   const PICKUP_OFF = { ...RESULT, pickup: { ...RESULT.pickup, enabled: false } };
 
-  /** A manager that proposed, approved by the user with `result`; board-1 stays connected. */
+  /**
+   * A manager that proposed, approved by the user with `result`; board-1 stays connected. Launches
+   * from `launchesBefore` on are the approval's.
+   */
   const approved = (factory: Factory, result: FactoryOnboardingResult = RESULT) =>
     Effect.gen(function* () {
       if (factory.boards.length === 0) factory.boards.push(board([]));
       const created = yield* create(factory.service);
       yield* factory.service.proposeOnboarding(created.threadId!, PROPOSAL);
+      const launchesBefore = factory.launches.length;
       const manager = yield* factory.service.approveOnboarding({
         requestId: "approve-1",
         managerId: created.id,
         result,
       });
-      return { created, manager };
+      return { created, manager, launchesBefore };
     });
 
   it.effect(
@@ -847,7 +855,7 @@ describe("FactoryService primed manager thread", () => {
           const factory = yield* makeFactory;
           const { service, boards, launches, sentMessages, settles } = factory;
           boards.push(board([{ number: 1, columnId: READY }]));
-          const { created, manager } = yield* approved(factory);
+          const { created, manager, launchesBefore } = yield* approved(factory);
 
           assert.strictEqual(manager.state, "ready");
           assert.notStrictEqual(manager.threadId, created.threadId);
@@ -858,8 +866,9 @@ describe("FactoryService primed manager thread", () => {
             `message:factory-manager-primed:${manager.threadId}`,
           );
           assert.isNull(created.primingMessageId);
-          assert.strictEqual(launches.length, 2);
-          const [onboarding, primed] = launches;
+          const onboarding = launches.find((launch) => launch.threadId === created.threadId);
+          assert.strictEqual(launches.length, launchesBefore + 1);
+          const primed = launches.at(-1);
           assert.strictEqual(primed!.threadId, manager.threadId);
           assert.strictEqual(primed!.messageId, manager.primingMessageId);
           assert.strictEqual(primed!.title, "Engineering manager: Ada");
@@ -905,6 +914,7 @@ describe("FactoryService primed manager thread", () => {
         boards.push(board([]));
         const created = yield* create(service);
         yield* service.proposeOnboarding(created.threadId!, PROPOSAL);
+        const launchesBefore = launches.length;
         const approve = service.approveOnboarding({
           requestId: "approve-1",
           managerId: created.id,
@@ -922,7 +932,7 @@ describe("FactoryService primed manager thread", () => {
 
         const approved = yield* approve;
         assert.deepStrictEqual(yield* Fiber.join(repeat!), approved);
-        assert.strictEqual(launches.length, 2);
+        assert.strictEqual(launches.length, launchesBefore + 1);
       }),
     ),
   );
@@ -995,6 +1005,8 @@ describe("FactoryService primed manager thread", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { created, manager } = yield* approved(factory);
+        const launchesBefore = factory.launches.length;
+        const settlesBefore = factory.settles.length;
 
         const replayed = yield* factory.service.approveOnboarding({
           requestId: "approve-1",
@@ -1002,8 +1014,8 @@ describe("FactoryService primed manager thread", () => {
           result: RESULT,
         });
         assert.deepStrictEqual(replayed, manager);
-        assert.strictEqual(factory.launches.length, 2);
-        assert.strictEqual(factory.settles.length, 1);
+        assert.strictEqual(factory.launches.length, launchesBefore);
+        assert.strictEqual(factory.settles.length, settlesBefore);
       }),
     ),
   );
@@ -1016,6 +1028,7 @@ describe("FactoryService primed manager thread", () => {
         boards.push(board([]));
         const created = yield* create(service);
         const proposed = yield* service.proposeOnboarding(created.threadId!, PROPOSAL);
+        const launchesBefore = launches.length;
         controls.launchFailures = 1;
         const approve = service.approveOnboarding({
           requestId: "approve-1",
@@ -1035,8 +1048,8 @@ describe("FactoryService primed manager thread", () => {
 
         const retried = yield* approve;
         assert.strictEqual(retried.state, "active");
-        assert.strictEqual(launches.length, 3);
-        assert.strictEqual(retried.threadId, launches[2]!.threadId);
+        assert.strictEqual(launches.length, launchesBefore + 2);
+        assert.strictEqual(retried.threadId, launches.at(-1)!.threadId);
       }),
     ),
   );
@@ -1045,9 +1058,9 @@ describe("FactoryService primed manager thread", () => {
     withDatabase(
       Effect.gen(function* () {
         const factory = yield* makeFactory;
-        const { manager } = yield* approved(factory, PICKUP_OFF);
+        const { manager, launchesBefore } = yield* approved(factory, PICKUP_OFF);
         assert.strictEqual(manager.state, "active");
-        assert.include(factory.launches[1]!.text, "Pickup is off.");
+        assert.include(factory.launches[launchesBefore]!.text, "Pickup is off.");
 
         const refused = yield* factory.service
           .startPickup({ requestId: "start-1", managerId: manager.id })
@@ -1309,11 +1322,14 @@ describe("FactoryService pickup", () => {
         );
         const created = yield* create(service);
         let threadId = created.threadId!;
+        const createdMark = yield* logMark(service, created.id);
 
         const onboarding = yield* startTicket(factory, threadId).pipe(Effect.flip);
         assert.strictEqual(onboarding.reason, "conflict");
         assert.include(onboarding.message, "onboarding");
+        assert.deepStrictEqual(yield* logKinds(service, created.id, createdMark), ["refused"]);
         threadId = (yield* approve(factory, created.id, threadId)).threadId!;
+        const mark = yield* logMark(service, created.id);
 
         const large = yield* service
           .pickup(threadId, { ...START, issueNumber: 1, complexity: "large" })
@@ -1340,8 +1356,7 @@ describe("FactoryService pickup", () => {
         assert.include(full.message, "slots");
 
         assert.strictEqual(attemptStarts.length, 1);
-        assert.deepStrictEqual(yield* logKinds(service, created.id), [
-          "refused",
+        assert.deepStrictEqual(yield* logKinds(service, created.id, mark), [
           "refused",
           "refused",
           "refused",
@@ -1449,14 +1464,14 @@ describe("FactoryService pickup", () => {
         const factory = yield* makeFactory;
         const { service, boards, controls } = factory;
         boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
+        const { manager, mark } = yield* setupDone(factory, yield* activeManager(factory));
         controls.attemptFailures = 1;
 
         const failed = yield* startTicket(factory, manager.threadId!).pipe(Effect.flip);
         assert.strictEqual(failed.reason, "conflict");
         assert.strictEqual(failed.message, "The ticket moved.");
         assert.deepStrictEqual(yield* service.listAssignments({ includeEnded: true }), []);
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["refused"]);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["refused"]);
         const status = yield* service.status(manager.id);
         assert.isTrue(status.capacityFree);
         assert.isFalse(status.readyTickets[0]!.judged);
@@ -1475,7 +1490,7 @@ describe("FactoryService commission", () => {
         const factory = yield* makeFactory;
         const { service, boards, attemptStarts } = factory;
         boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
+        const { manager, mark } = yield* setupDone(factory, yield* activeManager(factory));
         const work = SYNC_WORK;
 
         const assignment = yield* service.commission(manager.threadId!, {
@@ -1488,7 +1503,7 @@ describe("FactoryService commission", () => {
         assert.strictEqual(attemptStarts.length, 1);
         // The team's lead copy picks the model, whatever the ticket's size.
         assert.deepStrictEqual(attemptStarts[0]!.modelSelection, SONNET);
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["commission"]);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["commission"]);
       }),
     ),
   );
@@ -1504,11 +1519,12 @@ describe("FactoryService commission", () => {
         assert.strictEqual(assignment.source, "user");
         assert.isNull(assignment.issue);
         assert.isNull(assignment.attemptId);
-        assert.strictEqual(assignment.leadThreadId, "thread-3");
+        const lead = assignment.leadThreadId!;
+        assert.notStrictEqual(lead, manager.threadId);
         assert.deepStrictEqual(attemptStarts, []);
-        const launch = launches[2]!;
+        const launch = launches.at(-1)!;
         assert.strictEqual(launch.commandId, `factory-assignment:${assignment.id}`);
-        assert.strictEqual(launch.threadId, "thread-3");
+        assert.strictEqual(launch.threadId, lead);
         assert.strictEqual(launch.title, "Factory: Rework the sync engine");
         assert.deepStrictEqual(launch.modelSelection, SONNET);
         assert.strictEqual(launch.workspace.type, "worktree");
@@ -1522,7 +1538,7 @@ describe("FactoryService commission", () => {
         assert.include(launch.text, SYNC_WORK.brief);
         assert.deepStrictEqual(yield* memberRows, [
           {
-            thread_id: "thread-3",
+            thread_id: lead,
             assignment_id: assignment.id,
             role: "lead",
             parent_thread_id: manager.threadId!,
@@ -1530,7 +1546,6 @@ describe("FactoryService commission", () => {
           },
         ]);
 
-        const lead = ThreadId.make("thread-3");
         threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(9, false)] }));
         const claimed = yield* service.claimComplete(lead, {
           evidence: "A restart mid-transfer resumes.",
@@ -1552,14 +1567,17 @@ describe("FactoryService lead reconciliation", () => {
         const factory = yield* makeFactory;
         const { service, boards, threadRuns, sentMessages } = factory;
         boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
+        const { manager, mark, sentBefore } = yield* setupDone(
+          factory,
+          yield* activeManager(factory),
+        );
         const assignment = (yield* startTicket(factory, manager.threadId!))!;
         const lead = ThreadId.make("lead-1");
 
         threadRuns.set(lead, idleRun());
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "active");
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup"]);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["pickup"]);
 
         threadRuns.set(lead, failedRun);
         yield* service.reconcileThread(lead);
@@ -1573,10 +1591,11 @@ describe("FactoryService lead reconciliation", () => {
         assert.isNull(wake!.deliveredAt);
 
         yield* service.sweep;
-        assert.strictEqual(sentMessages.length, 1);
-        assert.strictEqual(
-          sentMessages[0]!.text,
-          "Assignment Ticket 1 stalled: The lead's latest run failed. Investigate its lead thread, then call factory_recover to rebrief or replace the lead, or recommend to the user.",
+        assert.deepStrictEqual(
+          sentMessages.slice(sentBefore).map((message) => message.text),
+          [
+            "Assignment Ticket 1 stalled: The lead's latest run failed. Investigate its lead thread, then call factory_recover to rebrief or replace the lead, or recommend to the user.",
+          ],
         );
       }),
     ),
@@ -1589,12 +1608,15 @@ describe("FactoryService sweep", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, boards, sentMessages } = factory;
+        const { manager, mark, sentBefore } = yield* setupDone(
+          factory,
+          yield* activeManager(factory),
+        );
         boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
 
         yield* service.sweep;
-        assert.strictEqual(sentMessages.length, 1);
-        const message = sentMessages[0]!;
+        assert.strictEqual(sentMessages.length, sentBefore + 1);
+        const message = sentMessages.at(-1)!;
         assert.strictEqual(message.threadId, manager.threadId);
         assert.strictEqual(message.projectId, PROJECT_ID);
         assert.isTrue(message.commandId.startsWith(`factory-wake:${manager.id}:`));
@@ -1606,8 +1628,8 @@ describe("FactoryService sweep", () => {
         assert.isNotNull(wake!.deliveredAt);
 
         yield* service.sweep;
-        assert.strictEqual(sentMessages.length, 1);
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["wake"]);
+        assert.strictEqual(sentMessages.length, sentBefore + 1);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["wake"]);
       }),
     ),
   );
@@ -1617,18 +1639,18 @@ describe("FactoryService sweep", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, boards, sentMessages, controls } = factory;
+        const { manager, sentBefore } = yield* setupDone(factory, yield* activeManager(factory));
         boards.push(board([{ number: 1, columnId: READY }]));
-        const manager = yield* activeManager(factory);
         controls.sendFailures = 1;
 
         yield* service.sweep;
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
         const [pending] = yield* service.listLog({ managerId: manager.id });
         assert.isNull(pending!.deliveredAt);
 
         yield* service.sweep;
-        assert.strictEqual(sentMessages.length, 1);
-        assert.include(sentMessages[0]!.text, "#1 Ticket 1");
+        assert.strictEqual(sentMessages.length, sentBefore + 1);
+        assert.include(sentMessages.at(-1)!.text, "#1 Ticket 1");
         const [delivered] = yield* service.listLog({ managerId: manager.id });
         assert.strictEqual(delivered!.sequence, pending!.sequence);
         assert.isNotNull(delivered!.deliveredAt);
@@ -1647,7 +1669,10 @@ describe("FactoryService sweep", () => {
             { number: 2, columnId: READY },
           ]),
         );
-        const manager = yield* activeManager(factory);
+        const { manager, mark, sentBefore } = yield* setupDone(
+          factory,
+          yield* activeManager(factory),
+        );
         yield* startTicket(factory, manager.threadId!);
         yield* service.pauseManager({
           requestId: "pause-1",
@@ -1661,8 +1686,8 @@ describe("FactoryService sweep", () => {
           (yield* service.assignmentForThread(ThreadId.make("lead-1")))!.state,
           "stalled",
         );
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup", "stalled"]);
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["pickup", "stalled"]);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
       }),
     ),
   );
@@ -1672,18 +1697,22 @@ describe("FactoryService sweep", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, boards, sentMessages } = factory;
+        const { manager, mark, sentBefore } = yield* setupDone(
+          factory,
+          yield* activeManager(factory),
+        );
+        // The tickets turn Ready after pickup starts, so only the sweep could offer them.
         boards.push(
           board([
             { number: 1, columnId: READY },
             { number: 2, columnId: READY },
           ]),
         );
-        const manager = yield* activeManager(factory);
         yield* startTicket(factory, manager.threadId!);
 
         yield* service.sweep;
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup"]);
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["pickup"]);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
       }),
     ),
   );
@@ -1795,7 +1824,7 @@ describe("FactoryService completion claims", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, lead } = yield* startedAssignment(factory);
+        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
         threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, true)] }));
 
         const claimed = yield* service.claimComplete(lead, {
@@ -1807,10 +1836,10 @@ describe("FactoryService completion claims", () => {
           { host: "github.com", repository: "acme/app", number: 7 },
         ]);
         assert.strictEqual(claimed.claim!.evidence, "pnpm test passes; the empty list renders.");
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup", "claim", "wake"]);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["retro"]);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["claim", "wake"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["retro"]);
         assert.deepStrictEqual(
-          sentMessages.map((message) => [message.threadId, message.text]),
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
           [[lead, RETRO_REQUEST]],
         );
         assert.isTrue((yield* service.status(manager.id)).capacityFree);
@@ -1823,7 +1852,7 @@ describe("FactoryService completion claims", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, lead } = yield* startedAssignment(factory);
+        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
         threadRuns.set(
           lead,
           idleRun({ pullRequests: [pullRequest(7, false), pullRequest(8, true)] }),
@@ -1836,7 +1865,7 @@ describe("FactoryService completion claims", () => {
         assert.strictEqual(claimed.state, "waiting-user");
         assert.strictEqual(claimed.waitingReason, "Pull requests await the user's review: #7.");
         assert.strictEqual((yield* service.listManagers({}))[0]!.waitingOnYou, 1);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), []);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), []);
 
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "waiting-user");
@@ -1847,9 +1876,9 @@ describe("FactoryService completion claims", () => {
         );
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "retro");
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["retro"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["retro"]);
         assert.deepStrictEqual(
-          sentMessages.map((message) => message.text),
+          sentMessages.slice(sentBefore).map((message) => message.text),
           [RETRO_REQUEST],
         );
       }),
@@ -1863,7 +1892,7 @@ describe("FactoryService completion claims", () => {
         Effect.gen(function* () {
           const factory = yield* makeFactory;
           const { service, threadRuns } = factory;
-          const { manager, lead } = yield* startedAssignment(factory);
+          const { manager, lead, mark } = yield* startedAssignment(factory);
           threadRuns.set(
             lead,
             idleRun({
@@ -1883,7 +1912,7 @@ describe("FactoryService completion claims", () => {
           assert.strictEqual(unlinked.reason, "invalid");
           assert.strictEqual(unlinked.message, "Link #9 to this thread before claiming.");
           assert.isNull((yield* service.assignmentForThread(lead))!.claim);
-          assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup"]);
+          assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), []);
 
           const claimed = yield* service.claimComplete(lead, {
             evidence: "Checks pass.",
@@ -1901,7 +1930,10 @@ describe("FactoryService dependencies", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, sentMessages } = factory;
-        const { manager, assignment, lead } = yield* startedAssignment(factory, [1, 2]);
+        const { manager, assignment, lead, mark, sentBefore } = yield* startedAssignment(
+          factory,
+          [1, 2],
+        );
 
         const stranger = yield* service
           .reportDependency(manager.threadId!, {
@@ -1924,14 +1956,15 @@ describe("FactoryService dependencies", () => {
         const blocked = (yield* service.assignmentForThread(lead))!;
         assert.strictEqual(blocked.state, "blocked");
         assert.deepStrictEqual(blocked.dependencies, [dependency]);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["dependency"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["dependency"]);
 
         yield* service.sweep;
+        const [woken] = sentMessages.slice(sentBefore);
         assert.include(
-          sentMessages[0]!.text,
+          woken!.text,
           `Assignment Ticket 1 is blocked on Expose the sync cursor: GET /sync returns the cursor. Commission it with factory_commission (dependencyId ${dependency.id}) or tell the lead how to proceed.`,
         );
-        assert.include(sentMessages[0]!.text, "Add the cursor to GET /sync.");
+        assert.include(woken!.text, "Add the cursor to GET /sync.");
 
         // The blocked assignment fills the only slot; its delivery starts anyway.
         assert.isFalse((yield* service.status(manager.id)).capacityFree);
@@ -1977,7 +2010,7 @@ describe("FactoryService recovery", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        const { manager, assignment, lead, mark, sentBefore } = yield* startedAssignment(factory);
         threadRuns.set(lead, failedRun);
         yield* service.reconcileThread(lead);
 
@@ -1990,7 +2023,8 @@ describe("FactoryService recovery", () => {
         assert.strictEqual(recovered.recoveryUsed, 1);
         assert.isNull(recovered.waitingReason);
         assert.deepStrictEqual(
-          sentMessages.map((message) => [message.threadId, message.text]),
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
+
           [[lead, "Use the fixture in tests/empty-list and retry."]],
         );
 
@@ -2015,9 +2049,8 @@ describe("FactoryService recovery", () => {
           "Recovery allowance used; the manager recommends: Split the work in two.",
         );
         assert.strictEqual(spent.recoveryUsed, 1);
-        assert.strictEqual(sentMessages.length, 1);
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), [
-          "pickup",
+        assert.strictEqual(sentMessages.length, sentBefore + 1);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), [
           "stalled",
           "wake",
           "recovery",
@@ -2051,12 +2084,13 @@ describe("FactoryService recovery", () => {
         const replaced = yield* service.recover(manager.threadId!, replace);
         assert.strictEqual(replaced.state, "active");
         assert.strictEqual(replaced.recoveryUsed, 1);
-        assert.strictEqual(replaced.leadThreadId, "thread-3");
+        const newLead = replaced.leadThreadId!;
+        assert.notStrictEqual(newLead, lead);
         assert.strictEqual(replaced.attemptId, "attempt-1");
         assert.strictEqual(attemptStarts.length, 1);
-        const launch = launches[2]!;
+        const launch = launches.at(-1)!;
         assert.strictEqual(launch.commandId, `factory-assignment:${assignment.id}:recovery-1`);
-        assert.strictEqual(launch.threadId, "thread-3");
+        assert.strictEqual(launch.threadId, newLead);
         assert.deepStrictEqual(launch.workspace, {
           type: "existing_worktree",
           worktreePath: "/repo/.worktrees/issue-1",
@@ -2077,7 +2111,7 @@ describe("FactoryService recovery", () => {
           members.map((member) => [member.thread_id, member.ended]),
           [
             ["lead-1", 1],
-            ["thread-3", 0],
+            [newLead, 0],
           ],
         );
         const oldLead = yield* service.claimComplete(lead, { evidence: "Done." }).pipe(Effect.flip);
@@ -2093,7 +2127,7 @@ describe("FactoryService completion", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service } = factory;
-        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        const { manager, assignment, lead, mark } = yield* startedAssignment(factory);
         const verdict = { fit: "poor", reason: "Too many reviewers for a one-line fix." } as const;
 
         const early = yield* service
@@ -2111,7 +2145,7 @@ describe("FactoryService completion", () => {
         assert.deepStrictEqual(completed.teamVerdict, verdict);
         assert.isNotNull(completed.endedAt);
         assert.deepStrictEqual(yield* service.listAssignments({}), []);
-        assert.strictEqual((yield* logKinds(service, manager.id)).at(-1), "complete");
+        assert.strictEqual((yield* logKinds(service, manager.id, mark)).at(-1), "complete");
       }),
     ),
   );
@@ -2121,7 +2155,7 @@ describe("FactoryService completion", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, interrupts, sentMessages } = factory;
-        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        const { manager, assignment, lead, sentBefore } = yield* startedAssignment(factory);
         const input = {
           requestId: "cancel-1",
           assignmentId: assignment.id,
@@ -2136,7 +2170,7 @@ describe("FactoryService completion", () => {
           [[lead, "factory-cancel:cancel-1"]],
         );
         assert.strictEqual(
-          sentMessages[0]!.text,
+          sentMessages[sentBefore]!.text,
           "The user cancelled Ticket 1: The ticket was descoped. Stop the work. Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.",
         );
         const [wake] = yield* service.listLog({ managerId: manager.id });
@@ -2174,7 +2208,7 @@ describe("FactoryService takeover", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, lead } = yield* startedAssignment(factory);
+        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
 
         const stranger = yield* service
           .takeOver({ requestId: "take-0", threadId: manager.threadId! })
@@ -2190,18 +2224,17 @@ describe("FactoryService takeover", () => {
         threadRuns.set(lead, failedRun);
         yield* service.sweep;
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "stalled");
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), []);
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), []);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
 
         const handedBack = yield* service.handBack({ requestId: "hand-1", threadId: lead });
         assert.isFalse(handedBack.takenOver);
         yield* service.sweep;
         assert.deepStrictEqual(
-          sentMessages.map((message) => message.text),
+          sentMessages.slice(sentBefore).map((message) => message.text),
           ["The user handed back Ticket 1; it is now stalled. Check its thread for what changed."],
         );
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), [
-          "pickup",
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), [
           "takeover",
           "stalled",
           "handback",
@@ -2218,7 +2251,7 @@ describe("FactoryService questions", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, lead } = yield* startedAssignment(factory);
+        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
 
         threadRuns.set(lead, idleRun({ latestRunStatus: "interrupted", pendingRequests: 1 }));
         yield* service.reconcileThread(lead);
@@ -2234,8 +2267,8 @@ describe("FactoryService questions", () => {
         const resumed = (yield* service.assignmentForThread(lead))!;
         assert.strictEqual(resumed.state, "active");
         assert.isNull(resumed.waitingReason);
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup"]);
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), []);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
       }),
     ),
   );
@@ -2430,7 +2463,7 @@ describe("FactoryService delegation", () => {
       Effect.gen(function* () {
         const factory = yield* makeTeamFactory;
         const { service } = factory;
-        const { assignment, lead } = yield* startedTeam(factory);
+        const { manager, assignment, lead } = yield* startedTeam(factory);
         yield* asLegacyTeam(assignment.id);
 
         const verifier = yield* service
@@ -2474,7 +2507,7 @@ describe("FactoryService delegation", () => {
             thread_id: "lead-1",
             assignment_id: assignment.id,
             role: "lead",
-            parent_thread_id: "thread-2",
+            parent_thread_id: manager.threadId!,
             joined: "created",
           },
         ]);
@@ -2517,7 +2550,7 @@ describe("FactoryService observed threads", () => {
       Effect.gen(function* () {
         const factory = yield* makeTeamFactory;
         const { service, sentMessages } = factory;
-        const { manager, lead } = yield* startedTeam(factory);
+        const { manager, lead, mark, sentBefore } = yield* startedTeam(factory);
         yield* service.recordMember(lead, {
           threadId: ThreadId.make("worker-1"),
           role: "worker",
@@ -2558,7 +2591,7 @@ describe("FactoryService observed threads", () => {
             member.offPool,
           ]),
           [
-            ["lead-1", "lead", undefined, "thread-2", "created", false],
+            ["lead-1", "lead", undefined, manager.threadId, "created", false],
             // The member name is stored as the team spells it.
             ["worker-1", "worker", "Reviewer", "lead-1", "created", false],
             ["sub-1", "lead", undefined, "lead-1", "observed", false],
@@ -2566,9 +2599,9 @@ describe("FactoryService observed threads", () => {
             ["sub-2", "worker", "Reviewer", "worker-1", "observed", false],
           ],
         );
-        assert.deepStrictEqual(yield* logKinds(service, manager.id), ["pickup"]);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), []);
         yield* service.sweep;
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
       }),
     ),
   );
@@ -2580,7 +2613,7 @@ describe("FactoryService checklist", () => {
       Effect.gen(function* () {
         const factory = yield* makeTeamFactory;
         const { service } = factory;
-        const { assignment, lead } = yield* startedTeam(factory);
+        const { assignment, lead, mark } = yield* startedTeam(factory);
         assert.deepStrictEqual(assignment.checklist, []);
         assert.isNull(assignment.digest);
 
@@ -2611,7 +2644,7 @@ describe("FactoryService checklist", () => {
           },
         ]);
         assert.strictEqual(feed.managers[0]!.waitingOnYou, 0);
-        assert.deepStrictEqual(yield* logKinds(service, assignment.managerId), ["pickup"]);
+        assert.deepStrictEqual(yield* logKinds(service, assignment.managerId, mark), []);
 
         const tooLong = Array.from({ length: 21 }, (_, index) => ({
           text: `Step ${index}`,
@@ -2631,7 +2664,7 @@ describe("FactoryService control paths", () => {
       Effect.gen(function* () {
         const factory = yield* makeTeamFactory;
         const { service, threadRuns, pullRequestFiles, fileReads, sentMessages } = factory;
-        const { manager, lead } = yield* startedTeam(factory);
+        const { manager, lead, mark, sentBefore } = yield* startedTeam(factory);
         pullRequestFiles.set(7, PROTECTED_FILES);
         threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
 
@@ -2654,10 +2687,10 @@ describe("FactoryService control paths", () => {
         const leadText =
           "Pull request #7 changes protected paths (apps/web/AGENTS.md). Revert those changes; the factory cannot send this to the user as ready.";
         assert.deepStrictEqual(
-          sentMessages.map((message) => [message.threadId, message.text]),
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
           [[lead, leadText]],
         );
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["control"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["control"]);
 
         // A claim waits behind the protected paths rather than going to the user's review.
         const claimed = yield* service.claimComplete(lead, {
@@ -2712,7 +2745,7 @@ describe("FactoryService control paths", () => {
       Effect.gen(function* () {
         const factory = yield* makeTeamFactory;
         const { service, threadRuns, pullRequestFiles, fileReads, sentMessages } = factory;
-        const { assignment, lead } = yield* startedTeam(factory);
+        const { assignment, lead, sentBefore } = yield* startedTeam(factory);
         const sql = yield* SqlClient.SqlClient;
         // The snapshot an assignment keeps of a team from definitions, here an exempt one.
         const exempt = {
@@ -2753,7 +2786,7 @@ describe("FactoryService control paths", () => {
         assert.strictEqual(unchecked.state, "active");
         assert.deepStrictEqual(unchecked.controlViolations, []);
         assert.deepStrictEqual(fileReads, []);
-        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
       }),
     ),
   );
@@ -2764,7 +2797,7 @@ describe("FactoryService control paths", () => {
         const factory = yield* makeTeamFactory;
         const { service, threadRuns, pullRequestFiles, fileReads, sentMessages, controls } =
           factory;
-        const { manager, lead } = yield* startedTeam(factory);
+        const { manager, lead, mark, sentBefore } = yield* startedTeam(factory);
         pullRequestFiles.set(7, PROTECTED_FILES);
         threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
         controls.fileReadFailures = 1;
@@ -2773,8 +2806,8 @@ describe("FactoryService control paths", () => {
         const unchanged = (yield* service.assignmentForThread(lead))!;
         assert.strictEqual(unchanged.state, "active");
         assert.deepStrictEqual(unchanged.controlViolations, []);
-        assert.deepStrictEqual(sentMessages, []);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), []);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), []);
 
         yield* service.reconcileThread(lead);
         assert.strictEqual(fileReads.length, 2);
@@ -2792,7 +2825,7 @@ describe("FactoryService findings", () => {
         Effect.gen(function* () {
           const factory = yield* makeTeamFactory;
           const { service, sentMessages } = factory;
-          const { manager, assignment, lead } = yield* startedTeam(factory);
+          const { manager, assignment, lead, mark } = yield* startedTeam(factory);
           yield* asLegacyTeam(assignment.id);
           const worker = ThreadId.make("worker-1");
           yield* service.recordMember(lead, {
@@ -2812,7 +2845,7 @@ describe("FactoryService findings", () => {
           assert.isFalse(fromWorker.escalated);
           assert.isNull(fromWorker.uncertainty);
           assert.isNull(fromWorker.draftId);
-          assert.deepStrictEqual(yield* wakeReasons(service, manager.id), []);
+          assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), []);
 
           const fromLead = yield* service.recordFinding(lead, {
             class: "project",
@@ -2823,7 +2856,7 @@ describe("FactoryService findings", () => {
           });
           assert.isTrue(fromLead.escalated);
           assert.strictEqual(fromLead.workaround, "Run it locally.");
-          assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["finding"]);
+          assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["finding"]);
           const [wake] = yield* service.listLog({ managerId: manager.id });
           assert.deepStrictEqual(wake!.payload, {
             assignmentId: assignment.id,
@@ -2832,7 +2865,7 @@ describe("FactoryService findings", () => {
             summary: "CI skips the e2e suite on forks",
           });
           assert.deepStrictEqual(
-            (yield* logKinds(service, manager.id)).filter((kind) => kind === "finding"),
+            (yield* logKinds(service, manager.id, mark)).filter((kind) => kind === "finding"),
             ["finding", "finding"],
           );
 
@@ -2871,7 +2904,7 @@ describe("FactoryService retro", () => {
         Effect.gen(function* () {
           const factory = yield* makeFactory;
           const { service, sentMessages } = factory;
-          const { manager, assignment, lead } = yield* startedAssignment(factory);
+          const { manager, assignment, lead, mark } = yield* startedAssignment(factory);
           const verdict = { fit: "good", reason: "One implementer was enough." } as const;
 
           const tooEarly = yield* service.retroDone(lead).pipe(Effect.flip);
@@ -2888,10 +2921,11 @@ describe("FactoryService retro", () => {
           assert.strictEqual(done.state, "retro");
           assert.isNotNull(done.retro.teamDoneAt);
           assert.isNull(done.retro.managerDoneAt);
-          assert.deepStrictEqual(yield* wakeReasons(service, manager.id), [
+          assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), [
             "retro",
             "manager-retro",
           ]);
+
           const [wake] = yield* service.listLog({ managerId: manager.id });
           assert.deepStrictEqual(wake!.payload, {
             assignmentId: assignment.id,
@@ -2979,7 +3013,7 @@ describe("FactoryService ticket drafts", () => {
               { number: 4, columnId: IN_PROGRESS, title: "Upgrade the date library" },
             ]),
           );
-          const manager = yield* activeManager(factory);
+          const { manager, mark } = yield* setupDone(factory, yield* activeManager(factory));
           const assignment = (yield* startTicket(factory, manager.threadId!))!;
           const lead = ThreadId.make("lead-1");
           yield* service.claimComplete(lead, { evidence: "Fixed without a pull request." });
@@ -3023,7 +3057,7 @@ describe("FactoryService ticket drafts", () => {
               url: null,
             },
           ]);
-          assert.strictEqual((yield* logKinds(service, manager.id)).at(-1), "draft");
+          assert.strictEqual((yield* logKinds(service, manager.id, mark)).at(-1), "draft");
 
           const unknown = yield* service
             .draftTicket(manager.threadId!, { ...DRAFT, title: "Other", findingIds: ["missing"] })
@@ -3449,7 +3483,7 @@ describe("FactoryService skipped team retro", () => {
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        const { manager, assignment, lead, mark } = yield* startedAssignment(factory);
         yield* toRetro(factory, lead);
         threadRuns.set(lead, idleRun({ deleted: true }));
 
@@ -3469,7 +3503,10 @@ describe("FactoryService skipped team retro", () => {
         );
 
         yield* service.sweep;
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["retro", "manager-retro"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), [
+          "retro",
+          "manager-retro",
+        ]);
         const completed = yield* service.complete(manager.threadId!, {
           assignmentId: assignment.id,
           teamVerdict: VERDICT,
