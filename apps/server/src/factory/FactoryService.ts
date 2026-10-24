@@ -763,7 +763,7 @@ const ControlWakePayload = Schema.Struct({ title: Schema.String, text: Schema.St
 const decodeControlWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(ControlWakePayload)),
 );
-const ConflictLogPayload = Schema.Struct({ key: Schema.String });
+const ConflictLogPayload = Schema.Struct({ pullRequest: Schema.String, asked: Schema.Boolean });
 const decodeConflictLog = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(ConflictLogPayload)),
 );
@@ -817,13 +817,6 @@ const withMerge = (
   links.map((link) =>
     isMerge(merged, link) ? { ...link, merged: true, state: "merged" as const } : link,
   );
-
-/**
- * Snapshots carry no head commit, so a conflict is asked about once per version of the pull
- * request: a push, or the base moving under it, makes a new one.
- */
-const conflictKey = (pullRequest: FactoryThreadPullRequest) =>
-  `${pullRequestKey(pullRequest)}@${pullRequest.updatedAt}`;
 
 const violationText = (violation: FactoryControlViolation) =>
   `Pull request #${violation.pullRequest.number} changes protected paths (${violation.paths.join(", ")}). Revert those changes; the factory cannot send this to the user as ready.`;
@@ -3223,51 +3216,57 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   });
 
   /**
-   * Asks the lead to rebase each open pull request that conflicts with its base, once per version
-   * of it. The log row is the record that it was asked.
+   * Asks the lead to rebase an open pull request once when it starts conflicting with its base.
+   * A sync that shows it mergeable again ends that conflict, so a later one is asked about anew.
+   * `unknown` ends nothing: hosts report it while they recompute after any push or base move, so
+   * it says nothing about whether the conflict was resolved. The ask waits while the manager is
+   * paused, the user has the lead, or the lead waits on the user, and is recorded only once sent.
    */
   const askToRebase = Effect.fnUntraced(function* (
-    row: LeadAssignmentRow,
+    row: LeadAssignmentRow & { readonly manager_state: string },
     runs: FactoryThreadRuns,
   ) {
     const leadThreadId = row.lead_thread_id;
-    if (leadThreadId === null || row.lead_taken_over === 1) return;
-    const conflicting = runs.pullRequests.filter(
-      (pullRequest) =>
-        pullRequest.state === "open" &&
-        pullRequest.mergeability === "conflicting" &&
-        pullRequest.updatedAt !== null,
-    );
-    if (conflicting.length === 0) return;
-    const due = yield* lock(
-      Effect.gen(function* () {
-        const asked = new Set(
-          (yield* sql<{ payload_json: string | null }>`SELECT payload_json FROM factory_log
-                WHERE assignment_id=${row.id} AND kind='conflict'`).flatMap((logged) =>
-            Option.match(decodeConflictLog(logged.payload_json), {
-              onNone: () => [],
-              onSome: (payload) => [payload.key],
-            }),
-          ),
-        );
-        const fresh = conflicting.filter((pullRequest) => !asked.has(conflictKey(pullRequest)));
-        for (const pullRequest of fresh)
-          yield* writeLog(
-            row.manager_id,
-            row.id,
-            "conflict",
-            `Pull request #${pullRequest.number} conflicts with its base branch.`,
-            { key: conflictKey(pullRequest) },
-          );
-        return fresh;
-      }),
-    );
-    for (const pullRequest of due)
+    if (leadThreadId === null) return;
+    const open = runs.pullRequests.filter((pullRequest) => pullRequest.state === "open");
+    const conflicting = open.filter((pullRequest) => pullRequest.mergeability === "conflicting");
+    const resolved = open.filter((pullRequest) => pullRequest.mergeability === "mergeable");
+    if (conflicting.length === 0 && resolved.length === 0) return;
+    const asked = new Map<string, boolean>();
+    for (const logged of yield* sql<{ payload_json: string | null }>`SELECT payload_json
+        FROM factory_log WHERE assignment_id=${row.id} AND kind='conflict' ORDER BY sequence`)
+      Option.map(decodeConflictLog(logged.payload_json), (payload) =>
+        asked.set(payload.pullRequest, payload.asked),
+      );
+    const record = (pullRequest: FactoryThreadPullRequest, nowAsked: boolean) =>
+      writeLog(
+        row.manager_id,
+        row.id,
+        "conflict",
+        nowAsked
+          ? `Pull request #${pullRequest.number} conflicts with its base branch.`
+          : `Pull request #${pullRequest.number} no longer conflicts.`,
+        { pullRequest: pullRequestKey(pullRequest), asked: nowAsked },
+      );
+    for (const pullRequest of resolved)
+      if (asked.get(pullRequestKey(pullRequest)) === true) yield* lock(record(pullRequest, false));
+    const holding =
+      row.lead_taken_over === 1 ||
+      row.manager_state === "manager-paused" ||
+      row.manager_state === "project-paused" ||
+      runs.pendingRequests > 0 ||
+      (row.state === "waiting-user" && row.waiting_kind === "question");
+    if (holding) return;
+    // The reactor reconciles one lead at a time, so recording after the send cannot ask twice.
+    for (const pullRequest of conflicting) {
+      if (asked.get(pullRequestKey(pullRequest)) === true) continue;
       yield* notifyLead(
         row.project_id,
         leadThreadId,
         `Pull request #${pullRequest.number} conflicts with its base branch. Rebase it onto the base, resolve the conflicts, and push.`,
       );
+      yield* lock(record(pullRequest, true));
+    }
   });
 
   const reconcileLead = Effect.fnUntraced(function* (

@@ -180,6 +180,8 @@ interface HarnessOptions {
   /** How many launches fail before one succeeds. */
   readonly launchFailures?: number;
   readonly readRoleSkill?: (role: FactoryRole, projectRoot: string) => RoleSkillSource;
+  /** A service over a database that already holds a factory, as after a restart. */
+  readonly restart?: boolean;
 }
 
 const decodeIssue = Schema.decodeSync(IssueSummary);
@@ -271,10 +273,12 @@ type TicketRequest = Parameters<FactoryServiceDependencies["createTicket"]>[0];
 
 export const makeHarness = (options: HarnessOptions = {}) =>
   Effect.gen(function* () {
-    yield* FactoryV1;
-    yield* FactoryOnboardingResultV1;
-    yield* FactoryDefinitionsV1;
-    yield* FactoryManagersPerProjectV1;
+    if (options.restart !== true) {
+      yield* FactoryV1;
+      yield* FactoryOnboardingResultV1;
+      yield* FactoryDefinitionsV1;
+      yield* FactoryManagersPerProjectV1;
+    }
     const launches: FactoryThreadLaunch[] = [];
     const skillReads: Array<readonly [FactoryRole, string]> = [];
     const boards: IssueBoardView[] = [];

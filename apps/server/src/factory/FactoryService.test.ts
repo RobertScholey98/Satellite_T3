@@ -1616,40 +1616,130 @@ describe("FactoryService lead reconciliation", () => {
       }),
     ),
   );
+});
 
-  it.effect("asks the lead to rebase a conflicting pull request once per version of it", () =>
+const REBASE =
+  "Pull request #7 conflicts with its base branch. Rebase it onto the base, resolve the conflicts, and push.";
+const withMergeability = (
+  mergeability: "conflicting" | "mergeable" | "unknown",
+  version = "push-1",
+) => idleRun({ pullRequests: [{ ...pullRequest(7, false, version), mergeability }] });
+
+describe("FactoryService rebase asks", () => {
+  it.effect("asks once when a pull request starts conflicting, not on every sync", () =>
     withDatabase(
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service, threadRuns, sentMessages } = factory;
-        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
-        const conflicting = (version: string) => ({
-          ...pullRequest(7, false, version),
-          mergeability: "conflicting" as const,
-        });
-        const rebase =
-          "Pull request #7 conflicts with its base branch. Rebase it onto the base, resolve the conflicts, and push.";
+        const { lead, sentBefore } = yield* startedAssignment(factory);
 
-        threadRuns.set(lead, idleRun({ pullRequests: [conflicting("push-1")] }));
-        yield* service.reconcileThread(lead);
-        yield* service.reconcileThread(lead);
+        // A host with no updatedAt versions each sync by its time; GitHub moves it on comments.
+        for (const version of ["sync-1", "sync-2", "sync-3"]) {
+          threadRuns.set(lead, withMergeability("conflicting", version));
+          yield* service.reconcileThread(lead);
+        }
         assert.deepStrictEqual(
           sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
-          [[lead, rebase]],
+          [[lead, REBASE]],
         );
+        assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "active");
+      }),
+    ),
+  );
 
-        // A push that still conflicts is a new version, so the lead hears again.
-        threadRuns.set(lead, idleRun({ pullRequests: [conflicting("push-2")] }));
-        yield* service.reconcileThread(lead);
+  it.effect("asks again only after a sync shows the conflict resolved", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadRuns, sentMessages } = factory;
+        const { lead, sentBefore } = yield* startedAssignment(factory);
+        const sync = (mergeability: "conflicting" | "mergeable" | "unknown") => {
+          threadRuns.set(lead, withMergeability(mergeability));
+          return service.reconcileThread(lead);
+        };
+
+        yield* sync("mergeable");
+        yield* sync("unknown");
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
+
+        yield* sync("conflicting");
+        // Hosts report unknown while recomputing, which does not end the conflict.
+        yield* sync("unknown");
+        yield* sync("conflicting");
+        yield* sync("mergeable");
+        yield* sync("conflicting");
         assert.deepStrictEqual(
           sentMessages.slice(sentBefore).map((message) => message.text),
-          [rebase, rebase],
+          [REBASE, REBASE],
         );
-        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), [
-          "conflict",
-          "conflict",
-        ]);
-        assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "active");
+      }),
+    ),
+  );
+
+  it.effect("does not ask again after a restart", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { lead } = yield* startedAssignment(factory);
+        factory.threadRuns.set(lead, withMergeability("conflicting"));
+        yield* factory.service.reconcileThread(lead);
+
+        const restarted = yield* makeHarness({ restart: true });
+        restarted.threadRuns.set(lead, withMergeability("conflicting", "push-2"));
+        yield* restarted.service.reconcileThread(lead);
+        assert.deepStrictEqual(restarted.sentMessages, []);
+      }),
+    ),
+  );
+
+  it.effect("holds the ask from a taken-over lead until it is handed back", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadRuns, sentMessages } = factory;
+        const { lead, sentBefore } = yield* startedAssignment(factory);
+        yield* service.takeOver({ requestId: "take-1", threadId: lead });
+        threadRuns.set(lead, withMergeability("conflicting"));
+        yield* service.reconcileThread(lead);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
+
+        yield* service.handBack({ requestId: "hand-1", threadId: lead });
+        yield* service.reconcileThread(lead);
+        assert.deepStrictEqual(
+          sentMessages
+            .slice(sentBefore)
+            .filter((message) => message.threadId === lead)
+            .map((message) => message.text),
+          [REBASE],
+        );
+      }),
+    ),
+  );
+
+  it.effect("holds the ask while the manager is paused and sends it after resume", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadRuns, sentMessages } = factory;
+        const { manager, lead, sentBefore } = yield* startedAssignment(factory);
+        yield* service.pauseManager({
+          requestId: "pause-1",
+          managerId: manager.id,
+          scope: "manager",
+        });
+        threadRuns.set(lead, withMergeability("conflicting"));
+        yield* service.reconcileThread(lead);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
+
+        yield* service.resumeManager({ requestId: "resume-1", managerId: manager.id });
+        yield* service.reconcileThread(lead);
+        assert.deepStrictEqual(
+          sentMessages
+            .slice(sentBefore)
+            .filter((message) => message.threadId === lead)
+            .map((message) => message.text),
+          [REBASE],
+        );
       }),
     ),
   );
@@ -1868,6 +1958,34 @@ describe("FactoryService completion claims", () => {
           sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
           [[lead, RETRO_REQUEST]],
         );
+      }),
+    ),
+  );
+
+  it.effect("settles on a merge linked only on a replaced lead's thread", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadRuns } = factory;
+        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        threadRuns.set(lead, {
+          ...failedRun,
+          worktreePath: "/repo/.worktrees/issue-1",
+          pullRequests: [pullRequest(7, false)],
+        });
+        yield* service.reconcileThread(lead);
+        const { leadThreadId } = yield* service.recover(manager.threadId!, {
+          assignmentId: assignment.id,
+          action: "replace",
+          brief: "Finish the pull request the last lead opened.",
+        });
+        const newLead = leadThreadId!;
+        threadRuns.set(newLead, idleRun());
+        const claimed = yield* service.claimComplete(newLead, { evidence: "Checks pass." });
+        assert.strictEqual(claimed.waitingReason, "Pull requests await the user's review: #7.");
+
+        yield* service.reconcileMerge({ repository: "acme/app", number: 7 });
+        assert.strictEqual((yield* service.assignmentForThread(newLead))!.state, "retro");
       }),
     ),
   );
