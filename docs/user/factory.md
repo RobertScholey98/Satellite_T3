@@ -26,7 +26,8 @@ default lead and manager, and one **Standard** team.
   per task for a member, or the manager per ticket for a team's lead. An empty list means any model
   in the pool.
 - The environment's **concurrency cap** and the git identity stay on this machine. A manager also
-  has its own cap, set when you approve its onboarding; work starts only when both have room.
+  has its own cap, set when you approve its onboarding and changed in its **Settings**; work starts
+  only when both have room.
 - **Runs on** appears when this machine has more than one instance of a provider, such as two Claude
   accounts. It picks which one runs the factory's models for that provider; **First available** uses
   whichever comes first. It stays on this machine. If the chosen instance goes away, the factory uses
@@ -96,7 +97,14 @@ above the teams; narrower still, the team cards hide and **Back to manager** sta
 and team threads leave the sidebar while their manager runs; search and the command palette still
 find them.
 
-On the manager's thread, a **Pull requests** card below the details lists the teams' open pull
+On the manager's thread, a **Settings** card below the details shows what you approved, plus the
+manager's model. **Edit** changes them: pickup columns and labels, the cap, which teams it may
+staff (none ticked means all), protected paths, your answers to its rules, and its model. A save
+tells the manager what changed, and a new model applies from its next turn. Lowering the cap below
+what is running cancels nothing; new work waits for room. Turning pickup on waits for **Start
+picking up**, as after approval. Settings can't be edited while the manager is paused.
+
+Below that, a **Pull requests** card lists the teams' open pull
 requests, the ones ready to merge first, the longest waiting at the top. **Merge** appears once the
 lead has claimed the work done, checks pass, and the host reports no conflicts; it merges with the
 project's default method. Otherwise the row says what it waits on, such as **In progress** or
