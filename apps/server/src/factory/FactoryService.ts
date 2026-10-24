@@ -100,6 +100,7 @@ import {
   type OrchestrationV2RunStatus,
   type ProviderInteractionMode,
   type PullRequestDiffResult,
+  type PullRequestMergeability,
   type PullRequestState,
   ThreadId,
   type ThreadPullRequestKey,
@@ -195,6 +196,17 @@ export interface FactoryThreadPullRequest {
   readonly state: PullRequestState | null;
   /** The snapshot's version, which the control-path check keys on; null until the first sync. */
   readonly updatedAt: string | null;
+  /** Null until the host reports it. */
+  readonly mergeability?: PullRequestMergeability | null;
+}
+
+/**
+ * A pull request the user merged in Satellite, as PullRequestService announces it. The event
+ * carries no host, and it fires before the link's sync sees the merge.
+ */
+export interface FactoryMergedPullRequest {
+  readonly repository: string;
+  readonly number: number;
 }
 
 /** What reconciling a lead reads from its thread. */
@@ -465,6 +477,8 @@ export interface FactoryServiceShape {
    * pull requests a completion claim waits on.
    */
   readonly reconcileThread: (threadId: ThreadId) => Effect.Effect<void>;
+  /** Reconciles the live leads with a pull request the user just merged, ahead of its sync. */
+  readonly reconcileMerge: (merged: FactoryMergedPullRequest) => Effect.Effect<void>;
   /**
    * Reconciles every live lead, records a pickup wake for unjudged Ready tickets while there is
    * capacity, and delivers each active manager's undelivered wakes in one message.
@@ -749,6 +763,10 @@ const ControlWakePayload = Schema.Struct({ title: Schema.String, text: Schema.St
 const decodeControlWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(ControlWakePayload)),
 );
+const ConflictLogPayload = Schema.Struct({ key: Schema.String });
+const decodeConflictLog = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(ConflictLogPayload)),
+);
 const OffPoolWakePayload = Schema.Struct({
   threadId: Schema.String,
   title: Schema.String,
@@ -782,6 +800,30 @@ const decodeIssueRef = jsonDecoder(Schema.decodeUnknownOption(Schema.fromJsonStr
 const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
 
 const pullRequestKey = (key: ThreadPullRequestKey) => `${key.host}/${key.repository}#${key.number}`;
+
+const isMerge = (
+  merged: FactoryMergedPullRequest | undefined,
+  pullRequest: { readonly repository: string; readonly number: number },
+) =>
+  merged !== undefined &&
+  pullRequest.number === merged.number &&
+  pullRequest.repository.toLowerCase() === merged.repository.toLowerCase();
+
+/** The links as they read once their sync sees the user's merge. */
+const withMerge = (
+  links: ReadonlyArray<FactoryThreadPullRequest>,
+  merged: FactoryMergedPullRequest | undefined,
+) =>
+  links.map((link) =>
+    isMerge(merged, link) ? { ...link, merged: true, state: "merged" as const } : link,
+  );
+
+/**
+ * Snapshots carry no head commit, so a conflict is asked about once per version of the pull
+ * request: a push, or the base moving under it, makes a new one.
+ */
+const conflictKey = (pullRequest: FactoryThreadPullRequest) =>
+  `${pullRequestKey(pullRequest)}@${pullRequest.updatedAt}`;
 
 const violationText = (violation: FactoryControlViolation) =>
   `Pull request #${violation.pullRequest.number} changes protected paths (${violation.paths.join(", ")}). Revert those changes; the factory cannot send this to the user as ready.`;
@@ -2942,16 +2984,27 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    * Starts the retro once every claimed pull request and every one linked on the lead's thread is
    * merged or closed; until then the assignment waits on the user's review.
    */
-  const settleClaim = Effect.fnUntraced(function* (id: string, runs: FactoryThreadRuns | null) {
-    // A replacement lead inherits the worktree but not the first lead's pull request links, so
-    // the gate reads every lead thread the assignment has had.
+  /**
+   * The pull requests linked on the lead threads an assignment had before its current one: a
+   * replacement lead inherits the worktree but not the first lead's links.
+   */
+  const previousLeadLinks = Effect.fnUntraced(function* (id: string) {
     const previousLeads = yield* sql<{ thread_id: string }>`SELECT thread_id FROM factory_members
         WHERE assignment_id=${id} AND role='lead' AND ended_at IS NOT NULL`;
-    const previousLinks: FactoryThreadPullRequest[] = [];
+    const links: FactoryThreadPullRequest[] = [];
     for (const lead of previousLeads) {
       const previous = yield* deps.readThreadRuns(ThreadId.make(lead.thread_id));
-      previousLinks.push(...(previous?.pullRequests ?? []));
+      links.push(...(previous?.pullRequests ?? []));
     }
+    return links;
+  });
+
+  const settleClaim = Effect.fnUntraced(function* (
+    id: string,
+    runs: FactoryThreadRuns | null,
+    merged?: FactoryMergedPullRequest,
+  ) {
+    const previousLinks = withMerge(yield* previousLeadLinks(id), merged);
     const settled = yield* lock(
       Effect.gen(function* () {
         const rows = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments WHERE id=${id}`;
@@ -2966,16 +3019,17 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             pullRequest,
           ]),
         );
-        const numbers = new Map<string, number>();
+        const gated = new Map<string, ThreadPullRequestKey>();
         for (const pullRequest of [...claim.pullRequests, ...linked.values()])
-          numbers.set(pullRequestKey(pullRequest), pullRequest.number);
-        const unmerged = [...numbers].filter(([key]) => {
+          gated.set(pullRequestKey(pullRequest), pullRequest);
+        const unmerged = [...gated].filter(([key, pullRequest]) => {
           const link = linked.get(key);
-          return link === undefined || (!link.merged && link.state !== "closed");
+          if (link === undefined) return !isMerge(merged, pullRequest);
+          return !link.merged && link.state !== "closed";
         });
         if (unmerged.length > 0) {
           const reason = `Pull requests await the user's review: ${unmerged
-            .map(([, number]) => `#${number}`)
+            .map(([, pullRequest]) => `#${pullRequest.number}`)
             .join(", ")}.`;
           if (
             row.state === "waiting-user" &&
@@ -3016,6 +3070,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   const checkControlPaths = Effect.fnUntraced(function* (
     row: LeadAssignmentRow & { readonly manager_result_json: string | null },
     runs: FactoryThreadRuns,
+    merged: FactoryMergedPullRequest | undefined,
   ) {
     // An exempt team's job is the workflow itself. The snapshot carries the flag, so editing the
     // team later cannot change a running check.
@@ -3146,7 +3201,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         return true;
       case "cleared":
         yield* publish;
-        if (outcome.claimed) yield* settleClaim(row.id, runs);
+        if (outcome.claimed) yield* settleClaim(row.id, runs, merged);
         return true;
       case "recorded":
         if (outcome.changed) yield* publish;
@@ -3154,7 +3209,71 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     }
   });
 
-  const reconcileLead = Effect.fnUntraced(function* (threadId: ThreadId) {
+  /** Whether the assignment's claim or any of its lead threads links the merged pull request. */
+  const involvesMerge = Effect.fnUntraced(function* (
+    row: AssignmentRow,
+    runs: FactoryThreadRuns,
+    merged: FactoryMergedPullRequest,
+  ) {
+    if (runs.pullRequests.some((link) => isMerge(merged, link))) return true;
+    const claim =
+      row.claim_json === null ? null : yield* parse(FactoryAssignmentClaim, row.claim_json);
+    if (claim?.pullRequests.some((pullRequest) => isMerge(merged, pullRequest))) return true;
+    return (yield* previousLeadLinks(row.id)).some((link) => isMerge(merged, link));
+  });
+
+  /**
+   * Asks the lead to rebase each open pull request that conflicts with its base, once per version
+   * of it. The log row is the record that it was asked.
+   */
+  const askToRebase = Effect.fnUntraced(function* (
+    row: LeadAssignmentRow,
+    runs: FactoryThreadRuns,
+  ) {
+    const leadThreadId = row.lead_thread_id;
+    if (leadThreadId === null || row.lead_taken_over === 1) return;
+    const conflicting = runs.pullRequests.filter(
+      (pullRequest) =>
+        pullRequest.state === "open" &&
+        pullRequest.mergeability === "conflicting" &&
+        pullRequest.updatedAt !== null,
+    );
+    if (conflicting.length === 0) return;
+    const due = yield* lock(
+      Effect.gen(function* () {
+        const asked = new Set(
+          (yield* sql<{ payload_json: string | null }>`SELECT payload_json FROM factory_log
+                WHERE assignment_id=${row.id} AND kind='conflict'`).flatMap((logged) =>
+            Option.match(decodeConflictLog(logged.payload_json), {
+              onNone: () => [],
+              onSome: (payload) => [payload.key],
+            }),
+          ),
+        );
+        const fresh = conflicting.filter((pullRequest) => !asked.has(conflictKey(pullRequest)));
+        for (const pullRequest of fresh)
+          yield* writeLog(
+            row.manager_id,
+            row.id,
+            "conflict",
+            `Pull request #${pullRequest.number} conflicts with its base branch.`,
+            { key: conflictKey(pullRequest) },
+          );
+        return fresh;
+      }),
+    );
+    for (const pullRequest of due)
+      yield* notifyLead(
+        row.project_id,
+        leadThreadId,
+        `Pull request #${pullRequest.number} conflicts with its base branch. Rebase it onto the base, resolve the conflicts, and push.`,
+      );
+  });
+
+  const reconcileLead = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    merged?: FactoryMergedPullRequest,
+  ) {
     const rows = yield* sql<
       LeadAssignmentRow & { manager_state: string; manager_result_json: string | null }
     >`
@@ -3164,12 +3283,15 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         WHERE a.lead_thread_id=${threadId} AND a.state IN ('active','waiting-user')`;
     const row = rows[0];
     if (!row) return;
-    const runs = yield* deps.readThreadRuns(threadId);
-    if (runs === null) return;
-    if (!runs.deleted && (yield* checkControlPaths(row, runs))) return;
+    const read = yield* deps.readThreadRuns(threadId);
+    if (read === null) return;
+    if (merged !== undefined && !(yield* involvesMerge(row, read, merged))) return;
+    const runs = { ...read, pullRequests: withMerge(read.pullRequests, merged) };
+    if (!runs.deleted && (yield* checkControlPaths(row, runs, merged))) return;
+    if (!runs.deleted) yield* askToRebase(row, runs);
     if (row.state === "waiting-user") {
       if (row.waiting_kind === "review" && row.claim_json !== null)
-        return yield* settleClaim(row.id, runs);
+        return yield* settleClaim(row.id, runs, merged);
       if (row.waiting_kind === "question" && runs.pendingRequests === 0) {
         const moved = yield* lock(
           moveState(
@@ -3207,6 +3329,23 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     protect(reconcileLead(threadId)).pipe(
       Effect.catch((cause) =>
         Effect.logWarning("Could not reconcile a factory lead thread", { threadId, cause }),
+      ),
+    );
+
+  const reconcileMerge: FactoryServiceShape["reconcileMerge"] = (merged) =>
+    protect(
+      Effect.gen(function* () {
+        const leads = yield* sql<{ lead_thread_id: string }>`SELECT lead_thread_id
+            FROM factory_assignments WHERE lead_thread_id IS NOT NULL
+            AND state IN ('active','waiting-user')`;
+        for (const lead of leads) yield* reconcileLead(ThreadId.make(lead.lead_thread_id), merged);
+      }),
+    ).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not reconcile a merged factory pull request", {
+          pullRequest: `${merged.repository}#${merged.number}`,
+          cause,
+        }),
       ),
     );
 
@@ -4323,6 +4462,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             leadThreadId: row.lead_thread_id,
             checklist: yield* parse(Schema.Unknown, row.checklist_json),
             waitingReason: row.waiting_reason,
+            claimedAt:
+              row.claim_json === null
+                ? null
+                : (yield* parse(FactoryAssignmentClaim, row.claim_json)).claimedAt,
+            controlViolations: yield* parse(ControlViolations, row.control_violations_json),
           };
         }),
       ),
@@ -4849,6 +4993,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     takeOver,
     handBack,
     reconcileThread,
+    reconcileMerge,
     sweep,
     planDelegation,
     recordMember,
@@ -4971,6 +5116,7 @@ export const make = Effect.gen(function* () {
               merged: link.snapshot?.state === "merged" || link.snapshot?.mergedAt != null,
               // A host with no updatedAt is checked again on every sync rather than never.
               updatedAt: link.snapshot?.updatedAt ?? link.snapshot?.syncedAt ?? null,
+              mergeability: link.snapshot?.mergeability ?? null,
             })),
           worktreePath: thread.worktreePath,
         })),

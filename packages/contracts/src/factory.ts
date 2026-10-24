@@ -703,6 +703,8 @@ export const FactoryLogKind = Schema.Literals([
   "ticket",
   /** Onboarding approved; the payload names the onboarding thread and the manager's new one. */
   "onboarded",
+  /** A lead was asked to rebase a conflicting pull request; the payload keys that version of it. */
+  "conflict",
 ]);
 export type FactoryLogKind = typeof FactoryLogKind.Type;
 
@@ -928,6 +930,10 @@ export const FactoryWorkspaceAssignment = Schema.Struct({
   leadThreadId: Schema.NullOr(ThreadId),
   checklist: Schema.Array(FactoryChecklistStep),
   waitingReason: Schema.NullOr(Schema.String),
+  /** When the lead claimed the work complete, if it has. */
+  claimedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Open pull requests that change the manager's protected paths. */
+  controlViolations: Schema.optional(Schema.Array(FactoryControlViolation)),
 });
 export type FactoryWorkspaceAssignment = typeof FactoryWorkspaceAssignment.Type;
 

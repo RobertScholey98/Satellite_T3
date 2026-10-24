@@ -9,13 +9,19 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { forkParked } from "../serverActivation.ts";
-import { type FactoryObservedThread, FactoryService } from "./FactoryService.ts";
+import {
+  type FactoryMergedPullRequest,
+  type FactoryObservedThread,
+  FactoryService,
+} from "./FactoryService.ts";
 
 /**
  * Drives assignments from upstream's thread events. The live event stream starts at the latest
  * event, so a sweep at startup and every minute recovers what happened while nothing listened and
- * wakes managers for Ready tickets.
+ * wakes managers for Ready tickets. A merge the user makes in Satellite settles its assignment
+ * at once, before the link's sync reports it.
  */
 export class FactoryReactor extends Context.Service<
   FactoryReactor,
@@ -28,6 +34,7 @@ export class FactoryReactor extends Context.Service<
 type Job =
   | { readonly _tag: "thread"; readonly threadId: ThreadId }
   | { readonly _tag: "observe"; readonly thread: FactoryObservedThread }
+  | { readonly _tag: "merged"; readonly merged: FactoryMergedPullRequest }
   | { readonly _tag: "sweep" };
 
 /** The work an event gives the factory, if any. */
@@ -64,6 +71,8 @@ const run = (factory: FactoryService["Service"], job: Job) => {
       return factory.observeThread(job.thread);
     case "thread":
       return factory.reconcileThread(job.threadId);
+    case "merged":
+      return factory.reconcileMerge(job.merged);
   }
 };
 
@@ -73,10 +82,20 @@ const logFailure = (message: string) => (cause: Cause.Cause<unknown>) =>
 export const make = Effect.gen(function* () {
   const factory = yield* FactoryService;
   const engine = yield* Orchestrator.OrchestratorV2;
+  const pullRequests = yield* PullRequestService.PullRequestService;
   const worker = yield* makeDrainableWorker((job: Job) =>
     run(factory, job).pipe(Effect.catchCause(logFailure("factory reconcile failed"))),
   );
   const start = Effect.fn("FactoryReactor.start")(function* () {
+    const merges = yield* pullRequests.subscribeMerges;
+    yield* forkParked(
+      Stream.runForEach(merges, (event) =>
+        worker.enqueue({
+          _tag: "merged",
+          merged: { repository: event.repository, number: event.number },
+        }),
+      ).pipe(Effect.catchCause(logFailure("factory merge stream failed"))),
+    );
     yield* forkParked(
       Stream.runForEach(engine.streamDomainEvents, (event) => {
         const job = jobOf(event);
