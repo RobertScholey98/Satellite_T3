@@ -96,6 +96,14 @@ above the teams; narrower still, the team cards hide and **Back to manager** sta
 and team threads leave the sidebar while their manager runs; search and the command palette still
 find them.
 
+On the manager's thread, a **Pull requests** card below the details lists the teams' open pull
+requests, the ones ready to merge first, the longest waiting at the top. **Merge** appears once the
+lead has claimed the work done, checks pass, and the host reports no conflicts; it merges with the
+project's default method. Otherwise the row says what it waits on, such as **In progress** or
+**Needs rebase**. A team whose pull request starts conflicting is asked to rebase it. A pull request
+that changes protected paths names them, and merging it asks you to confirm overriding the hold.
+Once every pull request of an assignment is merged, its retro starts straight away.
+
 A lead's details panel shows **Lead for the manager** with the assignment's state. Its menu, and
 the ticket chip's menu, offer **Take over** (the manager stops steering that assignment while you
 drive the team), **Hand back**, and **Cancel assignment**, which asks for a reason the team's retro
