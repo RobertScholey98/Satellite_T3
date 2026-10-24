@@ -902,13 +902,13 @@ const violationText = (
 const declinedAgainText = (violation: FactoryControlViolation) =>
   `The user declined edits to these protected files for this assignment, and pull request #${violation.pullRequest.number} still changes them: ${violation.paths.join(", ")}. Revert them.`;
 
+// A spent recovery allowance waits on the user's decision about a dead lead; a hold would hide it.
+const HOLDABLE_WAITS: ReadonlySet<string | null> = new Set([null, "review", "question"]);
+
 /**
  * Unallowed flags remain but the assignment is not held for them, as a fresh flag would hold it:
  * from work or from waiting on the user for something else.
  */
-// A spent recovery allowance waits on the user's decision about a dead lead; a hold would hide it.
-const HOLDABLE_WAITS: ReadonlySet<string | null> = new Set([null, "review", "question"]);
-
 const needsHold = (
   row: { readonly state: string; readonly waiting_kind: string | null },
   effective: ReadonlyArray<FactoryControlViolation>,
