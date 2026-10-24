@@ -169,6 +169,8 @@ import {
   type RoleSkillSource,
   withProjectSection,
   workerBrief,
+  WORKER_RULES,
+  workerTask,
 } from "./roleSkills.ts";
 import { ONBOARDING_BRIEF } from "./roles/index.ts";
 import * as FactoryTicketHost from "./tickets/FactoryTicketHost.ts";
@@ -2272,7 +2274,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             renderRoleSkill(worker.description, fill),
             manager.onboardingResult,
           );
-          return { role, text, source: "definition" } satisfies FactoryRoleBrief;
+          return {
+            role,
+            text: `${text}\n\n${WORKER_RULES}`,
+            source: "definition",
+          } satisfies FactoryRoleBrief;
         }
         if (role === "worker")
           return yield* error(
@@ -2282,7 +2288,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         const skill = yield* deps.readRoleSkill(role, shell.workspaceRoot);
         return {
           role,
-          text: withProjectSection(renderRoleSkill(skill.text, fill), manager.onboardingResult),
+          text: `${withProjectSection(renderRoleSkill(skill.text, fill), manager.onboardingResult)}\n\n${WORKER_RULES}`,
           source: skill.source,
         } satisfies FactoryRoleBrief;
       }),
@@ -4313,7 +4319,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             ? `${renderRoleSkill(
                 (yield* deps.readRoleSkill(memberRole, shell.workspaceRoot)).text,
                 fill,
-              )}\n\n# Task\n\n${input.task}`
+              )}\n\n${workerTask(input.task)}`
             : workerBrief(migrated, {
                 ...fill,
                 result: manager.onboardingResult,

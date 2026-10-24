@@ -269,10 +269,14 @@ describe("leadBrief", () => {
 });
 
 describe("workerBrief", () => {
-  it("fills the description, then adds the project section and the task", () => {
+  it("fills the description, then adds the project section, the worker rules and the task", () => {
+    // A user's own copy of an older starter description gets the same rules as a new one.
     assert.strictEqual(
       workerBrief(
-        { description: "You review diffs. Done when: {{completionCondition}}" },
+        {
+          description:
+            "You review diffs. You do not change code. Done when: {{completionCondition}}",
+        },
         {
           ...BRIEF_FILL,
           allowedModels: [opusRef],
@@ -281,8 +285,20 @@ describe("workerBrief", () => {
         },
       ),
       [
-        "You review diffs. Done when: The tests pass.",
+        "You review diffs. You do not change code. Done when: The tests pass.",
         projectSection(RESULT),
+        [
+          "# Working on the team",
+          "",
+          "- Your final turn result is your handback to the lead. Do not message other sessions, even to",
+          "  reach the lead.",
+          "- Write content that holds escape sequences or template literals with your file-editing tool",
+          "  (Write, Edit or apply_patch). Keep shell one-liners to plain search and replace: on Windows,",
+          "  heredocs and `node -e` turn `\\n` inside strings into real newlines.",
+          "- You may run focused tests and write scratch reproductions to check something. They are not",
+          "  changes to the code: put them in a throwaway worktree outside the lead's, remove it",
+          "  afterwards, and never commit them.",
+        ].join("\n"),
         "# Task\n\nReview the List.tsx change.",
       ].join("\n\n"),
     );
@@ -297,5 +313,65 @@ describe("workerBrief", () => {
       assert.notInclude(brief, "{{", role);
       assert.isTrue(brief.endsWith("# Task\n\nDo it."), role);
     }
+  });
+
+  it("lets the starter reviewer run throwaway checks but never edit the code under review", () => {
+    const brief = workerBrief(
+      { description: DEFAULT_ROLE_SKILLS.reviewer },
+      { ...BRIEF_FILL, result: null, task: "Review it." },
+    );
+    assert.include(
+      brief,
+      "Run focused tests or a scratch\n  reproduction when reading is not enough.",
+    );
+    assert.include(
+      brief,
+      "put them in a throwaway worktree outside the lead's, remove it\n  afterwards, and never commit them.",
+    );
+    assert.include(brief, "Tag a\nfinding that needs a user decision rather than a fix.");
+    assert.include(brief, "- The code under review: you never edit it, even to fix a finding.");
+    assert.notInclude(brief, "You do not change code.");
+  });
+});
+
+describe("the lead protocol", () => {
+  const lead = DEFAULT_ROLE_SKILLS.lead.replaceAll(/\n\s*/g, " ");
+
+  it("grounds the design in live data and settles a stack's end state before clients start", () => {
+    assert.include(lead, "Ground it in live data read from a read-only snapshot");
+    assert.include(lead, "how it behaves today before you propose changes.");
+    assert.include(
+      lead,
+      "For stacked work, settle the end-state data model, migration ids and contract fields, and commit the contract, before client implementers start.",
+    );
+  });
+
+  it("splits parallel work by module behind shared contracts and checked symbols", () => {
+    assert.include(lead, "Give parallel workers whole modules, never regions of one large file.");
+    assert.include(
+      lead,
+      "one owner writes the shared contracts, migration columns and cross-owner hooks, and each brief says which layer every input it uses lives on.",
+    );
+    assert.include(lead, "Check every symbol a brief names against the target ref with `git grep`");
+  });
+
+  it("sizes review rounds, tracks findings per round, and verifies migrations on old records", () => {
+    assert.include(
+      lead,
+      "about 1,500 lines from a committed base..head, with server and UI reviewed separately.",
+    );
+    assert.include(
+      lead,
+      "names the shared integration paths the change flows through beyond the diff",
+    );
+    assert.include(lead, "escalate those to the manager in the same round.");
+    assert.include(
+      lead,
+      "a table of the previous round's findings with the commit that fixed each one.",
+    );
+    assert.include(
+      lead,
+      "tests both the write to the new home and the read of a record that existed before, with one fake input per migrated kind.",
+    );
   });
 });
