@@ -239,6 +239,87 @@ describe("FactoryService staffing from the factory config", () => {
       ),
   );
 
+  it.effect("counts a member with two places by its running workers and held plans", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeStaffingFactory();
+        const { service, threadRuns } = factory;
+        factory.boards.push(board([{ number: 1, columnId: READY }]));
+        const manager = yield* activeManager(factory);
+        yield* service.pickup(manager.threadId!, { ...START, issueNumber: 1, teamId: "web" });
+        const lead = ThreadId.make("lead-1");
+        const plan = () => service.planDelegation(lead, { member: "Checker", task: "Check it." });
+        const busy = () =>
+          plan().pipe(
+            Effect.flip,
+            Effect.map((failure) => failure.message),
+          );
+        const record = (threadId: ThreadId) =>
+          service.recordMember(lead, {
+            threadId,
+            role: "worker",
+            memberName: "Checker",
+            modelSelection: OPUS,
+            joined: "created",
+          });
+
+        for (const id of ["worker-1", "worker-2"]) {
+          yield* plan();
+          yield* record(ThreadId.make(id));
+        }
+        threadRuns.set(
+          ThreadId.make("worker-1"),
+          idleRun({ latestRunStatus: "running", runInProgress: true }),
+        );
+        threadRuns.set(ThreadId.make("worker-2"), idleRun());
+
+        yield* plan();
+        assert.strictEqual(yield* busy(), "The team allows 2 × Checker and all are busy.");
+        // Recording the third worker lets its plan's hold go, and its run takes the place instead.
+        const third = ThreadId.make("worker-3");
+        yield* record(third);
+        threadRuns.set(third, idleRun({ latestRunStatus: "running", runInProgress: true }));
+        assert.strictEqual(yield* busy(), "The team allows 2 × Checker and all are busy.");
+      }),
+    ),
+  );
+
+  it.effect("frees a member's place once its thread is deleted", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeStaffingFactory();
+        const { service, threadRuns } = factory;
+        factory.boards.push(board([{ number: 1, columnId: READY }]));
+        const manager = yield* activeManager(factory);
+        yield* service.pickup(manager.threadId!, { ...START, issueNumber: 1, teamId: "web" });
+        const lead = ThreadId.make("lead-1");
+        const worker = ThreadId.make("worker-1");
+        yield* service.planDelegation(lead, { member: "Builder", task: "Add the button." });
+        yield* service.recordMember(lead, {
+          threadId: worker,
+          role: "worker",
+          memberName: "Builder",
+          modelSelection: SONNET,
+          joined: "created",
+        });
+        threadRuns.set(worker, idleRun({ latestRunStatus: "running", runInProgress: true }));
+        assert.strictEqual(
+          (yield* service
+            .planDelegation(lead, { member: "Builder", task: "Again." })
+            .pipe(Effect.flip)).message,
+          "The team allows 1 × Builder and it is busy.",
+        );
+
+        threadRuns.set(
+          worker,
+          idleRun({ deleted: true, latestRunStatus: "running", runInProgress: true }),
+        );
+        const again = yield* service.planDelegation(lead, { member: "Builder", task: "Again." });
+        assert.strictEqual(again.member, "Builder");
+      }),
+    ),
+  );
+
   it.effect("holds a follow-up to a finished member to the team's count", () =>
     withDatabase(
       Effect.gen(function* () {

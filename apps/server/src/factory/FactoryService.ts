@@ -1853,6 +1853,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                 WHERE assignment_id=${assignmentId} AND role=${place.role}
                 AND joined != 'observed' AND ended_at IS NULL`;
         let busy = held.length;
+        // Safe under the lock: this reads the orchestrator's projections (a nested transaction, a
+        // savepoint in this fiber) and never calls back into the factory. Tests stub it.
         for (const member of live)
           if (threadHoldsPlace(yield* deps.readThreadRuns(ThreadId.make(member.thread_id))))
             busy += 1;
