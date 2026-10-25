@@ -1692,6 +1692,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const mutex = yield* Semaphore.make(1);
+  /** Wake delivery sends outside `mutex`, so two deliveries could each send the same rows. */
+  const deliveryMutex = yield* Semaphore.make(1);
   const preserveError = (cause: unknown) => (isFactoryError(cause) ? cause : storageError());
   const protect = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError(preserveError));
@@ -4086,7 +4088,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         rows.map((row) => row.sequence),
       )}`,
     );
-  });
+  }, deliveryMutex.withPermits(1));
 
   /**
    * A lead whose thread is deleted mid-retro never calls factory_retro_done, so its retro counts
