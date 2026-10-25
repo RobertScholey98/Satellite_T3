@@ -164,13 +164,19 @@ export const definitionTeamSection = (team: FactoryTeamDefinition): string => {
 export const WORKER_RULES = `# Working on the team
 
 - Your final turn result is your handback to the lead. Do not message other sessions, even to
-  reach the lead.
+  reach the lead. Never end your turn with background work still running: wait for slow work,
+  such as CI, in the foreground with a bounded loop, or report what is still running and its
+  state.
 - Write content that holds escape sequences or template literals with your file-editing tool
   (Write, Edit or apply_patch). Keep shell one-liners to plain search and replace: on Windows,
   heredocs and \`node -e\` turn \`\\n\` inside strings into real newlines.
 - You may run focused tests and write scratch reproductions to check something. They are not
   changes to the code: put them in a throwaway worktree outside the lead's, remove it
-  afterwards, and never commit them.`;
+  afterwards, and never commit them. If you link the lead's dependency folders into it rather
+  than install, remove the links before \`git worktree remove --force\`, so the removal cannot
+  follow them. To prove a test fails without the fix, replace only the changed source files
+  with \`git show <base>:<path>\`, run the new tests, then restore the files and check that
+  \`git status\` is clean.`;
 
 /** The end of every worker's first message: the fixed worker rules, then the lead's task. */
 export const workerTask = (task: string): string => `${WORKER_RULES}\n\n# Task\n\n${task}`;
