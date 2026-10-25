@@ -20,8 +20,9 @@ default lead and manager, and one **Standard** team.
   and hold retros the same way; what you write for them is added on top.
 - **Teams** combine one lead with workers, each with a count. Adding a worker or lead to a team
   copies it, so you can rewrite a member's description for that team alone. Editing the worker
-  later doesn't change the team. **May edit protected paths** lets a team change files the project
-  protects, for teams whose job is the workflow itself.
+  later doesn't change the team. **May edit protected paths** lets a team change any file the
+  project protects, for teams whose job is the workflow itself. Other teams ask for specific files
+  per assignment (see the team cards below).
 - A model list runs its first available model in order. Turn on **Dynamic** to let the lead pick
   per task for a member, or the manager per ticket for a team's lead. An empty list means any model
   in the pool.
@@ -71,7 +72,8 @@ The proposal appears as a card in the manager's thread. Review it there:
 - **Questions** are the manager's open choices, with its recommended answer selected. Pick another
   option or write your own. Your answers become project rules the manager and every lead it starts
   follow.
-- **Protected paths** are the files no team may change. Untick any you want teams to edit.
+- **Protected paths** are the files teams may not change unless you allow it. Untick any you want
+  teams to edit freely.
 - **Findings** are things the manager noticed. They are not kept after approval; use **Draft
   ticket** for one you want to act on.
 
@@ -112,6 +114,13 @@ checks pass, and the host reports no conflicts; it merges with the project's def
 Otherwise the row says what it waits on, such as **In progress** or **Needs rebase**. A team whose
 pull request starts conflicting is asked to rebase it. A pull request that changes protected paths
 names them, and merging it asks you to confirm overriding the hold.
+
+The factory holds a pull request that changes protected files, and the team's card asks you about
+them. **Allow** lets that team edit exactly those files, for this assignment only; the hold lifts
+once nothing else is protected. **Decline** tells the lead to revert them. You can **Revoke** an
+allowed file later, which holds the pull request again, and allow a declined one after all. A
+manager that knows a team needs protected files can ask when it commissions the work, so the card
+asks before the team starts.
 Once every pull request of an assignment is merged, its retro starts straight away.
 
 A lead's details panel shows **Lead for the manager** with the assignment's state. Its menu, and
