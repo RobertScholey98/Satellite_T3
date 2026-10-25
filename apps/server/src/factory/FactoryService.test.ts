@@ -279,7 +279,10 @@ describe("FactoryService project overrides", () => {
           })
           .pipe(Effect.flip);
         assert.strictEqual(refused.reason, "invalid");
-        assert.include(refused.message, "manager");
+        assert.strictEqual(
+          refused.message,
+          "A project has no concurrency cap of its own. Set the cap on the environment, or on the manager's onboarding result.",
+        );
         assert.deepStrictEqual((yield* service.getConfig({ projectId: PROJECT_ID })).override, {
           concurrencyCap: 1,
         });

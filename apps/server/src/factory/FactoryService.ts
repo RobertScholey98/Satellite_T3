@@ -1977,7 +1977,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         if (input.override.concurrencyCap !== undefined)
           return yield* error(
             "invalid",
-            "A project has no concurrency cap of its own. Set the cap on the environment, or on the manager in its Settings.",
+            "A project has no concurrency cap of its own. Set the cap on the environment, or on the manager's onboarding result.",
           );
         const environment = (yield* environmentConfig()).config;
         if (overrideWidensPool(environment, input.override))
@@ -3072,7 +3072,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         const room = yield* capacity(manager);
         return {
           manager,
-          concurrencyCap: room.managerCap,
+          concurrencyCap: Math.min(room.managerCap, room.environmentCap),
           activeCount: room.managerTaken,
           capacityFree: room.free,
           assignments,
