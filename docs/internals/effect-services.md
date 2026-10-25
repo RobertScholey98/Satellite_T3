@@ -35,6 +35,25 @@ also instruments it
 ([`RpcInstrumentation.ts`](../../apps/server/src/observability/RpcInstrumentation.ts)). A handler
 with per-call context, such as a thread id, adds it with `Effect.annotateCurrentSpan`.
 
+### Work after a commit
+
+When a WebSocket client disconnects, the RPC server interrupts every request it still has running
+(`disconnect` in
+[`RpcServer.ts`](../../.repos/effect-smol/packages/effect/src/rpc/RpcServer.ts)). A service method
+that commits and then dispatches a command, messages a thread, or writes a second transaction loses
+that tail when the user closes the window mid-request. A retry with the same request id returns the
+stored result and doesn't redo the tail either.
+
+Make the span from the first commit to the last side effect it implies `Effect.uninterruptible`
+inside the service method, so MCP and scheduled callers get the same guarantee. Keep slow reads
+before the commit interruptible, with `Effect.uninterruptibleMask`'s `restore` when they share the
+region. `updateSettings` in
+[`FactoryService.ts`](../../apps/server/src/factory/FactoryService.ts) is the pattern, and its test
+in `FactoryService.settings.test.ts` interrupts the caller after the commit. A tail that a sweep or
+reactor redoes, or that only publishes a change signal, doesn't need this. Writes a transaction
+can roll back belong inside it rather than in an uninterruptible region. Undo for anything else,
+such as files or git, goes in `Effect.onError`: `tapError` doesn't run on interruption.
+
 ## Shape of a service module
 
 One module per service, in this order: imports, errors and schemas, the `Context.Service` tag with
