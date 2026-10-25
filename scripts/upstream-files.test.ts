@@ -6,11 +6,15 @@ import * as NodePath from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
+  isStale,
+  parseCli,
   parseRange,
-  readChangedFiles,
+  readOwnCommitFiles,
+  readRangeFiles,
   readUpstreamTree,
   resolveUpstream,
   upstreamFiles,
+  verifyCommit,
 } from "./upstream-files.ts";
 
 const roots: Array<string> = [];
@@ -93,12 +97,63 @@ describe("reading a repository", () => {
     const tree = readUpstreamTree(root, upstreamSha);
     const range = { base: "main", head: "feature" };
 
-    expect(upstreamFiles(readChangedFiles(root, range, false), tree)).toEqual([
+    expect(upstreamFiles(readRangeFiles(root, range), tree)).toEqual([
       "gone.ts",
       "merged.ts",
       "own.ts",
     ]);
-    expect(upstreamFiles(readChangedFiles(root, range, true), tree)).toEqual(["gone.ts", "own.ts"]);
-    expect(resolveUpstream(root, "feature", "missing/main")).toBeUndefined();
+    expect(upstreamFiles(readOwnCommitFiles(root, range), tree)).toEqual(["gone.ts", "own.ts"]);
+  });
+
+  it("lists a root commit's files with first-parent", () => {
+    const { git, root, commit } = repo();
+    commit({ "a.ts": "1" });
+    git("checkout", "-q", "--orphan", "orphan");
+    git("rm", "-q", "-rf", ".");
+    commit({ "b.ts": "1" });
+
+    expect(readOwnCommitFiles(root, { base: "upstream", head: "orphan" })).toEqual(["b.ts"]);
+  });
+
+  it("does not verify a ref that names no commit", () => {
+    const { git, root, commit } = repo();
+    commit({ "a.ts": "1" });
+
+    expect(verifyCommit(root, "upstream")).toBe(git("rev-parse", "HEAD"));
+    expect(verifyCommit(root, "missing/main")).toBeUndefined();
+  });
+
+  it("calls the upstream ref stale until it moves past the last sync", () => {
+    const { git, root, commit } = repo();
+    commit({ "a.ts": "1" });
+    git("checkout", "-q", "-b", "main");
+    commit({ "satellite.ts": "1" });
+    git("checkout", "-q", "upstream");
+    commit({ "b.ts": "1" });
+    git("checkout", "-q", "main");
+    git("merge", "-q", "--no-ff", "-m", "sync", "upstream");
+
+    expect(isStale(root, "upstream", "main")).toBe(true);
+    git("checkout", "-q", "upstream");
+    commit({ "c.ts": "1" });
+    expect(isStale(root, "upstream", "main")).toBe(false);
+  });
+});
+
+describe("parseCli", () => {
+  const range = { base: "a", head: "b" };
+
+  it.each([
+    [["a..b"], { range, firstParent: false, upstreamRef: "upstream/main" }],
+    [["--first-parent", "a..b"], { range, firstParent: true, upstreamRef: "upstream/main" }],
+    [["a..b", "--upstream=origin/x"], { range, firstParent: false, upstreamRef: "origin/x" }],
+    [["a..b", "--upstream", "origin/x"], { range, firstParent: false, upstreamRef: "origin/x" }],
+    [["a..b", "--upstream"], undefined],
+    [["a..b", "--upstream", "--first-parent"], undefined],
+    [["a..b", "c..d"], undefined],
+    [["a..b", "--bogus"], undefined],
+    [[], undefined],
+  ])("parses %j", (argv, expected) => {
+    expect(parseCli(argv)).toEqual(expected);
   });
 });
