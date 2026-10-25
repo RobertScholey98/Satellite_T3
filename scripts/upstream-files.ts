@@ -44,7 +44,7 @@ export function parseCli(argv: ReadonlyArray<string>) {
   }
   if (parsed.positionals.length !== 1) return undefined;
   const range = parseRange(parsed.positionals[0]);
-  if (range === undefined) return undefined;
+  if (range === undefined || parsed.values.upstream === "") return undefined;
   return {
     range,
     firstParent: parsed.values["first-parent"],
@@ -153,7 +153,8 @@ function run(cwd: string, cli: NonNullable<ReturnType<typeof parseCli>>): number
     return 1;
   }
   process.stderr.write(`upstream: ${upstreamRef} at merge-base ${upstream.slice(0, 10)}\n`);
-  if (isStale(cwd, upstreamRef, range.head)) {
+  // An explicit ref, such as the SHA of the last sync, is merged into head by design.
+  if (upstreamRef === DEFAULT_UPSTREAM && isStale(cwd, upstreamRef, range.head)) {
     process.stderr.write(
       `warning: ${upstreamRef} is fully merged into ${range.head}; if it was fetched before the last upstream sync, files upstream added since are missing. Run \`git fetch upstream\`.\n`,
     );

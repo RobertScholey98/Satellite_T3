@@ -113,6 +113,7 @@ describe("reading a repository", () => {
     commit({ "b.ts": "1" });
 
     expect(readOwnCommitFiles(root, { base: "upstream", head: "orphan" })).toEqual(["b.ts"]);
+    expect(resolveUpstream(root, "orphan", "upstream")).toBeUndefined();
   });
 
   it("does not verify a ref that names no commit", () => {
@@ -149,6 +150,7 @@ describe("parseCli", () => {
     [["a..b", "--upstream=origin/x"], { range, firstParent: false, upstreamRef: "origin/x" }],
     [["a..b", "--upstream", "origin/x"], { range, firstParent: false, upstreamRef: "origin/x" }],
     [["a..b", "--upstream"], undefined],
+    [["a..b", "--upstream="], undefined],
     [["a..b", "--upstream", "--first-parent"], undefined],
     [["a..b", "c..d"], undefined],
     [["a..b", "--bogus"], undefined],
