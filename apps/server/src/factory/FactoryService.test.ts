@@ -1250,6 +1250,62 @@ describe("FactoryService primed manager thread", () => {
     ),
   );
 
+  it.effect("starts pickup with one pickup wake for the Ready tickets and no launch", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, boards, sentMessages, launches } = factory;
+        boards.push(
+          board([
+            { number: 1, columnId: READY },
+            { number: 2, columnId: READY },
+            { number: 3, columnId: BACKLOG },
+          ]),
+        );
+        const { manager } = yield* approved(factory);
+        assert.strictEqual(manager.state, "ready");
+        const mark = yield* logMark(service, manager.id);
+        const sentBefore = sentMessages.length;
+        const launchesBefore = launches.length;
+
+        yield* service.startPickup({ requestId: "start-1", managerId: manager.id });
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["wake"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["pickup"]);
+        assert.deepStrictEqual(
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
+          [
+            [
+              manager.threadId,
+              "These Ready tickets are waiting for your judgement: #1 Ticket 1 (https://github.com/acme/app/issues/1), #2 Ticket 2 (https://github.com/acme/app/issues/2); call factory_status, then factory_pickup for each.",
+            ],
+          ],
+        );
+        assert.deepStrictEqual(launches.slice(launchesBefore), []);
+      }),
+    ),
+  );
+
+  it.effect("starts pickup without a log entry, message or launch when nothing is Ready", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, boards, sentMessages, launches } = factory;
+        boards.push(board([{ number: 1, columnId: BACKLOG }]));
+        const { manager } = yield* approved(factory);
+        assert.strictEqual(manager.state, "ready");
+        const mark = yield* logMark(service, manager.id);
+        const sentBefore = sentMessages.length;
+        const launchesBefore = launches.length;
+
+        const started = yield* service.startPickup({ requestId: "start-1", managerId: manager.id });
+        assert.strictEqual(started.state, "active");
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), []);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
+        assert.deepStrictEqual(launches.slice(launchesBefore), []);
+      }),
+    ),
+  );
+
   it.effect("pauses a ready manager and resumes it ready", () =>
     withDatabase(
       Effect.gen(function* () {
@@ -1952,6 +2008,45 @@ describe("FactoryService sweep", () => {
         const [delivered] = yield* service.listLog({ managerId: manager.id });
         assert.strictEqual(delivered!.sequence, pending!.sequence);
         assert.isNotNull(delivered!.deliveredAt);
+      }),
+    ),
+  );
+
+  it.effect("holds a second delivery until the first marks its wake delivered", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, boards, sentMessages, controls } = factory;
+        const { manager, sentBefore } = yield* setupDone(factory, yield* activeManager(factory));
+        boards.push(board([{ number: 1, columnId: READY }]));
+        const sending = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringSend = Deferred.succeed(sending, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const first = yield* service.sweep.pipe(Effect.forkChild);
+        yield* Deferred.await(sending);
+
+        const secondReading = yield* Deferred.make<void>();
+        controls.beforeWakeRead = Deferred.succeed(secondReading, undefined);
+        // Runs the second sweep until it suspends: on the delivery lock, or past the wake read. This
+        // proves the lock only while the sweep reaches deliverWakes without suspending first.
+        const second = yield* service.sweep.pipe(Effect.forkChild({ startImmediately: true }));
+        assert.isFalse(yield* Deferred.isDone(secondReading));
+
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(first);
+        yield* Fiber.join(second);
+        assert.deepStrictEqual(
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
+          [
+            [
+              manager.threadId,
+              "These Ready tickets are waiting for your judgement: #1 Ticket 1 (https://github.com/acme/app/issues/1); call factory_status, then factory_pickup for each.",
+            ],
+          ],
+        );
+        assert.isTrue(yield* Deferred.isDone(secondReading));
       }),
     ),
   );

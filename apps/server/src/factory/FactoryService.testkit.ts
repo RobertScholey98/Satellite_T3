@@ -33,6 +33,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { runSatelliteMigrations } from "../satellite/persistence/SatelliteMigrations.ts";
 import type { RateTable } from "../usage/usagePricing.ts";
 import {
   makeFactoryService,
@@ -46,11 +47,6 @@ import {
 } from "./FactoryService.ts";
 import * as FactoryConfigStore from "./config/FactoryConfigStore.ts";
 import type { FactoryModelCatalog } from "./config/modelResolution.ts";
-import { FactoryDefinitionsV1 } from "./migrations/FactoryDefinitionsV1.ts";
-import { FactoryManagersPerProjectV1 } from "./migrations/FactoryManagersPerProjectV1.ts";
-import { FactoryProtectedPathAsksV1 } from "./migrations/FactoryProtectedPathAsksV1.ts";
-import { FactoryOnboardingResultV1 } from "./migrations/FactoryOnboardingResultV1.ts";
-import { FactoryV1 } from "./migrations/FactoryV1.ts";
 import type { RoleSkillSource } from "./roleSkills.ts";
 import { DEFAULT_ROLE_SKILLS } from "./roles/index.ts";
 
@@ -257,6 +253,8 @@ interface HarnessControls {
   sendFailures: number;
   /** Runs once inside the next message sent to a thread, before it succeeds or fails. */
   duringSend: Effect.Effect<void> | null;
+  /** Runs once inside the next wake delivery, just before it reads the undelivered wakes. */
+  beforeWakeRead: Effect.Effect<void> | null;
   attemptFailures: number;
   fileReadFailures: number;
   ticketFailures: number;
@@ -280,13 +278,7 @@ type TicketRequest = Parameters<FactoryServiceDependencies["createTicket"]>[0];
 
 export const makeHarness = (options: HarnessOptions = {}) =>
   Effect.gen(function* () {
-    if (options.restart !== true) {
-      yield* FactoryV1;
-      yield* FactoryOnboardingResultV1;
-      yield* FactoryDefinitionsV1;
-      yield* FactoryManagersPerProjectV1;
-      yield* FactoryProtectedPathAsksV1;
-    }
+    if (options.restart !== true) yield* runSatelliteMigrations();
     const launches: FactoryThreadLaunch[] = [];
     const skillReads: Array<readonly [FactoryRole, string]> = [];
     const boards: IssueBoardView[] = [];
@@ -299,6 +291,7 @@ export const makeHarness = (options: HarnessOptions = {}) =>
     const controls: HarnessControls = {
       sendFailures: 0,
       duringSend: null,
+      beforeWakeRead: null,
       attemptFailures: 0,
       fileReadFailures: 0,
       ticketFailures: 0,
@@ -465,6 +458,12 @@ export const makeHarness = (options: HarnessOptions = {}) =>
           );
         }),
       readPullRequestHead: (input) => Effect.sync(() => pullRequestHeads.get(input.number) ?? null),
+      readingWakes: () =>
+        Effect.suspend(() => {
+          const before = controls.beforeWakeRead ?? Effect.void;
+          controls.beforeWakeRead = null;
+          return before;
+        }),
       createTicket: (input) =>
         Effect.suspend(() => {
           ticketRequests.push(input);
@@ -575,6 +574,11 @@ export const makeFactory = makeHarness({
 });
 export type Factory = Effect.Success<typeof makeFactory>;
 
+/**
+ * startPickup's first wake already offers the Ready tickets, so a test measuring a sweep's pickup
+ * wake makes its tickets Ready after setup (`activeManager`, then `setupDone`); otherwise the sweep
+ * dedupes the tickets startPickup offered.
+ */
 export const approve = (
   factory: Factory,
   managerId: string,
@@ -636,6 +640,10 @@ export const setupDone = (factory: Factory, manager: FactoryManager) =>
     };
   });
 
+/**
+ * Tests pin these literally, so a new wake or log entry on an existing path fails every test that
+ * pins `logKinds`, `wakeReasons` or `sentMessages` for that path.
+ */
 export const logKinds = (service: Service, managerId: string, mark: number) =>
   logSince(service, managerId, mark).pipe(
     Effect.map((entries) => entries.map((entry) => entry.kind)),
@@ -659,7 +667,10 @@ export const SYNC_WORK = {
   complexity: "large",
 } as const;
 
-/** A lead thread at rest after a completed run, with no questions or pull requests. */
+/**
+ * A lead thread at rest after a completed run, with no questions or pull requests. A "replace"
+ * recovery hands over the stalled lead's worktree, so it needs a `worktreePath` here.
+ */
 export const idleRun = (overrides: Partial<FactoryThreadRuns> = {}): FactoryThreadRuns => ({
   deleted: false,
   latestRunStatus: "completed",
@@ -669,6 +680,11 @@ export const idleRun = (overrides: Partial<FactoryThreadRuns> = {}): FactoryThre
   worktreePath: null,
   ...overrides,
 });
+/**
+ * Reconciling this writes a stall wake without delivering it, so the next wake sent, such as a
+ * claim's or a question's, carries the stall in the same message. A "replace" recovery of this
+ * lead needs `{ ...failedRun, worktreePath }`.
+ */
 export const failedRun = idleRun({ latestRunStatus: "failed" });
 
 export const pullRequest = (number: number, merged: boolean, updatedAt: string | null = EPOCH) => ({
@@ -678,6 +694,16 @@ export const pullRequest = (number: number, merged: boolean, updatedAt: string |
   merged,
   state: merged ? ("merged" as const) : ("open" as const),
   updatedAt,
+});
+
+/** A link before its first sync: with no snapshot, the live read has no state or version. */
+export const unsyncedPullRequest = (number: number) => ({
+  host: "github.com",
+  repository: "acme/app",
+  number,
+  merged: false,
+  state: null,
+  updatedAt: null,
 });
 
 /**
@@ -692,6 +718,7 @@ export const startedAssignment = (factory: Factory, tickets: ReadonlyArray<numbe
     return { ...(yield* setupDone(factory, manager)), assignment, lead: ThreadId.make("lead-1") };
   });
 
+/** See `logKinds`: a new wake on an existing path fails every test that pins these. */
 export const wakeReasons = (service: Service, managerId: string, mark: number) =>
   logSince(service, managerId, mark).pipe(
     Effect.map((entries) =>
