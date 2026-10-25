@@ -5093,6 +5093,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       members: members.map(memberValue),
       assignments: yield* Effect.forEach(assignments, (row) =>
         Effect.gen(function* () {
+          const asks = yield* parse(ProtectedPathAsks, row.protected_path_asks_json);
           return {
             id: row.id,
             managerId: row.manager_id,
@@ -5111,7 +5112,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
               row.claim_json === null
                 ? null
                 : (yield* parse(FactoryAssignmentClaim, row.claim_json)).claimedAt,
-            controlViolations: yield* parse(ControlViolations, row.control_violations_json),
+            controlViolations: effectiveViolations(
+              yield* parse(ControlViolations, row.control_violations_json),
+              asks,
+            ),
+            protectedPathAsks: asks,
             previousLeadThreadIds: previousLeads.get(row.id) ?? [],
           };
         }),

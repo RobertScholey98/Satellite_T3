@@ -1018,8 +1018,10 @@ export const FactoryWorkspaceAssignment = Schema.Struct({
   waitingReason: Schema.NullOr(Schema.String),
   /** When the lead claimed the work complete, if it has. */
   claimedAt: Schema.optional(Schema.NullOr(Schema.String)),
-  /** Open pull requests that change the manager's protected paths. */
+  /** Protected paths open pull requests change that the user has not allowed. */
   controlViolations: Schema.optional(Schema.Array(FactoryControlViolation)),
+  /** Asks to edit protected files for this assignment; the team's card answers them. */
+  protectedPathAsks: Schema.optional(Schema.Array(FactoryProtectedPathAsk)),
   /** Leads the assignment had before `leadThreadId`; their pull requests still gate the claim. */
   previousLeadThreadIds: Schema.optional(Schema.Array(ThreadId)),
 });

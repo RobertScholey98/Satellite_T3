@@ -388,6 +388,10 @@ describe("FactoryService control paths", () => {
           [["AGENTS.md"], "allowed", "pull-request"],
           [["apps/web/AGENTS.md"], "open", "pull-request"],
         ]);
+        // The workspace's team card and merge card read the same unallowed paths and asks.
+        const [shown] = (yield* workspace(service)).assignments;
+        assert.deepStrictEqual(shown!.controlViolations, flagged.controlViolations);
+        assert.deepStrictEqual(shown!.protectedPathAsks, flagged.protectedPathAsks);
         assert.deepStrictEqual(yield* controlWakes(service, manager.id, secondMark), [
           "Pull request #7 changes protected paths (apps/web/AGENTS.md). Already allowed for this assignment: AGENTS.md. The user can allow the flagged files for this assignment from the team's card. Keep an edit the task needs and wait for the user's answer; revert only an unintended edit or one the user declined. The factory cannot send this to the user as ready while unallowed protected changes remain.",
         ]);
