@@ -1,7 +1,9 @@
 name: SatelliteT3 Release
 
-# Satellite's release: Windows x64 with the fork's update feed, and unsigned
-# macOS arm64 and x64 builds for manual install. See docs/operations/release.md.
+# Satellite's release: Windows x64 with the fork's update feed, unsigned
+# macOS arm64 and x64 builds for manual install, and the Linux x64 `t3` CLI
+# archive for headless servers and SSH environments. See
+# docs/operations/release.md.
 
 on:
   push:
@@ -191,7 +193,7 @@ jobs:
       rust_target: x86_64-pc-windows-msvc
       resource_key: win32-x64
       cli_archive: false
-      # Satellite ships no CLI archive, so Windows builds have no WSL runtime.
+      # The WSL runtime stays off; embedding the Linux x64 archive is a follow-up.
       wsl_runtime: false
 
   desktop_mac_arm64:
@@ -238,6 +240,30 @@ jobs:
       resource_key: darwin-x64
       cli_archive: false
 
+  # Only the CLI archive is published. release-desktop.yml also builds an
+  # AppImage and .deb, which publish leaves out.
+  desktop_linux_x64:
+    name: Desktop Linux x64
+    needs: [resolve, build_bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+      ref: ${{ needs.resolve.outputs.commit }}
+      release_channel: stable
+      relay_client_tracing: false
+      clerk_publishable_key: ""
+      clerk_jwt_template: ""
+      clerk_cli_oauth_client_id: ""
+      relay_url: ""
+      label: Linux x64
+      runner: ubuntu-24.04
+      platform: linux
+      target: AppImage
+      arch: x64
+      rust_target: x86_64-unknown-linux-gnu
+      resource_key: linux-x64
+      cli_archive: true
+
   verify_macos:
     name: Verify macOS ${{ matrix.arch }}
     needs: [resolve, desktop_mac_arm64, desktop_mac_x64]
@@ -280,7 +306,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    needs: [resolve, desktop_win_x64, verify_macos]
+    needs: [resolve, desktop_win_x64, desktop_linux_x64, verify_macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -293,8 +319,15 @@ jobs:
           merge-multiple: true
           path: artifacts
 
-      # Copies exactly the assets 1.x releases carried, so a missing file fails
-      # here and stray build output never ships. The Windows feed manifest goes
+      - name: Download Linux CLI archive
+        uses: actions/download-artifact@v8
+        with:
+          name: cli-linux-x64
+          path: artifacts
+
+      # Copies exactly the assets 1.x releases carried plus the Linux CLI
+      # archive, so a missing file fails here and stray build output (such as
+      # the Linux AppImage and feed) never ships. The Windows feed manifest goes
       # back to latest.yml, the name installed Windows builds poll.
       - name: Assemble release assets
         env:
@@ -317,6 +350,7 @@ jobs:
               cp "artifacts/SatelliteT3-$RELEASE_VERSION-$arch.$extension" release/
             done
           done
+          cp "artifacts/t3-$RELEASE_VERSION-linux-x64.tar.gz" release/
           for asset in release/*; do
             test -s "$asset"
           done
