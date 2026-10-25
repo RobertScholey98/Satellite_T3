@@ -28,9 +28,8 @@ default lead and manager, and one **Standard** team.
   in the pool.
 - The environment's **concurrency cap** and the git identity stay on this machine. Two caps
   apply: the environment's, counted across every manager, and each manager's own, set when you
-  approve its onboarding and changed in its **Settings**. Work starts only when both have room, so
-  a manager's running count shows the lower of the two. A project has no cap of its own; its
-  manager's cap is the project's.
+  approve its onboarding and changed in its **Settings**. Work starts only when both have room. A
+  project has no cap of its own; its manager's cap is the project's.
 - **Runs on** appears when this machine has more than one instance of a provider, such as two Claude
   accounts. It picks which one runs the factory's models for that provider; **First available** uses
   whichever comes first. It stays on this machine. If the chosen instance goes away, the factory uses
