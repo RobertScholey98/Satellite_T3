@@ -2545,6 +2545,7 @@ describe("FactoryService checklist", () => {
             waitingReason: null,
             claimedAt: null,
             controlViolations: [],
+            protectedPathAsks: [],
             previousLeadThreadIds: [],
           },
         ]);
