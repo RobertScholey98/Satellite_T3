@@ -668,9 +668,7 @@ describe("FactoryService control paths", () => {
         yield* Fiber.await(answering);
 
         assert.deepStrictEqual(
-          sentMessages
-            .slice(sentBefore, sentBefore + 1)
-            .map((message) => [message.threadId, message.text]),
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
           [
             [
               lead,

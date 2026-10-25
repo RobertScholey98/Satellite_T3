@@ -5506,6 +5506,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   const restoreDraft: FactoryServiceShape["restoreDraft"] = (input) =>
     moveDraft("restore", input, "dismissed", "pending");
 
+  // A rollback cannot unwrite a definition file, so a disconnect must not stop the apply between
+  // its file write and its commit: the retry would find the definition and refuse it as a duplicate.
   const applyDraft: FactoryServiceShape["applyDraft"] = (input) =>
     changeDraft("apply", input, (row, at) =>
       Effect.gen(function* () {
@@ -5547,7 +5549,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           change,
         });
       }),
-    );
+    ).pipe(Effect.uninterruptible);
 
   /**
    * A factory draft is accepted in one step. A project draft files its ticket outside the lock;

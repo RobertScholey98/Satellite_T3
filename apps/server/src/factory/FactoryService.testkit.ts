@@ -266,6 +266,8 @@ interface HarnessControls {
   duringLaunch: Effect.Effect<void, FactoryOperationError> | null;
   /** Runs once inside the next thread interrupt, before it is recorded. */
   duringInterrupt: Effect.Effect<void> | null;
+  /** Runs once after the service writes its next team file. */
+  duringTeamWrite: Effect.Effect<void> | null;
   /** What the usage rate cache holds; null when usage tracking has cached none. */
   rateTable: RateTable | null;
   /** The repository's default branch as git reports it; null when it cannot be read. */
@@ -303,6 +305,7 @@ export const makeHarness = (options: HarnessOptions = {}) =>
       launchFailures: options.launchFailures ?? 0,
       duringLaunch: null,
       duringInterrupt: null,
+      duringTeamWrite: null,
       rateTable: null,
       defaultBranch: "trunk",
       catalog: CATALOG,
@@ -357,7 +360,19 @@ export const makeHarness = (options: HarnessOptions = {}) =>
             ),
           );
         }),
-      configStore,
+      configStore: {
+        ...configStore,
+        writeTeam: (team) =>
+          configStore.writeTeam(team).pipe(
+            Effect.andThen(
+              Effect.suspend(() => {
+                const during = controls.duringTeamWrite ?? Effect.void;
+                controls.duringTeamWrite = null;
+                return during;
+              }),
+            ),
+          ),
+      },
       readModelCatalog: Effect.sync(() => controls.catalog),
       readRoleSkill: (role, projectRoot) =>
         Effect.sync(() => {

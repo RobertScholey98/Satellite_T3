@@ -3341,6 +3341,71 @@ describe("FactoryService applied drafts", () => {
       }),
     ),
   );
+
+  it.effect("finishes applying a team when the client disconnects after its file is written", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, configStore, controls } = factory;
+        const manager = yield* activeManager(factory);
+        const opus = { driver: ProviderDriverKind.make("claudeAgent"), model: "claude-opus-5-5" };
+        yield* configStore.writeSettings({ version: 1, modelPool: [opus], recoveryAllowance: 1 });
+        const team = {
+          id: "trio",
+          name: "Trio",
+          useWhen: "Risky migrations.",
+          workflow: "Implement, review, verify.",
+          mayEditProtectedPaths: false,
+          createdBy: "manager" as const,
+          lead: {
+            id: "default",
+            name: "Default lead",
+            models: { dynamic: true, models: [opus] },
+            instructions: "",
+          },
+          members: [
+            {
+              id: "implementer",
+              name: "Implementer",
+              models: { dynamic: false, models: [opus] },
+              description: "Implement it.",
+              count: 1,
+            },
+          ],
+        };
+        const { draft } = yield* draftChange(factory, manager.threadId!, {
+          kind: "team",
+          before: null,
+          after: team,
+        });
+        const written = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringTeamWrite = Deferred.succeed(written, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+
+        const applying = yield* service
+          .applyDraft({ requestId: "apply-1", draftId: draft.id })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(written);
+        // What the RPC server does to a disconnected client's requests.
+        applying.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(applying);
+
+        assert.deepStrictEqual(
+          (yield* service.listDrafts({})).map((entry) => [entry.id, entry.state]),
+          [[draft.id, "approved"]],
+        );
+        assert.deepStrictEqual(
+          (yield* configStore.read).teams.find((saved) => saved.id === "trio"),
+          team,
+        );
+        const retried = yield* service.applyDraft({ requestId: "apply-1", draftId: draft.id });
+        assert.strictEqual(retried.state, "approved");
+      }),
+    ),
+  );
 });
 
 /** Claims ticket 1 with nothing open, so the assignment goes straight to its retro. */
