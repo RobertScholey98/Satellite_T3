@@ -281,7 +281,7 @@ describe("FactoryService project overrides", () => {
         assert.strictEqual(refused.reason, "invalid");
         assert.strictEqual(
           refused.message,
-          "A project has no concurrency cap of its own. Set the cap on the environment, or on the manager's onboarding result.",
+          "A project has no concurrency cap of its own. Set the cap on the environment, or as the manager's own cap.",
         );
         assert.deepStrictEqual((yield* service.getConfig({ projectId: PROJECT_ID })).override, {
           concurrencyCap: 1,
