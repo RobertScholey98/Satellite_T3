@@ -102,16 +102,22 @@ const makeLinuxCliArchiveFixture = Effect.fn("test.makeLinuxCliArchiveFixture")(
     yield* fs.makeDirectory(path.dirname(memberPath), { recursive: true });
     yield* fs.writeFileString(memberPath, member);
   }
-  const archivePath = path.join(input.root, `${input.stem}.tar.gz`);
+  const archiveName = `${input.stem}.tar.gz`;
+  // Relative paths only: Git for Windows' GNU tar reads `C:\...` as a remote host.
   const tar = yield* spawner.spawn(
-    ChildProcess.make("tar", ["-czf", archivePath, "-C", contentRoot, "."], {
+    ChildProcess.make("tar", ["-czf", archiveName, "-C", "content", "."], {
+      cwd: input.root,
       stdin: "ignore",
       stdout: "ignore",
       stderr: "pipe",
     }),
   );
-  assert.equal(Number(yield* tar.exitCode), 0);
-  return archivePath;
+  const [stderr, exitCode] = yield* Effect.all(
+    [tar.stderr.pipe(Stream.decodeText, Stream.mkString), tar.exitCode],
+    { concurrency: "unbounded" },
+  );
+  assert.equal(Number(exitCode), 0, stderr);
+  return path.join(input.root, archiveName);
 });
 
 function mockProcess(exitCode: number, stdout = "") {
@@ -130,6 +136,20 @@ function mockProcess(exitCode: number, stdout = "") {
     getOutputFd: () => Stream.empty,
   });
 }
+
+// Real builds run under `vp run`, which puts the repo's node_modules/.bin on PATH. Windows
+// resolves `vp` from HostProcess.Environment, and a machine may have no global vp.
+const withRepoBinOnPath = <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+  const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
+  const repoBin = NodePath.join(import.meta.dirname, "..", "node_modules", ".bin");
+  const inherited = process.env[pathKey];
+  return effect.pipe(
+    Effect.provideService(HostProcess.Environment, {
+      ...process.env,
+      [pathKey]: inherited ? `${repoBin}${NodePath.delimiter}${inherited}` : repoBin,
+    }),
+  );
+};
 
 const WINDOWS_PAYLOAD_FIXTURE_VERSION = "1.2.3";
 
@@ -291,7 +311,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       for (const relativePath of releasePackageFiles) {
         assert.equal(yield* fs.readFileString(path.join(root, relativePath)), original);
       }
-    }),
+    }).pipe(withRepoBinOnPath),
   );
 
   it.effect("restores manifests and releases the checkout lock after interruption", () =>
@@ -433,7 +453,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.isFalse(yield* fs.exists(path.join(root, "unexpected-build.txt")));
         assert.isFalse(yield* fs.exists(path.join(root, ".desktop-build.lock")));
         assert.equal(yield* fs.readFileString(path.join(root, "package.json")), packageJson);
-      }),
+      }).pipe(withRepoBinOnPath),
   );
 
   it.effect("reports a restore failure while still restoring the remaining manifests", () =>
@@ -475,7 +495,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       for (const relativePath of releasePackageFiles.slice(1)) {
         assert.equal(yield* fs.readFileString(path.join(root, relativePath)), original);
       }
-    }),
+    }).pipe(withRepoBinOnPath),
   );
 
   it.effect("omits update feeds for pull request preview builds", () =>
@@ -1073,14 +1093,12 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         });
 
         const primaryProbe = commands.find(
-          (command) => command.options.env?.ELECTRON_RUN_AS_NODE === "1",
+          (command) =>
+            command.command === path.join(fixture.packagedAppDir, fixture.appExecutableName),
         );
         if (primaryProbe === undefined) return assert.fail("Windows primary probe was not spawned");
 
-        assert.equal(
-          primaryProbe.command,
-          path.join(fixture.packagedAppDir, fixture.appExecutableName),
-        );
+        assert.equal(primaryProbe.options.env?.ELECTRON_RUN_AS_NODE, "1");
         assert.deepStrictEqual(primaryProbe.args.slice(0, 3), [
           "--no-global-search-paths",
           "--input-type=module",
@@ -1158,6 +1176,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
     return Effect.scoped(
       Effect.gen(function* () {
+        const path = yield* Path.Path;
         const fixture = yield* makeWindowsPayloadFixture({ copyUnpackedNatives: true });
         yield* validateWindowsPackagedPayload({
           stageDistDir: fixture.stageDistDir,
@@ -1166,8 +1185,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
         });
 
+        // The bundle self-check inherits process.env, so an ambient ELECTRON_RUN_AS_NODE
+        // (set when tests run under Electron) does not identify the probe.
         assert.isFalse(
-          commands.some((command) => command.options.env?.ELECTRON_RUN_AS_NODE === "1"),
+          commands.some(
+            (command) =>
+              command.command === path.join(fixture.packagedAppDir, fixture.appExecutableName),
+          ),
         );
         assert.isTrue(
           commands.some(
