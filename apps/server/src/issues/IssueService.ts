@@ -486,13 +486,14 @@ export const makeIssueService = Effect.fn("makeIssueService")(function* (
       ),
   );
   const refreshes = yield* makeDrainableWorker(refreshBoard);
-  // Only the queued refresh clears the mark, and a disconnect interrupts the request, so once the
-  // board is marked its refresh must be queued, or the board never refreshes again.
+  // Only the queued refresh clears the mark, so once the board is marked its refresh must be
+  // queued, or the board never refreshes again. That holds through a disconnect, which interrupts
+  // the request, and through a failed publish, which comes after the enqueue.
   const requestRefresh = (boardId: string) =>
     Effect.suspend(() => {
       if (syncing.has(boardId)) return Effect.void;
       syncing.add(boardId);
-      return publish(boardId).pipe(Effect.andThen(refreshes.enqueue(boardId)));
+      return refreshes.enqueue(boardId).pipe(Effect.andThen(publish(boardId)));
     }).pipe(Effect.uninterruptible);
 
   const requestReplay = Effect.fnUntraced(function* (requestId: string, payload: unknown) {

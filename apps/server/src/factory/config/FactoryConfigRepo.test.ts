@@ -81,11 +81,21 @@ const machine = (name: string, options: { readonly identity?: boolean } = {}) =>
         .makeDirectory(path.dirname(file(relativePath)), { recursive: true })
         .pipe(Effect.andThen(fs.writeFileString(file(relativePath), contents)));
     const read = (relativePath: string) => fs.readFileString(file(relativePath));
-    return { repo, reopen, directory, backupsDirectory, file, write, read };
+    /** Every file in the directory outside `.git`, sorted. */
+    const files = Effect.gen(function* () {
+      const found: string[] = [];
+      for (const entry of yield* fs.readDirectory(directory, { recursive: true })) {
+        const relativePath = entry.split(path.sep).join("/");
+        if (relativePath === ".git" || relativePath.startsWith(".git/")) continue;
+        if ((yield* fs.stat(path.join(directory, entry))).type === "File") found.push(relativePath);
+      }
+      return found.toSorted();
+    });
+    return { repo, reopen, directory, backupsDirectory, file, write, read, files };
   });
 
-/** Git whose next command with `arg` waits, before it runs, until released. */
-const holdingGit = (arg: string) =>
+/** Git whose next command with `arg` waits, before or after it runs, until released. */
+const holdingGit = (arg: string, when: "before" | "after" = "before") =>
   Effect.gen(function* () {
     const git = yield* GitVcsDriver.GitVcsDriver;
     const started = yield* Deferred.make<void>();
@@ -96,10 +106,12 @@ const holdingGit = (arg: string) =>
       execute: (input) => {
         if (!armed || !input.args.includes(arg)) return git.execute(input);
         armed = false;
-        return Deferred.succeed(started, undefined).pipe(
+        const hold = Deferred.succeed(started, undefined).pipe(
           Effect.andThen(Deferred.await(release)),
-          Effect.andThen(git.execute(input)),
         );
+        return when === "before"
+          ? hold.pipe(Effect.andThen(git.execute(input)))
+          : git.execute(input).pipe(Effect.tap(() => hold));
       },
     });
     return { driver, started, release };
@@ -315,15 +327,18 @@ describe("FactoryConfigRepo", () => {
       });
     }),
   );
-  live("leaves the config as it was when the client disconnects during a connect", () =>
+  /** B, with its own config, connecting with `use-repo` to A's repo through git held on `arg`. */
+  const disconnectedConnect = (arg: string, when: "before" | "after") =>
     Effect.gen(function* () {
       const remote = yield* bareRemote;
       const a = yield* machine("a");
       yield* a.write("workers/implementer.md", "implementer v1\n");
+      yield* a.write("teams/delivery.md", "delivery team\n");
+      yield* a.write("README.md", "a's readme\n");
       yield* a.repo.connect({ url: remote });
       const b = yield* machine("b");
       yield* b.write("workers/own.md", "b's own worker\n");
-      const held = yield* holdingGit("checkout");
+      const held = yield* holdingGit(arg, when);
       const repo = yield* b.reopen.pipe(
         Effect.provideService(GitVcsDriver.GitVcsDriver, held.driver),
       );
@@ -336,9 +351,34 @@ describe("FactoryConfigRepo", () => {
       connecting.interruptUnsafe();
       yield* Deferred.succeed(held.release, undefined);
       yield* Fiber.await(connecting);
+      return b;
+    });
+
+  live("leaves the config as it was when the client disconnects during a connect's fetch", () =>
+    Effect.gen(function* () {
+      const b = yield* disconnectedConnect("fetch", "before");
 
       assert.deepStrictEqual(yield* b.repo.status, { connected: false });
-      assert.strictEqual(yield* b.read("workers/own.md"), "b's own worker\n");
+      assert.deepStrictEqual(yield* b.files, ["workers/own.md"]);
+    }),
+  );
+
+  live("finishes checking out the repo's config when the client disconnects during it", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const b = yield* disconnectedConnect("checkout", "after");
+
+      assert.deepStrictEqual(yield* b.files, [
+        "README.md",
+        "teams/delivery.md",
+        "workers/implementer.md",
+      ]);
+      assert.strictEqual((yield* b.repo.status).connected, true);
+      assert.strictEqual(
+        yield* fs.readFileString(path.join(b.backupsDirectory, "1", "workers", "own.md")),
+        "b's own worker\n",
+      );
     }),
   );
 

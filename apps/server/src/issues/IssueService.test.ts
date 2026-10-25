@@ -857,8 +857,9 @@ describe("IssueService after the merge and on retried moves", () => {
         yield* test.service.endAttempt({ requestId: "stop", attemptId: attempt.id });
         yield* test.fail("move", null);
 
+        assert.isDefined(failed);
         const held = yield* test.holdNextStatement("INSERT INTO issue_moves");
-        const input = { requestId: "retry", moveId: failed!.id };
+        const input = { requestId: "retry", moveId: failed.id };
         const retrying = yield* test.service.retryMove(input).pipe(Effect.forkChild);
         yield* Deferred.await(held.started);
         // What the RPC server does to a disconnected client's requests.

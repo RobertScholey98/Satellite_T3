@@ -393,7 +393,6 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
       }
       yield* checkOut(branch);
     }).pipe(
-      // On interruption too: a disconnect interrupts the request, and the files must come back.
       Effect.onError(() =>
         // An entry the config never had is missing from the backup too, which is fine.
         Effect.forEach(CONFIG_LAYOUT_ENTRIES, (entry) =>
@@ -462,45 +461,47 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
       ? fs.remove(gitDir, { recursive: true }).pipe(Effect.ignore)
       : run(["remote", "remove", "origin"]).pipe(Effect.ignore);
 
-    const attempt = Effect.gen(function* () {
-      if (created) {
-        const init = yield* run(["init", "--quiet"], {}, true);
-        if (init.exitCode !== 0)
-          return yield* error("storage", summarise("set up the repo", init.stderr));
-      }
-      // Files are written with LF endings and must not change on checkout.
-      yield* ok("configure the repo", ["config", "core.autocrlf", "false"]);
-      yield* excludeLegacyRoles;
-      yield* ok("add the repo", ["remote", "add", "--", "origin", input.url]);
-      yield* fetch;
-      const branches =
-        (yield* output(["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]))
-          ?.split("\n")
-          .map((ref) => ref.trim().replace(/^refs\/remotes\/origin\//, ""))
-          .filter((name) => name.length > 0 && name !== "HEAD") ?? [];
-      if (branches.length === 0) {
-        yield* publishLocal;
+    // A disconnect interrupts the request. Only the network waits stay interruptible, with `undo`
+    // covering them, since a connect left half done would read as connected to the same URL next
+    // time. The local work past them finishes: a checkout stopped part-way, or stopped once done
+    // and then undone, would leave the repo's files mixed into this environment's config.
+    const outcome = yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        if (created) {
+          const init = yield* run(["init", "--quiet"], {}, true);
+          if (init.exitCode !== 0)
+            return yield* error("storage", summarise("set up the repo", init.stderr));
+        }
+        // Files are written with LF endings and must not change on checkout.
+        yield* ok("configure the repo", ["config", "core.autocrlf", "false"]);
+        yield* excludeLegacyRoles;
+        yield* ok("add the repo", ["remote", "add", "--", "origin", input.url]);
+        yield* restore(fetch);
+        const branches =
+          (yield* output(["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]))
+            ?.split("\n")
+            .map((ref) => ref.trim().replace(/^refs\/remotes\/origin\//, ""))
+            .filter((name) => name.length > 0 && name !== "HEAD") ?? [];
+        if (branches.length === 0) {
+          yield* restore(publishLocal);
+          return "connected" as const;
+        }
+        const branch = yield* restore(remoteDefaultBranch(branches));
+        if ((yield* configEntries).length > 0) {
+          // Both sides have a config. A `merge` choice, keeping these files by importing them into
+          // the repo's config, arrives with import; `use-repo` keeps the repo's and backs these up.
+          if (input.choice !== "use-repo") return "needs-choice" as const;
+          yield* replaceWithRepo(branch);
+        } else {
+          yield* checkOut(branch);
+        }
         return "connected" as const;
-      }
-      const branch = yield* remoteDefaultBranch(branches);
-      if ((yield* configEntries).length > 0) {
-        // Both sides have a config. A `merge` choice, keeping these files by importing them into
-        // the repo's config, arrives with import; `use-repo` keeps the repo's and backs these up.
-        if (input.choice !== "use-repo") return "needs-choice" as const;
-        yield* replaceWithRepo(branch);
-      } else {
-        yield* checkOut(branch);
-      }
-      return "connected" as const;
-    });
-
-    // On interruption too: a disconnect interrupts the request, and a connect left half done
-    // would read as connected to the same URL next time.
-    const outcome = yield* attempt.pipe(Effect.onError(() => undo));
-    if (outcome === "needs-choice") {
-      yield* undo;
-      return { outcome } as const;
-    }
+      }).pipe(
+        Effect.onError(() => undo),
+        Effect.tap((outcome) => (outcome === "needs-choice" ? undo : Effect.void)),
+      ),
+    );
+    if (outcome === "needs-choice") return { outcome } as const;
     return { outcome, status: yield* readStatus } as const;
   }, serialized);
 
