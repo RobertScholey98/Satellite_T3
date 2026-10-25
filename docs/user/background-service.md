@@ -5,8 +5,10 @@ to keep a terminal open.
 
 ## Manage the service
 
-Install the `t3` CLI first ([Install T3 Code](./install.md#command-line)), then
-run these commands on the machine that will host T3 Code:
+Install the `t3` CLI first ([Install T3 Code](./install.md#command-line)). On a
+headless Linux x64 host, that means the release's Linux archive; `t3 service
+install` reuses the version it unpacked. Then run these commands on the machine
+that will host T3 Code:
 
 | Task                            | Command                |
 | ------------------------------- | ---------------------- |

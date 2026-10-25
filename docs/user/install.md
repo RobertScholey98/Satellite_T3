@@ -10,9 +10,52 @@ launch T3 Code and configure providers afterwards.
 
 ## Command line
 
-Satellite ships desktop installers only. It publishes no `t3` command-line
-archives, so `t3 update` and the upstream install scripts do not apply to it.
-To run a Satellite server without the desktop app, build it from source in
+On a Linux x64 machine, such as a headless server, install the `t3` command
+from Satellite's releases. It needs no Node.js. The installer downloads
+`t3-<version>-linux-x64.tar.gz`, checks it against the release's `SHA256SUMS`,
+unpacks it into `~/.t3/runtime/versions/<version>`, and links `t3` into
+`~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/RobertScholey98/Satellite_T3/main/scripts/install.sh | sh
+```
+
+It installs the newest stable release. To pick a version, such as a
+prerelease, set `T3CODE_VERSION`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/RobertScholey98/Satellite_T3/main/scripts/install.sh | T3CODE_VERSION=2.0.0 sh
+```
+
+On a minimal image without curl, run `sudo apt install curl` first. If the
+installer says `~/.local/bin` is not on your `PATH`, log in again or run
+`export PATH="$HOME/.local/bin:$PATH"`.
+
+To install by hand instead, with `version` set to the release you want:
+
+```bash
+version=2.0.0
+base="https://github.com/RobertScholey98/Satellite_T3/releases/download/v$version"
+dir="$HOME/.t3/runtime/versions/$version"
+cd "$(mktemp -d)"
+curl -fLO "$base/t3-$version-linux-x64.tar.gz"
+curl -fLO "$base/SHA256SUMS"
+sha256sum -c SHA256SUMS --ignore-missing
+mkdir -p "$dir" ~/.local/bin
+tar -xzf "t3-$version-linux-x64.tar.gz" -C "$dir" --strip-components=1
+echo "$version" > "$dir/.install-complete"
+ln -sfn "$dir/t3" ~/.local/bin/t3
+```
+
+Check it with `t3 --version`, then run `t3 serve`, or `t3 service install` to
+keep it running in the background ([Running in the background](./background-service.md)).
+`t3 update` moves to a newer Satellite release. Your data lives under `~/.t3`.
+
+The desktop app's SSH environments install this same archive on the remote
+host for you, so you do not need these steps there.
+
+On macOS and other architectures there is no archive. To run a Satellite server
+without the desktop app there, build it from source in
 [this fork's repository](https://github.com/RobertScholey98/Satellite_T3) with
 Node.js 24 ([Install vp](../../README.md#install-vp)):
 
@@ -36,8 +79,10 @@ Download Satellite from
 | macOS Apple Silicon | `SatelliteT3-<version>-arm64.dmg` |
 | macOS Intel         | `SatelliteT3-<version>-x64.dmg`   |
 
-There is no Linux build. Each release lists checksums in `SHA256SUMS`; to check
-a download, run `shasum -a 256 -c SHA256SUMS --ignore-missing` in its folder.
+There is no Linux desktop app; on Linux x64, install the
+[command line](#command-line) instead. Each release lists checksums in
+`SHA256SUMS`; to check a download, run
+`shasum -a 256 -c SHA256SUMS --ignore-missing` in its folder.
 
 The builds are not code signed, so the first launch needs one extra step:
 
