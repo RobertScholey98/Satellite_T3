@@ -43,6 +43,7 @@ const readyRow: FactoryMergeRow = {
   syncedAt: "2026-10-24T10:00:00.000Z",
   status: "ready",
   protectedPaths: [],
+  awaitingAnswer: [],
 };
 
 function setup() {

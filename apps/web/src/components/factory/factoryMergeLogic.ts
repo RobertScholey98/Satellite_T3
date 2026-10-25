@@ -40,8 +40,13 @@ export interface FactoryMergeRow {
   /** When the host was last read for this pull request; a sync replaces it. */
   readonly syncedAt: string;
   readonly status: FactoryMergeRowStatus;
-  /** Protected paths the pull request changes; merging it overrides the factory's hold. */
+  /**
+   * Protected paths the pull request changes that the user has not allowed; merging it overrides
+   * the factory's hold.
+   */
   readonly protectedPaths: ReadonlyArray<string>;
+  /** Those of `protectedPaths` the team asked for that still wait on the user's answer. */
+  readonly awaitingAnswer: ReadonlyArray<string>;
 }
 
 /** What the card reads from a lead's thread. */
@@ -113,6 +118,11 @@ export function resolveFactoryMergeRows(
     const links = [...unique.values()]
       .filter((link) => link.snapshot?.state === "open")
       .toSorted((left, right) => left.number - right.number);
+    const asked = new Set(
+      (assignment.protectedPathAsks ?? []).flatMap((ask) =>
+        ask.state === "open" ? ask.paths : [],
+      ),
+    );
     for (const link of links) {
       const violation = assignment.controlViolations?.find(
         ({ pullRequest }) =>
@@ -133,6 +143,7 @@ export function resolveFactoryMergeRows(
         syncedAt: link.snapshot!.syncedAt,
         status: mergeStatus(assignment, link),
         protectedPaths: violation?.paths ?? [],
+        awaitingAnswer: (violation?.paths ?? []).filter((path) => asked.has(path)),
         claimedAt: assignment.claimedAt ?? null,
         order: rows.length,
       });
@@ -147,4 +158,22 @@ export function resolveFactoryMergeRows(
   return [...ready, ...rows.filter((row) => row.status !== "ready")].map(
     ({ claimedAt: _claimedAt, order: _order, ...row }) => row,
   );
+}
+
+/** Protected paths the factory holds the pull request for, with no ask waiting on the user. */
+export const factoryMergeHeldPaths = (row: FactoryMergeRow) =>
+  row.protectedPaths.filter((path) => !row.awaitingAnswer.includes(path));
+
+/** What merging over protected paths asks the user to confirm, or null when there are none. */
+export function factoryMergeConfirmText(row: FactoryMergeRow): string | null {
+  if (row.protectedPaths.length === 0) return null;
+  const held = factoryMergeHeldPaths(row);
+  return [
+    `Merge #${row.number} over its protected paths?`,
+    ...(row.awaitingAnswer.length === 0
+      ? []
+      : [`Waiting for your answer on the team's card: ${row.awaitingAnswer.join(", ")}.`]),
+    ...(held.length === 0 ? [] : [`The factory is holding it for: ${held.join(", ")}.`]),
+    "Merging overrides the hold.",
+  ].join("\n");
 }

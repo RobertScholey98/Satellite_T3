@@ -7,7 +7,12 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveFactoryMergeRows, type FactoryLeadThreadLinks } from "./factoryMergeLogic";
+import {
+  factoryMergeConfirmText,
+  factoryMergeHeldPaths,
+  resolveFactoryMergeRows,
+  type FactoryLeadThreadLinks,
+} from "./factoryMergeLogic";
 
 const PROJECT = ProjectId.make("project");
 
@@ -189,5 +194,47 @@ describe("resolveFactoryMergeRows", () => {
     expect(row!.status).toBe("ready");
     expect(row!.protectedPaths).toEqual(["AGENTS.md", ".github/workflows/ci.yml"]);
     expect(clean!.protectedPaths).toEqual([]);
+  });
+
+  it("tells paths waiting on the user's answer from paths the factory holds", () => {
+    const ask = (paths: ReadonlyArray<string>, state: "open" | "declined") => ({
+      id: `ask-${state}`,
+      paths,
+      reason: "",
+      source: "pull-request" as const,
+      pullRequest: { host: "github.com", repository: "acme/app", number: 1 },
+      state,
+      createdAt: "2026-10-24T09:00:00.000Z",
+      answeredAt: null,
+    });
+    const [row, clean] = resolveFactoryMergeRows(
+      [
+        assignment("a", {
+          controlViolations: [
+            {
+              pullRequest: { host: "github.com", repository: "acme/app", number: 1 },
+              paths: ["AGENTS.md", ".github/workflows/ci.yml"],
+            },
+          ],
+          protectedPathAsks: [
+            ask(["AGENTS.md"], "open"),
+            ask([".github/workflows/ci.yml"], "declined"),
+          ],
+        }),
+      ],
+      "manager-1",
+      leads({ "a-lead": [link(1), link(2)] }),
+    );
+    expect(row!.awaitingAnswer).toEqual(["AGENTS.md"]);
+    expect(factoryMergeHeldPaths(row!)).toEqual([".github/workflows/ci.yml"]);
+    expect(factoryMergeConfirmText(row!)).toBe(
+      [
+        "Merge #1 over its protected paths?",
+        "Waiting for your answer on the team's card: AGENTS.md.",
+        "The factory is holding it for: .github/workflows/ci.yml.",
+        "Merging overrides the hold.",
+      ].join("\n"),
+    );
+    expect(factoryMergeConfirmText(clean!)).toBeNull();
   });
 });

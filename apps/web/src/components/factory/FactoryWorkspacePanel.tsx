@@ -25,6 +25,7 @@ import {
   type FactoryStackEntry,
 } from "./FactoryThreadStack";
 import { resolveFactoryDetailsCardPlacement } from "./factoryDetailsCardPlacement";
+import { FactoryProtectedPathAsks } from "./FactoryProtectedPathAsks";
 import { useFactoryWorkspaceFeed, useFactoryWorkspacePlace } from "./factoryWorkspaceState";
 import {
   factoryMemberLabel,
@@ -333,6 +334,11 @@ function TeamCard(props: {
           />
         ))}
       </ul>
+      <FactoryProtectedPathAsks
+        environmentId={props.environmentId}
+        assignmentId={assignment.id}
+        asks={assignment.protectedPathAsks ?? []}
+      />
     </section>
   );
 }

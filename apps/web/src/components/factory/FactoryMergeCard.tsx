@@ -12,7 +12,12 @@ import {
 } from "../pullRequest/usePullRequestActions";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
-import { FACTORY_MERGE_STATUS_LABEL, type FactoryMergeRow } from "./factoryMergeLogic";
+import {
+  FACTORY_MERGE_STATUS_LABEL,
+  factoryMergeConfirmText,
+  factoryMergeHeldPaths,
+  type FactoryMergeRow,
+} from "./factoryMergeLogic";
 import { FACTORY_CARD_CLASS } from "./FactoryThreadStack";
 import { useFactoryMergeRows } from "./factoryWorkspaceState";
 
@@ -84,9 +89,10 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
       );
     },
   });
+  const held = factoryMergeHeldPaths(row);
   const merge = async () => {
-    if (row.protectedPaths.length > 0) {
-      const message = `Merge #${row.number} over its protected paths?\nIt changes ${row.protectedPaths.join(", ")}. The factory is holding it for those; merging overrides the hold.`;
+    const message = factoryMergeConfirmText(row);
+    if (message !== null) {
       const confirmed = await (requestConfirmDialog(message, { variant: "destructive" }) ??
         Promise.resolve(window.confirm(message)));
       if (!confirmed) return;
@@ -100,10 +106,14 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
           <span className="text-muted-foreground">#{row.number}</span> {row.title ?? row.repository}
         </p>
         <p className="truncate text-2xs text-muted-foreground">{row.assignmentTitle}</p>
-        {row.protectedPaths.length > 0 ? (
+        {row.awaitingAnswer.length > 0 ? (
           <p className="text-2xs text-warning-foreground">
-            Protected paths: {row.protectedPaths.join(", ")}
+            Protected paths waiting for your answer on the team's card:{" "}
+            {row.awaitingAnswer.join(", ")}
           </p>
+        ) : null}
+        {held.length > 0 ? (
+          <p className="text-2xs text-warning-foreground">Protected paths: {held.join(", ")}</p>
         ) : null}
       </div>
       {merging ? (
