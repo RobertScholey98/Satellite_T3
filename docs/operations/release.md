@@ -70,7 +70,8 @@ already names a different commit fails in **Resolve release**; pick a new versio
    `scripts/smoke-cli-archive.ts` unpacks the archive, checks it holds `t3` and
    `client/index.html`, runs `t3 --version` with an empty `PATH` and expects the release
    version, then starts `t3 serve` on loopback against a scratch home and requires a 200 from `/`
-   within 30 seconds. The shared workflow then packages a Linux AppImage and `.deb` too. Publishing
+   within 30 seconds. The runner image already has the `libatomic1` the executable links, so the
+   smoke test cannot catch a host that lacks it. The shared workflow then packages a Linux AppImage and `.deb` too. Publishing
    leaves them out, but a failure there still fails the job and blocks the whole release; avoiding
    that would need a change to `release-desktop.yml`.
 4. **Verify macOS** extracts each ZIP, checks it holds one app with a valid signature and no update

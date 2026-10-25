@@ -16,6 +16,17 @@ from Satellite's releases. It needs no Node.js. The installer downloads
 unpacks it into `~/.t3/runtime/versions/<version>`, and links `t3` into
 `~/.local/bin`.
 
+`t3` needs `libatomic1`, which minimal and container images of Ubuntu leave
+out. Install it, and curl if it is missing, first; as root, leave out `sudo`:
+
+```bash
+sudo apt update && sudo apt install -y libatomic1 curl
+```
+
+Without it, `t3` fails with `libatomic.so.1: cannot open shared object file`,
+and the desktop app's SSH environments report that the executable does not run
+on the host.
+
 The archive ships from the first release after 2.3.0; 2.3.0 and earlier have
 none. Choose a release on
 [Satellite's releases](https://github.com/RobertScholey98/Satellite_T3/releases)
@@ -33,8 +44,7 @@ Once a stable release includes the archive, you can leave out
 curl -fsSL https://raw.githubusercontent.com/RobertScholey98/Satellite_T3/main/scripts/install.sh | sh
 ```
 
-On a minimal image without curl, run `sudo apt update && sudo apt install -y curl`
-first, or the same without `sudo` as root. If the installer says `~/.local/bin`
+If the installer says `~/.local/bin`
 is not on your `PATH`, log in again or run
 `export PATH="$HOME/.local/bin:$PATH"`.
 
