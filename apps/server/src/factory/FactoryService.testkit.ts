@@ -684,6 +684,16 @@ export const pullRequest = (number: number, merged: boolean, updatedAt: string |
   updatedAt,
 });
 
+/** A link before its first sync: with no snapshot, the live read has no state or version. */
+export const unsyncedPullRequest = (number: number) => ({
+  host: "github.com",
+  repository: "acme/app",
+  number,
+  merged: false,
+  state: null,
+  updatedAt: null,
+});
+
 /**
  * An active manager whose lead on ticket 1 runs in thread lead-1, with the log mark and message
  * count after setup.

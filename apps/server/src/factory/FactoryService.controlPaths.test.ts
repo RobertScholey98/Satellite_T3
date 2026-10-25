@@ -11,6 +11,7 @@ import {
   withDatabase,
   idleRun,
   pullRequest,
+  unsyncedPullRequest,
   wakeReasons,
   makeTeamFactory,
   startedTeam,
@@ -721,6 +722,33 @@ The lead of Ticket 1 claims it complete with acme/app#7 (head unknown). Check th
     ),
   );
 
+  it.effect("reads a pull request's files only once its link has synced", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles, fileReads } = factory;
+        const { lead } = yield* startedTeam(factory);
+        pullRequestFiles.set(7, ["AGENTS.md"]);
+
+        threadRuns.set(lead, idleRun({ pullRequests: [unsyncedPullRequest(7)] }));
+        yield* service.reconcileThread(lead);
+        const unsynced = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(unsynced.state, "active");
+        assert.deepStrictEqual(unsynced.controlViolations, []);
+        assert.deepStrictEqual(fileReads, []);
+
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
+        yield* service.reconcileThread(lead);
+        const synced = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(synced.state, "waiting-user");
+        assert.strictEqual(synced.waitingReason, HELD_REASON);
+        assert.deepStrictEqual(fileReads, [
+          { projectId: PROJECT_ID, host: "github.com", repository: "acme/app", number: 7 },
+        ]);
+      }),
+    ),
+  );
+
   it.effect("holds a revoked file when a replacement lead's link has not synced yet", () =>
     withDatabase(
       Effect.gen(function* () {
@@ -746,7 +774,7 @@ The lead of Ticket 1 claims it complete with acme/app#7 (head unknown). Check th
         threadRuns.set(
           replacement,
           idleRun({
-            pullRequests: [{ ...pullRequest(7, false, "push-1"), state: null }],
+            pullRequests: [unsyncedPullRequest(7)],
             worktreePath,
           }),
         );
