@@ -1871,6 +1871,11 @@ describe("FactoryService sweep", () => {
 const RETRO_REQUEST =
   "All pull requests for Ticket 1 are merged. Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.";
 
+const CLAIM_WAKE =
+  "The lead of Ticket 1 claims it complete with acme/app#7 (head unknown). Check the evidence with factory_status; the user reviews and merges.";
+const RETRO_WAKE =
+  "All pull requests for Ticket 1 are merged and its lead is writing the team retro. You will be woken for your manager retro once it is done.";
+
 describe("FactoryService completion claims", () => {
   it.effect("starts the retro when every pull request is merged and asks the lead for it", () =>
     withDatabase(
@@ -1889,13 +1894,55 @@ describe("FactoryService completion claims", () => {
           { host: "github.com", repository: "acme/app", number: 7 },
         ]);
         assert.strictEqual(claimed.claim!.evidence, "pnpm test passes; the empty list renders.");
-        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["claim", "wake"]);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["retro"]);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), [
+          "claim",
+          "wake",
+          "wake",
+        ]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["claim", "retro"]);
         assert.deepStrictEqual(
           sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
-          [[lead, RETRO_REQUEST]],
+          [
+            [lead, RETRO_REQUEST],
+            [
+              manager.threadId,
+              `${CLAIM_WAKE}
+
+${RETRO_WAKE}`,
+            ],
+          ],
         );
         assert.isTrue((yield* service.status(manager.id)).capacityFree);
+      }),
+    ),
+  );
+
+  it.effect("wakes the manager once with the claimed pull requests and their heads", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadRuns, sentMessages, pullRequestHeads } = factory;
+        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false)] }));
+        pullRequestHeads.set(7, "0123456789abcdef0123456789abcdef01234567");
+
+        const claimed = yield* service.claimComplete(lead, {
+          evidence: "Checks pass.",
+          pullRequests: [{ host: "github.com", repository: "acme/app", number: 7 }],
+        });
+        assert.strictEqual(claimed.state, "waiting-user");
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["claim"]);
+        const toManager = () =>
+          sentMessages
+            .slice(sentBefore)
+            .filter((message) => message.threadId === manager.threadId)
+            .map((message) => message.text);
+        assert.deepStrictEqual(toManager(), [
+          "The lead of Ticket 1 claims it complete with acme/app#7 at 0123456789ab. Check the evidence with factory_status; the user reviews and merges.",
+        ]);
+
+        yield* service.sweep;
+        assert.strictEqual(toManager().length, 1);
       }),
     ),
   );
@@ -1918,7 +1965,7 @@ describe("FactoryService completion claims", () => {
         assert.strictEqual(claimed.state, "waiting-user");
         assert.strictEqual(claimed.waitingReason, "Pull requests await the user's review: #7.");
         assert.strictEqual((yield* service.listManagers({}))[0]!.waitingOnYou, 1);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), []);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["claim"]);
 
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "waiting-user");
@@ -1929,10 +1976,10 @@ describe("FactoryService completion claims", () => {
         );
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "retro");
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["retro"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["claim", "retro"]);
         assert.deepStrictEqual(
           sentMessages.slice(sentBefore).map((message) => message.text),
-          [RETRO_REQUEST],
+          [CLAIM_WAKE, RETRO_REQUEST],
         );
       }),
     ),
@@ -1956,14 +2003,17 @@ describe("FactoryService completion claims", () => {
         // The event names the repository as the host spells it, and comes without a host.
         yield* service.reconcileMerge({ repository: "Acme/App", number: 7 });
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "retro");
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["retro"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["claim", "retro"]);
 
         // The sync catching up later finds the retro already under way.
         threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, true)] }));
         yield* service.reconcileThread(lead);
         assert.deepStrictEqual(
           sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
-          [[lead, RETRO_REQUEST]],
+          [
+            [manager.threadId, CLAIM_WAKE],
+            [lead, RETRO_REQUEST],
+          ],
         );
       }),
     ),
@@ -2667,6 +2717,7 @@ describe("FactoryService retro", () => {
           assert.isNotNull(done.retro.teamDoneAt);
           assert.isNull(done.retro.managerDoneAt);
           assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), [
+            "claim",
             "retro",
             "manager-retro",
           ]);
@@ -3293,6 +3344,7 @@ describe("FactoryService skipped team retro", () => {
 
         yield* service.sweep;
         assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), [
+          "claim",
           "retro",
           "manager-retro",
         ]);

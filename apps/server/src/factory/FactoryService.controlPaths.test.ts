@@ -93,13 +93,18 @@ describe("FactoryService control paths", () => {
         });
         assert.strictEqual(claimed.state, "waiting-user");
         assert.strictEqual(claimed.waitingReason, held.waitingReason);
+        // The claim wakes the manager at once, with the held paths it had not heard about yet.
+        const managerText = `Assignment Ticket 1: ${leadText}
+
+The lead of Ticket 1 claims it complete with acme/app#7 (head unknown). Check the evidence with factory_status; the user reviews and merges.`;
+        assert.strictEqual(sentMessages.at(-1)!.threadId, manager.threadId);
+        assert.strictEqual(sentMessages.at(-1)!.text, managerText);
 
         yield* service.reconcileThread(lead);
         assert.strictEqual(fileReads.length, 1);
 
         yield* service.sweep;
-        assert.strictEqual(sentMessages.at(-1)!.threadId, manager.threadId);
-        assert.strictEqual(sentMessages.at(-1)!.text, `Assignment Ticket 1: ${leadText}`);
+        assert.strictEqual(sentMessages.at(-1)!.text, managerText);
 
         pullRequestFiles.set(7, ["src/list.tsx"]);
         threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-2")] }));
@@ -140,12 +145,16 @@ describe("FactoryService control paths", () => {
         const merged = (yield* service.assignmentForThread(lead))!;
         assert.strictEqual(merged.state, "retro");
         assert.deepStrictEqual(merged.controlViolations, []);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["control", "retro"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), [
+          "control",
+          "claim",
+          "retro",
+        ]);
         assert.strictEqual(
           sentMessages.at(-1)!.text,
           "All pull requests for Ticket 1 are merged. Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.",
         );
-        assert.strictEqual(sentMessages.length - sentBefore, 2);
+        assert.strictEqual(sentMessages.length - sentBefore, 3);
       }),
     ),
   );
