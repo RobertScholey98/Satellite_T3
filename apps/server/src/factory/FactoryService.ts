@@ -6351,28 +6351,34 @@ export const make = Effect.gen(function* () {
         error("unavailable", `The pull request's files could not be read: ${cause.message}`),
       ),
     ),
-    readPullRequestHead: (input) => {
-      const reference = {
-        projectId: input.projectId,
-        host: input.host,
-        repository: input.repository,
-        number: input.number,
-      };
-      // A cached detail can predate the lead's last push, and the manager checks this head.
-      return pullRequests.invalidate({ reference }).pipe(
-        Effect.andThen(pullRequests.detail({ ...reference, allowStale: false })),
-        Effect.map((detail) => detail.headSha ?? null),
-        Effect.catch((cause) =>
-          Effect.logDebug("Could not read a factory pull request's head", {
-            repository: input.repository,
-            number: input.number,
-            cause: cause.message,
-          }).pipe(Effect.as(null)),
-        ),
-      );
-    },
+    readPullRequestHead: readPullRequestHeadLive(pullRequests),
     createTicket: (input) => ticketHost.create(input),
   });
 });
 
 export const layer = Layer.effect(FactoryService, make);
+
+export const readPullRequestHeadLive =
+  (
+    pullRequests: Pick<PullRequestService.PullRequestService["Service"], "invalidate" | "detail">,
+  ): FactoryServiceDependencies["readPullRequestHead"] =>
+  (input) => {
+    const reference = {
+      projectId: input.projectId,
+      host: input.host,
+      repository: input.repository,
+      number: input.number,
+    };
+    // A cached detail can predate the lead's last push, and the manager checks this head.
+    return pullRequests.invalidate({ reference }).pipe(
+      Effect.andThen(pullRequests.detail({ ...reference, allowStale: false })),
+      Effect.map((detail) => detail.headSha ?? null),
+      Effect.catch((cause) =>
+        Effect.logDebug("Could not read a factory pull request's head", {
+          repository: input.repository,
+          number: input.number,
+          cause: cause.message,
+        }).pipe(Effect.as(null)),
+      ),
+    );
+  };
