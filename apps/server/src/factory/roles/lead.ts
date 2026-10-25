@@ -68,12 +68,13 @@ Never start a model outside this list, even if it would be faster.
 - Staff the team with \`factory_delegate\`: the member's name from the Team section, the task,
   and optionally a model. A member whose models you pick per task needs one from its list; for
   any other member, the first model this environment can run is used. The team sets how many of
-  each member may run at once. A member whose task finished frees its place. Give a member more
-  work with a new \`factory_delegate\`, never a message to a finished member's thread: only
-  \`factory_delegate\` is held to the team's count and counted as a delegation. On an older team
-  that lists roles instead of members, name the role. A child started with plain
-  \`delegate_task\` is still observed, and flagged to the manager if its model is outside the
-  pool.
+  each member may run at once. A member whose task finished frees its place. Give a finished
+  member more work with \`factory_delegate\` and \`continueThreadId\` set to its thread, or without
+  it for a fresh thread. Never \`t3_thread_send\` to a finished member's thread: only
+  \`factory_delegate\` is held to the team's count. A follow-up's completion does not wake you;
+  wait on its thread with \`t3_thread_wait\`. On an older team that lists roles instead of
+  members, name the role. A child started with plain \`delegate_task\` is still observed, and
+  flagged to the manager if its model is outside the pool.
 - A helper you or a member start on your own is that agent's business: it takes no place on
   the team, and its cost counts as the agent's that started it.
 - Keep \`factory_update_checklist\` current as your plan moves: steps only, no narration.

@@ -1790,9 +1790,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    * launch that failed never keeps the place for good.
    *
    * A place counts work running at once, not delegations: a member whose task finished frees its
-   * place without ending its row, so its stats and feed stay. Only delegation is checked here: a
-   * follow-up sent to a finished member's thread is never refused, so the lead skill routes more
-   * work through delegation, and such a follow-up still counts against the place while it runs.
+   * place without ending its row, so its stats and feed stay. A follow-up to a finished member
+   * goes through delegation too, with `continueThreadId`. A plain `t3_thread_send` to its thread
+   * is never refused, so the lead skill forbids it; such a follow-up still counts against the
+   * place while it runs.
    */
   const heldPlaces = new Map<string, ReadonlyArray<number>>();
   const PLACE_HOLD_MS = 5 * 60_000;
@@ -1811,14 +1812,34 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     (!runs.deleted &&
       (runs.runInProgress || runs.pendingRequests > 0 || runs.latestRunStatus === null));
 
+  /**
+   * Threads a follow-up plan was made for, as expiry times, until the lead re-records them. Until
+   * its follow-up starts, the thread still reads as finished, so this keeps a second plan off it.
+   */
+  const pendingFollowUps = new Map<string, number>();
+
   /** Holds one of the place's seats for a plan, or fails when every seat is taken or held. */
   const reservePlace = (
     assignmentId: string,
-    place: Place & { readonly count: number; readonly busy: string },
+    place: Place & {
+      readonly count: number;
+      readonly busy: string;
+      readonly idle?: { readonly threadId: ThreadId; readonly busy: string };
+    },
   ) =>
     lock(
       Effect.gen(function* () {
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        // A failed send never re-records its thread, so its expired entry is dropped here.
+        for (const [threadId, expiry] of pendingFollowUps)
+          if (expiry <= nowMs) pendingFollowUps.delete(threadId);
+        // Checked under the lock so two follow-ups to one finished thread cannot both pass.
+        if (
+          place.idle !== undefined &&
+          ((pendingFollowUps.get(place.idle.threadId) ?? 0) > nowMs ||
+            threadHoldsPlace(yield* deps.readThreadRuns(place.idle.threadId)))
+        )
+          return yield* error("conflict", place.idle.busy);
         const key = placeKey(assignmentId, place);
         const held = (heldPlaces.get(key) ?? []).filter((expiry) => expiry > nowMs);
         heldPlaces.set(key, held);
@@ -1837,13 +1858,16 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             busy += 1;
         if (busy >= place.count) return yield* error("conflict", place.busy);
         heldPlaces.set(key, [...held, nowMs + PLACE_HOLD_MS]);
+        if (place.idle !== undefined)
+          pendingFollowUps.set(place.idle.threadId, nowMs + PLACE_HOLD_MS);
       }),
     );
 
   /** A recorded worker now takes the place itself, so the oldest hold on it is let go. */
-  const releasePlace = (assignmentId: string, place: Place) => {
+  const releasePlace = (assignmentId: string, place: Place, threadId: string) => {
     const key = placeKey(assignmentId, place);
     heldPlaces.set(key, (heldPlaces.get(key) ?? []).slice(1));
+    pendingFollowUps.delete(threadId);
   };
 
   /**
@@ -4943,11 +4967,103 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     } satisfies FactoryDelegationPlan;
   });
 
+  /**
+   * More work for a finished member, in its own thread and on its own model. It takes a place
+   * through the same check as a new delegation, so a follow-up never runs past the team's count.
+   */
+  const planContinuation = Effect.fnUntraced(function* (
+    row: LeadAssignmentRow,
+    team: FactoryTeamSpec,
+    threadId: ThreadId,
+    input: FactoryDelegateInput,
+  ) {
+    const rows = yield* sql<MemberRow & { model_selection_json: string | null }>`SELECT *
+        FROM factory_members WHERE thread_id=${threadId} AND assignment_id=${row.id}
+        AND joined != 'observed' AND ended_at IS NULL`;
+    const recorded = rows[0];
+    if (recorded === undefined || recorded.role === "lead" || recorded.role === "manager")
+      return yield* error(
+        "invalid",
+        `${threadId} is not a member of ${row.title}'s team. Delegate without continueThreadId to start one.`,
+      );
+    const member = yield* decodeMember(recorded);
+    let place: Place & { readonly count: number; readonly busy: string };
+    let label: string;
+    if (team.definition !== undefined) {
+      const named =
+        member.memberName === undefined
+          ? undefined
+          : findTeamMember(team.definition, member.memberName);
+      if (named === undefined)
+        return yield* error(
+          "invalid",
+          `${threadId} is no longer one of ${team.definition.name}'s members.`,
+        );
+      if (
+        input.member !== undefined &&
+        findTeamMember(team.definition, input.member)?.name !== named.name
+      )
+        return yield* error("invalid", `${threadId} is ${named.name}, not ${input.member}.`);
+      label = named.name;
+      place = {
+        kind: "member",
+        name: named.name,
+        count: named.count,
+        busy: `The team allows ${named.count} × ${named.name} and ${named.count === 1 ? "it is" : "all are"} busy.`,
+      };
+    } else {
+      const staffed = team.members.find((candidate) => candidate.role === member.role);
+      if (staffed === undefined)
+        return yield* error("invalid", `The team for ${row.title} has no ${member.role}.`);
+      if (input.role !== undefined && input.role !== member.role)
+        return yield* error("invalid", `${threadId} is a ${member.role}, not a ${input.role}.`);
+      label = `The ${member.role}`;
+      place = {
+        kind: "role",
+        role: member.role,
+        count: staffed.count,
+        busy: `The team allows ${staffed.count} ${member.role}${staffed.count === 1 ? "" : "s"} and all are busy.`,
+      };
+    }
+    if (recorded.model_selection_json === null)
+      return yield* error("invalid", `${threadId} has no recorded model to continue on.`);
+    const modelSelection = yield* parse(ModelSelection, recorded.model_selection_json);
+    if (
+      input.modelSelection !== undefined &&
+      modelKey(input.modelSelection) !== modelKey(modelSelection)
+    )
+      return yield* error(
+        "invalid",
+        `${threadId} runs ${modelSelection.model} (${modelSelection.instanceId}); a follow-up keeps its thread's model.`,
+      );
+    const runs = yield* deps.readThreadRuns(threadId);
+    if (runs?.deleted)
+      return yield* error(
+        "invalid",
+        `${threadId} was deleted. Delegate without continueThreadId to start a new one.`,
+      );
+    yield* reservePlace(row.id, {
+      ...place,
+      idle: { threadId, busy: `${label} is still working in ${threadId}; wait for it to finish.` },
+    });
+    return {
+      role: member.role,
+      ...(member.memberName === undefined ? {} : { member: member.memberName }),
+      title: input.title ?? `${label}: ${row.title}`.slice(0, 120),
+      task: workerTask(input.task),
+      modelSelection,
+      allowedModels: [modelSelection],
+      continueThreadId: threadId,
+    } satisfies FactoryDelegationPlan;
+  });
+
   const planDelegation: FactoryServiceShape["planDelegation"] = (leadThreadId, input) =>
     protect(
       Effect.gen(function* () {
         const row = yield* requireLead(leadThreadId);
         const team = yield* parse(FactoryTeamSpec, row.team_json);
+        if (input.continueThreadId !== undefined)
+          return yield* planContinuation(row, team, input.continueThreadId, input);
         if (team.definition !== undefined)
           return yield* planMemberDelegation(row, team.definition, input);
         if (input.role === undefined)
@@ -5056,6 +5172,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
               named === undefined
                 ? { kind: "role", role: input.role }
                 : { kind: "member", name: named.name },
+              input.threadId,
             );
             return yield* decodeMember(rows[0]);
           }),

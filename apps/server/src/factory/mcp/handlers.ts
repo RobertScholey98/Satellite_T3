@@ -320,6 +320,43 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(toolFailure));
         const scope = yield* McpInvocationContext.McpInvocationContext;
         const orchestrator = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const continueThreadId = plan.continueThreadId;
+        if (continueThreadId !== undefined) {
+          const sent = yield* orchestrator.sendToThread(scope, {
+            threadId: continueThreadId,
+            message: plan.task,
+            mode: "queue",
+          });
+          // Re-recording the member lets the plan's hold on its place go.
+          yield* factory
+            .recordMember(threadId, {
+              threadId: continueThreadId,
+              role: plan.role,
+              ...(plan.member === undefined ? {} : { memberName: plan.member }),
+              modelSelection: plan.modelSelection,
+              joined: "created",
+            })
+            .pipe(
+              Effect.mapError(
+                (error) =>
+                  new FactoryToolFailedError({
+                    reason: error.reason,
+                    message: `Sent the follow-up to ${continueThreadId} (run ${sent.runId}), but could not record it on the team: ${error.message}`,
+                  }),
+              ),
+            );
+          return {
+            ...(sent.taskId === undefined ? {} : { taskId: sent.taskId }),
+            childThreadId: continueThreadId,
+            role: plan.role,
+            model: plan.modelSelection,
+            // A plain follow-up run carries no delegated task, so nothing wakes the lead for it.
+            message:
+              sent.taskId === undefined
+                ? `Sent the follow-up to ${continueThreadId} (run ${sent.runId}, ${sent.delivery}). Its completion does not wake this thread; wait on it with t3_thread_wait.`
+                : `Sent the follow-up to ${continueThreadId}, task ${sent.taskId}. Its completion wakes this thread.`,
+          };
+        }
         const task = yield* orchestrator.delegateTask(scope, {
           task: plan.task,
           title: plan.title,

@@ -275,7 +275,8 @@ const CompleteTool = Tool.make("factory_complete", {
   .annotate(Tool.OpenWorld, false);
 
 export const DelegateResult = Schema.Struct({
-  taskId: NodeId,
+  /** Absent for a follow-up, whose run is not a delegated task. */
+  taskId: Schema.optionalKey(NodeId),
   childThreadId: ThreadId,
   role: FactoryRole,
   model: ModelSelection,
@@ -285,7 +286,7 @@ export type DelegateResult = typeof DelegateResult.Type;
 
 const DelegateTool = Tool.make("factory_delegate", {
   description:
-    "For a factory lead. Start a team member: a child thread that gets the role's skill, your assignment's completion condition and protected paths, then your task. The role must be on your assignment's team with a free place, and the model one the team allows for that role; leave the model out for the first one allowed. The child shares this worktree. Its completion wakes this thread; use task_status with the returned taskId only when you need its result mid-turn.",
+    "For a factory lead. Start a team member: a child thread that gets the role's skill, your assignment's completion condition and protected paths, then your task. The role must be on your assignment's team with a free place, and the model one the team allows for that role; leave the model out for the first one allowed. The child shares this worktree. To give a finished member more work in its own thread, set continueThreadId to that thread; it takes a place the same way. A new child's completion wakes this thread; use task_status with the returned taskId only when you need its result mid-turn.",
   parameters: FactoryDelegateInput,
   success: DelegateResult,
   failure: FactoryToolFailure,
