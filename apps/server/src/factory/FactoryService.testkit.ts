@@ -314,6 +314,8 @@ export const makeHarness = (options: HarnessOptions = {}) =>
     /** Changed files by pull request number. */
     const pullRequestFiles = new Map<number, ReadonlyArray<string>>();
     const fileReads: FactoryPullRequestRef[] = [];
+    /** Head SHAs by pull request number; an unset one reads as unknown. */
+    const pullRequestHeads = new Map<number, string>();
     let threads = 0;
     // A real config store in a scratch directory, so definitions round-trip through their files.
     const configStore = yield* FactoryConfigStore.FactoryConfigStore.pipe(
@@ -462,6 +464,7 @@ export const makeHarness = (options: HarnessOptions = {}) =>
             new FactoryOperationError({ reason: "unavailable", message: "GitHub is down." }),
           );
         }),
+      readPullRequestHead: (input) => Effect.sync(() => pullRequestHeads.get(input.number) ?? null),
       createTicket: (input) =>
         Effect.suspend(() => {
           ticketRequests.push(input);
@@ -490,6 +493,7 @@ export const makeHarness = (options: HarnessOptions = {}) =>
       controls,
       pullRequestFiles,
       fileReads,
+      pullRequestHeads,
       ticketRequests,
     };
   });

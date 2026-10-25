@@ -84,6 +84,7 @@ import {
   type FactoryRecordFindingInput,
   type FactoryRecoverInput,
   type FactoryReportDependencyInput,
+  type FactoryAskManagerInput,
   type FactoryRole,
   type FactoryRoleBrief,
   type FactorySimilarTicket,
@@ -339,6 +340,8 @@ export interface FactoryServiceDependencies {
   readonly readPullRequestFiles: (
     input: FactoryPullRequestRef,
   ) => Effect.Effect<ReadonlyArray<string>, FactoryOperationError>;
+  /** The pull request's head commit SHA, or null when it is unknown or cannot be read. */
+  readonly readPullRequestHead: (input: FactoryPullRequestRef) => Effect.Effect<string | null>;
   /**
    * Files a ticket in the board's first Ready column. The marker is unique per draft; the host
    * hides it in the body and looks for it first, so a retry never files twice.
@@ -469,6 +472,14 @@ export interface FactoryServiceShape {
     leadThreadId: ThreadId,
     input: FactoryReportDependencyInput,
   ) => Effect.Effect<FactoryDependency, FactoryOperationError>;
+  /** The lead in this thread asks its manager a question; a paused manager hears it on resume. */
+  readonly askManager: (
+    leadThreadId: ThreadId,
+    input: FactoryAskManagerInput,
+  ) => Effect.Effect<
+    { readonly assignment: FactoryAssignment; readonly managerPaused: boolean },
+    FactoryOperationError
+  >;
   /**
    * The manager in this thread spends a recovery on a stalled assignment, or hands it to the user
    * once the allowance is spent.
@@ -775,6 +786,30 @@ const decodeRetroWake = jsonDecoder(
 );
 const decodeDependencyWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(DependencyWakePayload)),
+);
+const ClaimWakePayload = Schema.Struct({
+  title: Schema.String,
+  assignmentId: Schema.String,
+  pullRequests: Schema.Array(
+    Schema.Struct({
+      repository: Schema.String,
+      number: Schema.Number,
+      headSha: Schema.NullOr(Schema.String),
+      merged: Schema.optional(Schema.Boolean),
+    }),
+  ),
+});
+const decodeClaimWake = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(ClaimWakePayload)),
+);
+const QuestionWakePayload = Schema.Struct({
+  title: Schema.String,
+  assignmentId: Schema.String,
+  leadThreadId: Schema.String,
+  question: Schema.String,
+});
+const decodeQuestionWake = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(QuestionWakePayload)),
 );
 const decodeHandbackWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(HandbackWakePayload)),
@@ -1657,6 +1692,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const mutex = yield* Semaphore.make(1);
+  /** Wake delivery sends outside `mutex`, so two deliveries could each send the same rows. */
+  const deliveryMutex = yield* Semaphore.make(1);
   const preserveError = (cause: unknown) => (isFactoryError(cause) ? cause : storageError());
   const protect = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError(preserveError));
@@ -3998,6 +4035,35 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             ),
           );
           break;
+        case "claim":
+          Option.map(decodeClaimWake(row.payload_json), (payload) =>
+            lines.push(
+              `The lead of ${payload.title} claims it complete with ${
+                payload.pullRequests.length === 0
+                  ? "no pull requests"
+                  : payload.pullRequests
+                      .map(
+                        (pullRequest) =>
+                          `${pullRequest.repository}#${pullRequest.number}${
+                            pullRequest.merged === true
+                              ? " (merged)"
+                              : pullRequest.headSha === null
+                                ? " (head unknown)"
+                                : ` at ${pullRequest.headSha.slice(0, 12)}`
+                          }`,
+                      )
+                      .join(", ")
+              }. Check the evidence with factory_status.`,
+            ),
+          );
+          break;
+        case "question":
+          Option.map(decodeQuestionWake(row.payload_json), (payload) =>
+            lines.push(
+              `The lead of ${payload.title} asks: ${payload.question}\n\nReply in its thread with t3_thread_send (threadId ${payload.leadThreadId}).`,
+            ),
+          );
+          break;
       }
     }
     return lines.join("\n\n");
@@ -4033,7 +4099,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         rows.map((row) => row.sequence),
       )}`,
     );
-  });
+  }, deliveryMutex.withPermits(1));
 
   /**
    * A lead whose thread is deleted mid-retro never calls factory_retro_done, so its retro counts
@@ -4109,26 +4175,88 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     ),
   );
 
+  /**
+   * Delivers a lead's wake without waiting for the sweep. A paused manager's wakes wait in the log
+   * until it resumes; a failed delivery leaves them for the sweep.
+   */
+  const wakeManagerNow = (managerId: string) =>
+    readManager(managerId).pipe(
+      Effect.flatMap((manager) => (isPaused(manager.state) ? Effect.void : deliverWakes(manager))),
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not wake the engineering manager", {
+          managerId,
+          cause: cause.message,
+        }),
+      ),
+    );
+
+  const requireClaimableLead = Effect.fnUntraced(function* (leadThreadId: ThreadId) {
+    const row = yield* requireLead(leadThreadId);
+    if (!CLAIMABLE_STATES.has(row.state))
+      return yield* error(
+        "conflict",
+        `${row.title} is ${row.state}; a completion claim needs it active, blocked or waiting on the user.`,
+      );
+    return row;
+  });
+
   const claimComplete: FactoryServiceShape["claimComplete"] = (leadThreadId, input) =>
     protect(
       Effect.gen(function* () {
+        // The lock re-validates the lead; this read reports a non-lead or an ended assignment
+        // before a link error, and supplies the project and the assignment.
+        const lead = yield* requireClaimableLead(leadThreadId);
         const runs = yield* deps.readThreadRuns(leadThreadId);
+        const pullRequests = (input.pullRequests ?? []).map(normalizeThreadPullRequestKey);
+        const linked = new Map(
+          (runs?.pullRequests ?? []).map((link) => [pullRequestKey(link), link]),
+        );
+        // Checked before the head reads so a bad claim costs no host calls. Both inputs are read
+        // once, so the lock has nothing newer to check this against.
+        const unlinked = pullRequests.find((key) => !linked.has(pullRequestKey(key)));
+        if (unlinked !== undefined)
+          return yield* error(
+            "invalid",
+            `Link #${unlinked.number} to this thread before claiming.`,
+          );
+        const projectId = ProjectId.make(lead.project_id);
+        // The manager hears of every pull request the assignment waits on, claimed or only linked,
+        // including links on replaced leads' threads as settleClaim gates on them.
+        // A closed one no longer gates it, and a merged one has no head left to check.
+        const known = new Map(
+          [...(yield* previousLeadLinks(lead.id)), ...(runs?.pullRequests ?? [])].map((link) => [
+            pullRequestKey(link),
+            link,
+          ]),
+        );
+        const waitedOn = new Map<string, ThreadPullRequestKey>();
+        for (const key of [
+          ...pullRequests,
+          ...[...known.values()].map(normalizeThreadPullRequestKey),
+        ])
+          if (known.get(pullRequestKey(key))?.state !== "closed")
+            waitedOn.set(pullRequestKey(key), key);
+        // Read outside the lock; an unknown head never blocks the claim.
+        const heads = yield* Effect.forEach([...waitedOn.values()], (key) =>
+          known.get(pullRequestKey(key))?.merged === true
+            ? Effect.succeed({
+                repository: key.repository,
+                number: key.number,
+                headSha: null,
+                merged: true,
+              })
+            : deps.readPullRequestHead({ projectId, ...key }).pipe(
+                Effect.map((headSha) => ({
+                  repository: key.repository,
+                  number: key.number,
+                  headSha,
+                  merged: false,
+                })),
+              ),
+        );
         const id = yield* lock(
           Effect.gen(function* () {
-            const row = yield* requireLead(leadThreadId);
-            if (!CLAIMABLE_STATES.has(row.state))
-              return yield* error(
-                "conflict",
-                `${row.title} is ${row.state}; a completion claim needs it active, blocked or waiting on the user.`,
-              );
-            const pullRequests = (input.pullRequests ?? []).map(normalizeThreadPullRequestKey);
-            const linked = new Set((runs?.pullRequests ?? []).map(pullRequestKey));
-            const unlinked = pullRequests.find((key) => !linked.has(pullRequestKey(key)));
-            if (unlinked !== undefined)
-              return yield* error(
-                "invalid",
-                `Link #${unlinked.number} to this thread before claiming.`,
-              );
+            const row = yield* requireClaimableLead(leadThreadId);
             const at = yield* now;
             yield* sql`UPDATE factory_assignments SET claim_json=${json({
               evidence: input.evidence,
@@ -4136,12 +4264,19 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
               claimedAt: at,
             })},updated_at=${at} WHERE id=${row.id}`;
             yield* writeLog(row.manager_id, row.id, "claim", input.evidence, { pullRequests });
+            yield* writeWake(row, "claim", {
+              title: row.title,
+              assignmentId: row.id,
+              pullRequests: heads,
+            });
             return row.id;
           }),
         );
         yield* settleClaim(id, runs);
         yield* publish;
-        return yield* readAssignment(id);
+        const assignment = yield* readAssignment(id);
+        yield* wakeManagerNow(assignment.managerId);
+        return assignment;
       }),
     );
 
@@ -4182,6 +4317,31 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         );
         yield* publish;
         return dependency;
+      }),
+    );
+
+  const askManager: FactoryServiceShape["askManager"] = (leadThreadId, input) =>
+    protect(
+      Effect.gen(function* () {
+        const row = yield* lock(
+          Effect.gen(function* () {
+            const row = yield* requireLead(leadThreadId);
+            yield* writeWake(row, "question", {
+              title: row.title,
+              assignmentId: row.id,
+              leadThreadId,
+              question: input.question,
+            });
+            return row;
+          }),
+        );
+        yield* publish;
+        yield* wakeManagerNow(row.manager_id);
+        const manager = yield* readManager(row.manager_id);
+        return {
+          assignment: yield* readAssignment(row.id),
+          managerPaused: isPaused(manager.state),
+        };
       }),
     );
 
@@ -5662,6 +5822,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     assignmentForThread,
     claimComplete,
     reportDependency,
+    askManager,
     recover,
     complete,
     cancel,
@@ -5917,6 +6078,26 @@ export const make = Effect.gen(function* () {
         error("unavailable", `The pull request's files could not be read: ${cause.message}`),
       ),
     ),
+    readPullRequestHead: (input) => {
+      const reference = {
+        projectId: input.projectId,
+        host: input.host,
+        repository: input.repository,
+        number: input.number,
+      };
+      // A cached detail can predate the lead's last push, and the manager checks this head.
+      return pullRequests.invalidate({ reference }).pipe(
+        Effect.andThen(pullRequests.detail({ ...reference, allowStale: false })),
+        Effect.map((detail) => detail.headSha ?? null),
+        Effect.catch((cause) =>
+          Effect.logDebug("Could not read a factory pull request's head", {
+            repository: input.repository,
+            number: input.number,
+            cause: cause.message,
+          }).pipe(Effect.as(null)),
+        ),
+      );
+    },
     createTicket: (input) => ticketHost.create(input),
   });
 });

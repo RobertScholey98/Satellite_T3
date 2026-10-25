@@ -375,6 +375,7 @@ const definitions: FactoryDefinitionsView = {
 type LifecycleCall =
   | { readonly method: "claimComplete"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "reportDependency"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "askManager"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "recover"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "complete"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "planDelegation"; readonly threadId: ThreadId; readonly input: unknown }
@@ -485,6 +486,10 @@ const makeHarness = Effect.gen(function* () {
       reportDependency: (threadId, input) =>
         recordLifecycle({ method: "reportDependency", threadId, input }).pipe(
           Effect.as(dependency),
+        ),
+      askManager: (threadId, input) =>
+        recordLifecycle({ method: "askManager", threadId, input }).pipe(
+          Effect.as({ assignment, managerPaused: false }),
         ),
       recover: (threadId, input) =>
         recordLifecycle({ method: "recover", threadId, input }).pipe(
@@ -892,6 +897,39 @@ describe("factory_report_dependency", () => {
       const harness = yield* makeHarness;
       const failure = yield* harness
         .call("factory_report_dependency", dependencyInput, OTHER_THREAD)
+        .pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        reason: "not-found",
+        message: "This thread is not a factory lead.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
+    }),
+  );
+});
+
+describe("factory_ask_manager", () => {
+  const question = { question: "May this assignment change the shared retry policy?" };
+
+  it.effect("forwards the lead thread and question", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_ask_manager", question, LEAD_THREAD);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "askManager", threadId: LEAD_THREAD, input: question },
+      ]);
+      assert.deepStrictEqual(result.assignment, assignment);
+      assert.strictEqual(
+        result.message,
+        "Sent to the manager. Keep working on anything the question does not block; the answer arrives in this thread.",
+      );
+    }),
+  );
+
+  it.effect("refuses a thread that does not lead an assignment", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness
+        .call("factory_ask_manager", question, OTHER_THREAD)
         .pipe(Effect.flip);
       assert.deepInclude(failure, {
         reason: "not-found",

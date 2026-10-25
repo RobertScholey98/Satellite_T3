@@ -22,6 +22,9 @@ left before you change anything.
   contracts, migration columns and cross-owner hooks, and each brief says which layer every
   input it uses lives on. Check every symbol a brief names against the target ref with
   \`git grep\` before you send it.
+- A question that needs the manager or the user goes to \`factory_ask_manager\`; the answer
+  arrives in this thread. Never wait for an answer in your own thread: keep working on
+  whatever the question does not block.
 - Review what each worker hands back before you build on it. Run the project's checks
   yourself before you claim anything is done.
 - Review in rounds of about 1,500 lines from a committed base..head, with server and UI
@@ -52,7 +55,8 @@ Hand back to the manager either a completion claim or a blocker.
 
 - A completion claim is a call to \`factory_claim_complete\`. Its evidence names the checks you
   ran and their results, and how each part of the completion condition is met. List the pull
-  requests linked on this thread that deliver the work.
+  requests linked on this thread that deliver the work; the claim wakes the manager with those
+  pull requests and their heads.
 - A blocker outside your scope is a call to \`factory_report_dependency\`: what stops you, a
   brief for whoever delivers it, and the condition that would unblock you. Your assignment
   waits as blocked until it is delivered.

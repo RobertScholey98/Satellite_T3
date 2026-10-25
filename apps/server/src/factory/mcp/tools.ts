@@ -1,4 +1,5 @@
 import {
+  FactoryAskManagerInput,
   FactoryAssignment,
   FactoryClaimCompleteInput,
   FactoryCommissionInput,
@@ -238,6 +239,24 @@ const ReportDependencyTool = Tool.make("factory_report_dependency", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
+const AskManagerTool = Tool.make("factory_ask_manager", {
+  description:
+    "For a factory lead. Send a question that needs the manager or the user to the manager's thread. Keep working on anything it does not block; the answer arrives in this thread.",
+  parameters: FactoryAskManagerInput,
+  success: AssignmentResult,
+  failure: FactoryToolFailure,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    FactoryService,
+  ],
+})
+  .annotate(Tool.Title, "Ask the factory manager")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
 const RecoverTool = Tool.make("factory_recover", {
   description:
     "For an engineering manager. Recover a stalled assignment. `rebrief` sends your brief to the same lead; `replace` starts a new lead in the stalled lead's worktree and branch with the original brief plus yours. Each uses one recovery from the allowance. Once the allowance is spent, the assignment goes to the user instead, with your brief as the recommendation.",
@@ -445,6 +464,7 @@ export const FactoryToolkit = Toolkit.make(
   CommissionTool,
   ClaimCompleteTool,
   ReportDependencyTool,
+  AskManagerTool,
   RecoverTool,
   CompleteTool,
   DelegateTool,

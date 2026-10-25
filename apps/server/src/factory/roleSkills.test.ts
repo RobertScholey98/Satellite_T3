@@ -418,4 +418,15 @@ describe("the lead protocol", () => {
       "tests both the write to the new home and the read of a record that existed before, with one fake input per migrated kind.",
     );
   });
+
+  it("sends questions to the manager with factory_ask_manager and keeps working", () => {
+    assert.include(
+      lead,
+      "A question that needs the manager or the user goes to `factory_ask_manager`; the answer arrives in this thread.",
+    );
+    assert.include(
+      lead,
+      "Never wait for an answer in your own thread: keep working on whatever the question does not block.",
+    );
+  });
 });
