@@ -430,3 +430,25 @@ describe("the lead protocol", () => {
     );
   });
 });
+
+describe("the manager protocol", () => {
+  const manager = DEFAULT_ROLE_SKILLS.manager.replaceAll(/\n\s*/g, " ");
+
+  it("settles open product questions before commissioning and names the defaults left", () => {
+    assert.include(
+      manager,
+      "before you commission, list the open product questions the brief raises and get the user's answers.",
+    );
+    assert.include(
+      manager,
+      "Name each one still open in the brief as a default the lead may build on, and tell the user which defaults are in play.",
+    );
+  });
+
+  it("amends a changed brief with factory_amend_assignment instead of only messaging the lead", () => {
+    assert.include(
+      manager,
+      "when the brief or completion condition changes mid-assignment, amend it with `factory_amend_assignment` rather than only messaging the lead,",
+    );
+  });
+});
