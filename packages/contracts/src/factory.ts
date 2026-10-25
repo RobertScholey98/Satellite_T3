@@ -247,6 +247,10 @@ export const DEFAULT_FACTORY_CONFIG: FactoryConfig = Schema.decodeSync(FactoryCo
  * silently reset the environment's.
  */
 export const FactoryConfigOverride = Schema.Struct({
+  /**
+   * Ignored, and refused on save: one manager runs per project, so its own cap is the project's.
+   * Kept so overrides stored before that still decode.
+   */
   concurrencyCap: Schema.optionalKey(ConcurrencyCap),
   recoveryAllowance: Schema.optionalKey(RecoveryAllowance),
   modelPool: Schema.optionalKey(Schema.Array(ModelSelection)),
@@ -256,13 +260,16 @@ export const FactoryConfigOverride = Schema.Struct({
 });
 export type FactoryConfigOverride = typeof FactoryConfigOverride.Type;
 
-/** The environment config with a project's overrides applied. Presets merge by name. */
+/**
+ * The environment config with a project's overrides applied. Presets merge by name, and the
+ * concurrency cap stays the environment's.
+ */
 export const resolveFactoryConfig = (
   environment: FactoryConfig,
   override: FactoryConfigOverride | null,
 ): FactoryConfig => {
   if (override === null) return environment;
-  const { teamPresets, ...replaced } = override;
+  const { teamPresets, concurrencyCap: _ignored, ...replaced } = override;
   const presets =
     teamPresets === undefined
       ? environment.teamPresets

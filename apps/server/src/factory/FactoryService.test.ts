@@ -211,7 +211,7 @@ describe("FactoryService project overrides", () => {
         yield* service.updateConfig({ scope: "environment", config: ENVIRONMENT });
 
         const override = decodeOverride({
-          concurrencyCap: 1,
+          recoveryAllowance: 5,
           teamPresets: [preset("Solo", "project")],
         });
         const saved = yield* service.updateConfig({
@@ -221,9 +221,9 @@ describe("FactoryService project overrides", () => {
         });
         assert.deepStrictEqual(saved.override, override);
         assert.deepStrictEqual(saved.environment, ENVIRONMENT);
-        const { concurrencyCap, teamPresets, ...inherited } = saved.effective;
-        const { concurrencyCap: _, teamPresets: __, ...environmentRest } = ENVIRONMENT;
-        assert.strictEqual(concurrencyCap, 1);
+        const { recoveryAllowance, teamPresets, ...inherited } = saved.effective;
+        const { recoveryAllowance: _, teamPresets: __, ...environmentRest } = ENVIRONMENT;
+        assert.strictEqual(recoveryAllowance, 5);
         assert.deepStrictEqual(inherited, environmentRest);
         assert.deepStrictEqual(
           teamPresets.map((team) => [team.name, team.workflow]),
@@ -241,6 +241,55 @@ describe("FactoryService project overrides", () => {
         });
         assert.isNull(cleared.override);
         assert.deepStrictEqual(cleared.effective, ENVIRONMENT);
+      }),
+    ),
+  );
+
+  it.effect("keeps the environment's cap over a project cap stored before it was dropped", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const service = yield* makeService;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO factory_config(scope_key,config_json,updated_at) VALUES
+          ('environment','{"concurrencyCap":4}',${EPOCH}),
+          (${`project:${PROJECT_ID}`},'{"concurrencyCap":1,"recoveryAllowance":5}',${EPOCH})`;
+
+        const view = yield* service.getConfig({ projectId: PROJECT_ID });
+        assert.deepStrictEqual(view.override, { concurrencyCap: 1, recoveryAllowance: 5 });
+        assert.strictEqual(view.effective.concurrencyCap, 4);
+        assert.strictEqual(view.effective.recoveryAllowance, 5);
+      }),
+    ),
+  );
+
+  it.effect("refuses an override that sets a concurrency cap, and still clears one", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const service = yield* makeService;
+        const sql = yield* SqlClient.SqlClient;
+        yield* service.updateConfig({ scope: "environment", config: ENVIRONMENT });
+        yield* sql`INSERT INTO factory_config(scope_key,config_json,updated_at) VALUES
+          (${`project:${PROJECT_ID}`},'{"concurrencyCap":1}',${EPOCH})`;
+
+        const refused = yield* service
+          .updateConfig({
+            scope: "project",
+            projectId: PROJECT_ID,
+            override: decodeOverride({ concurrencyCap: 2 }),
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "invalid");
+        assert.include(refused.message, "manager");
+        assert.deepStrictEqual((yield* service.getConfig({ projectId: PROJECT_ID })).override, {
+          concurrencyCap: 1,
+        });
+
+        const cleared = yield* service.updateConfig({
+          scope: "project",
+          projectId: PROJECT_ID,
+          override: null,
+        });
+        assert.isNull(cleared.override);
       }),
     ),
   );

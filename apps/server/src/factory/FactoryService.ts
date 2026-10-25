@@ -1974,6 +1974,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           yield* sql`DELETE FROM factory_config WHERE scope_key=${scopeKey}`;
           return yield* configView(input.projectId);
         }
+        if (input.override.concurrencyCap !== undefined)
+          return yield* error(
+            "invalid",
+            "A project has no concurrency cap of its own. Set the cap on the environment, or on the manager in its Settings.",
+          );
         const environment = (yield* environmentConfig()).config;
         if (overrideWidensPool(environment, input.override))
           return yield* error(
