@@ -70,7 +70,7 @@ for (const file of code) {
   }
 }
 
-// knip:check takes about 35 s and cannot be scoped to a package. Any code
+// knip:check is the slowest step and cannot be scoped to a package. Any code
 // change can leave a file, export, or dependency unused (removing the last
 // import of a helper does), so it runs whenever code or a manifest changes.
 const runKnip = files.some(
@@ -124,8 +124,16 @@ const steps = [
       "typecheck",
     ]),
   // From the repo root, the root vite.config.ts hands each file to its package's config.
+  // Under a coding agent Vitest defaults to the minimal reporter, which names only
+  // failed files; the default reporter lists every file that ran.
   tests.size > 0 &&
-    vp(`test (${tests.size} files)`, ["test", "run", "--passWithNoTests", ...tests]),
+    vp(`test (${tests.size} files)`, [
+      "test",
+      "run",
+      "--passWithNoTests",
+      "--reporter=default",
+      ...tests,
+    ]),
   runRebrand && { name: "rebrand --check", args: ["scripts/rebrand.ts", "--check"] },
   runRebrand &&
     !missingUpstreamBase && { name: "rebrand --verify", args: ["scripts/rebrand.ts", "--verify"] },
