@@ -14,8 +14,9 @@ keep upstream's shape.
   fields. Never rename, remove, or reshape an upstream contract, and never make an upstream optional
   field required.
 - Removing a required field from a schema the server sends, Satellite's own included, breaks every
-  client built before the change: its decoder rejects the whole message. Make the field optional and
-  keep sending it for a release, then remove it.
+  client built before the change: it decodes every response against its own copy of `WsRpcGroup`
+  in [`rpc.ts`](../../packages/contracts/src/rpc.ts) and rejects the whole message. Make the field
+  optional and keep sending it for a release, then remove it.
 - Satellite keeps upstream's `ORCHESTRATION_PROTOCOL_VERSION` in
   [`environment.ts`](../../packages/contracts/src/environment.ts) and follows upstream's bumps. A
   Satellite-only bump would make upstream clients treat the server as incompatible.
