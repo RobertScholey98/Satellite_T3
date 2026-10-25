@@ -124,8 +124,16 @@ const steps = [
       "typecheck",
     ]),
   // From the repo root, the root vite.config.ts hands each file to its package's config.
+  // Under a coding agent Vitest defaults to the minimal reporter, which names only
+  // failed files; the default reporter lists every file that ran.
   tests.size > 0 &&
-    vp(`test (${tests.size} files)`, ["test", "run", "--passWithNoTests", ...tests]),
+    vp(`test (${tests.size} files)`, [
+      "test",
+      "run",
+      "--passWithNoTests",
+      "--reporter=default",
+      ...tests,
+    ]),
   runRebrand && { name: "rebrand --check", args: ["scripts/rebrand.ts", "--check"] },
   runRebrand &&
     !missingUpstreamBase && { name: "rebrand --verify", args: ["scripts/rebrand.ts", "--verify"] },
