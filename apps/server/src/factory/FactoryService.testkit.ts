@@ -33,6 +33,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { runSatelliteMigrations } from "../satellite/persistence/SatelliteMigrations.ts";
 import type { RateTable } from "../usage/usagePricing.ts";
 import {
   makeFactoryService,
@@ -46,11 +47,6 @@ import {
 } from "./FactoryService.ts";
 import * as FactoryConfigStore from "./config/FactoryConfigStore.ts";
 import type { FactoryModelCatalog } from "./config/modelResolution.ts";
-import { FactoryDefinitionsV1 } from "./migrations/FactoryDefinitionsV1.ts";
-import { FactoryManagersPerProjectV1 } from "./migrations/FactoryManagersPerProjectV1.ts";
-import { FactoryProtectedPathAsksV1 } from "./migrations/FactoryProtectedPathAsksV1.ts";
-import { FactoryOnboardingResultV1 } from "./migrations/FactoryOnboardingResultV1.ts";
-import { FactoryV1 } from "./migrations/FactoryV1.ts";
 import type { RoleSkillSource } from "./roleSkills.ts";
 import { DEFAULT_ROLE_SKILLS } from "./roles/index.ts";
 
@@ -280,13 +276,7 @@ type TicketRequest = Parameters<FactoryServiceDependencies["createTicket"]>[0];
 
 export const makeHarness = (options: HarnessOptions = {}) =>
   Effect.gen(function* () {
-    if (options.restart !== true) {
-      yield* FactoryV1;
-      yield* FactoryOnboardingResultV1;
-      yield* FactoryDefinitionsV1;
-      yield* FactoryManagersPerProjectV1;
-      yield* FactoryProtectedPathAsksV1;
-    }
+    if (options.restart !== true) yield* runSatelliteMigrations();
     const launches: FactoryThreadLaunch[] = [];
     const skillReads: Array<readonly [FactoryRole, string]> = [];
     const boards: IssueBoardView[] = [];
