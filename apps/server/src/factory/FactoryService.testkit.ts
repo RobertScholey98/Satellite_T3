@@ -682,7 +682,8 @@ export const idleRun = (overrides: Partial<FactoryThreadRuns> = {}): FactoryThre
 });
 /**
  * Reconciling this writes a stall wake without delivering it, so the next wake sent, such as a
- * claim's or a question's, carries the stall in the same message.
+ * claim's or a question's, carries the stall in the same message. A "replace" recovery of this
+ * lead needs `{ ...failedRun, worktreePath }`.
  */
 export const failedRun = idleRun({ latestRunStatus: "failed" });
 

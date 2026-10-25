@@ -1955,7 +1955,8 @@ describe("FactoryService sweep", () => {
 
         const secondReading = yield* Deferred.make<void>();
         controls.beforeWakeRead = Deferred.succeed(secondReading, undefined);
-        // Runs the second sweep until it suspends: on the delivery lock, or past the wake read.
+        // Runs the second sweep until it suspends: on the delivery lock, or past the wake read. This
+        // proves the lock only while the sweep reaches deliverWakes without suspending first.
         const second = yield* service.sweep.pipe(Effect.forkChild({ startImmediately: true }));
         assert.isFalse(yield* Deferred.isDone(secondReading));
 
