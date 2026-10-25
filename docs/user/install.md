@@ -14,48 +14,67 @@ On a Linux x64 machine, such as a headless server, install the `t3` command
 from Satellite's releases. It needs no Node.js. The installer downloads
 `t3-<version>-linux-x64.tar.gz`, checks it against the release's `SHA256SUMS`,
 unpacks it into `~/.t3/runtime/versions/<version>`, and links `t3` into
-`~/.local/bin`:
+`~/.local/bin`.
+
+The archive ships from the first release after 2.3.0; 2.3.0 and earlier have
+none. Choose a release on
+[Satellite's releases](https://github.com/RobertScholey98/Satellite_T3/releases)
+whose assets list `t3-<version>-linux-x64.tar.gz`, and put its version, without
+the leading `v`, in place of `<version>` below:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/RobertScholey98/Satellite_T3/main/scripts/install.sh | T3CODE_VERSION=<version> sh
+```
+
+Once a stable release includes the archive, you can leave out
+`T3CODE_VERSION` to install the newest stable release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RobertScholey98/Satellite_T3/main/scripts/install.sh | sh
 ```
 
-It installs the newest stable release. To pick a version, such as a
-prerelease, set `T3CODE_VERSION`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/RobertScholey98/Satellite_T3/main/scripts/install.sh | T3CODE_VERSION=2.0.0 sh
-```
-
-On a minimal image without curl, run `sudo apt install curl` first. If the
-installer says `~/.local/bin` is not on your `PATH`, log in again or run
+On a minimal image without curl, run `sudo apt update && sudo apt install -y curl`
+first, or the same without `sudo` as root. If the installer says `~/.local/bin`
+is not on your `PATH`, log in again or run
 `export PATH="$HOME/.local/bin:$PATH"`.
 
-To install by hand instead, with `version` set to the release you want:
+To install by hand instead, set `version` to the release you chose. The block
+runs in a subshell and stops at the first failed step, such as a checksum
+mismatch:
 
 ```bash
-version=2.0.0
-base="https://github.com/RobertScholey98/Satellite_T3/releases/download/v$version"
-dir="$HOME/.t3/runtime/versions/$version"
-cd "$(mktemp -d)"
-curl -fLO "$base/t3-$version-linux-x64.tar.gz"
-curl -fLO "$base/SHA256SUMS"
-sha256sum -c SHA256SUMS --ignore-missing
-mkdir -p "$dir" ~/.local/bin
-tar -xzf "t3-$version-linux-x64.tar.gz" -C "$dir" --strip-components=1
-echo "$version" > "$dir/.install-complete"
-ln -sfn "$dir/t3" ~/.local/bin/t3
+version=<version>
+(
+  set -e
+  base="https://github.com/RobertScholey98/Satellite_T3/releases/download/v$version"
+  dir="$HOME/.t3/runtime/versions/$version"
+  cd "$(mktemp -d)"
+  curl -fLO "$base/t3-$version-linux-x64.tar.gz"
+  curl -fLO "$base/SHA256SUMS"
+  sha256sum -c SHA256SUMS --ignore-missing
+  mkdir -p "$dir" ~/.local/bin
+  tar -xzf "t3-$version-linux-x64.tar.gz" -C "$dir" --strip-components=1
+  "$dir/t3" --version
+  echo "$version" > "$dir/.install-complete"
+  ln -sfn "$dir/t3" ~/.local/bin/t3
+)
 ```
 
 Check it with `t3 --version`, then run `t3 serve`, or `t3 service install` to
 keep it running in the background ([Running in the background](./background-service.md)).
-`t3 update` moves to a newer Satellite release. Your data lives under `~/.t3`.
+Your data lives under `~/.t3`.
+
+`t3 update` installs the newest release on your current version's channel.
+Satellite's alpha, beta, and rc releases count as stable, so it can move a
+stable install onto a newer prerelease; run `t3 update <version>` to install an
+exact version instead.
 
 The desktop app's SSH environments install this same archive on the remote
 host for you, so you do not need these steps there.
 
-On macOS and other architectures there is no archive. To run a Satellite server
-without the desktop app there, build it from source in
+There is no archive for macOS, Windows, or Linux arm64; on Windows, use the
+[desktop app](#desktop-app). To run a Satellite server without the desktop app
+on macOS or Linux arm64, build it from source in
 [this fork's repository](https://github.com/RobertScholey98/Satellite_T3) with
 Node.js 24 ([Install vp](../../README.md#install-vp)):
 

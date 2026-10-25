@@ -66,9 +66,13 @@ already names a different commit fails in **Resolve release**; pick a new versio
    the bundle with `scripts/build-desktop-artifact.ts`, unsigned, with no CLI archive and no WSL
    runtime.
    **Desktop Linux x64** calls the same workflow on `ubuntu-24.04` with `cli_archive: true`. It
-   builds the `t3` single executable, packs it with `scripts/build-cli-archive.ts`, and checks
-   that the unpacked archive reports the release version with `scripts/smoke-cli-archive.ts`. The
-   shared workflow then builds a Linux AppImage and `.deb` too; publishing leaves them out.
+   builds the `t3` single executable and packs it with `scripts/build-cli-archive.ts`.
+   `scripts/smoke-cli-archive.ts` unpacks the archive, checks it holds `t3` and
+   `client/index.html`, runs `t3 --version` with an empty `PATH` and expects the release
+   version, then starts `t3 serve` on loopback against a scratch home and requires a 200 from `/`
+   within 30 seconds. The shared workflow then packages a Linux AppImage and `.deb` too. Publishing
+   leaves them out, but a failure there still fails the job and blocks the whole release; avoiding
+   that would need a change to `release-desktop.yml`.
 4. **Verify macOS** extracts each ZIP, checks it holds one app with a valid signature and no update
    configuration, runs the packaged server's `--help`, and verifies the DMG.
 5. **Publish GitHub Release** fails on a missing asset or any macOS update manifest, writes
