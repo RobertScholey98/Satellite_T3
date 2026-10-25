@@ -4195,20 +4195,28 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             "invalid",
             `Link #${unlinked.number} to this thread before claiming.`,
           );
-        // The lock re-validates the lead; this read only supplies the project for the head reads.
-        const projectId = ProjectId.make((yield* requireLead(leadThreadId)).project_id);
-        // The manager hears of every pull request the assignment waits on, claimed or only linked.
+        // The lock re-validates the lead; this read only supplies the project and the assignment.
+        const lead = yield* requireLead(leadThreadId);
+        const projectId = ProjectId.make(lead.project_id);
+        // The manager hears of every pull request the assignment waits on, claimed or only linked,
+        // including links on replaced leads' threads as settleClaim gates on them.
         // A closed one no longer gates it, and a merged one has no head left to check.
+        const known = new Map(
+          [...(yield* previousLeadLinks(lead.id)), ...(runs?.pullRequests ?? [])].map((link) => [
+            pullRequestKey(link),
+            link,
+          ]),
+        );
         const waitedOn = new Map<string, ThreadPullRequestKey>();
         for (const key of [
           ...pullRequests,
-          ...[...linked.values()].map(normalizeThreadPullRequestKey),
+          ...[...known.values()].map(normalizeThreadPullRequestKey),
         ])
-          if (linked.get(pullRequestKey(key))?.state !== "closed")
+          if (known.get(pullRequestKey(key))?.state !== "closed")
             waitedOn.set(pullRequestKey(key), key);
         // Read outside the lock; an unknown head never blocks the claim.
         const heads = yield* Effect.forEach([...waitedOn.values()], (key) =>
-          linked.get(pullRequestKey(key))?.merged === true
+          known.get(pullRequestKey(key))?.merged === true
             ? Effect.succeed({
                 repository: key.repository,
                 number: key.number,

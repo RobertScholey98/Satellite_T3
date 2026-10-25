@@ -2058,7 +2058,7 @@ ${RETRO_WAKE}`,
     withDatabase(
       Effect.gen(function* () {
         const factory = yield* makeFactory;
-        const { service, threadRuns } = factory;
+        const { service, threadRuns, sentMessages } = factory;
         const { manager, assignment, lead } = yield* startedAssignment(factory);
         threadRuns.set(lead, {
           ...failedRun,
@@ -2073,8 +2073,21 @@ ${RETRO_WAKE}`,
         });
         const newLead = leadThreadId!;
         threadRuns.set(newLead, idleRun());
+        const sentBeforeClaim = sentMessages.length;
         const claimed = yield* service.claimComplete(newLead, { evidence: "Checks pass." });
         assert.strictEqual(claimed.waitingReason, "Pull requests await the user's review: #7.");
+        // The wake names the pull request the claim waits on, though only the replaced lead linked it.
+        assert.deepStrictEqual(
+          sentMessages
+            .slice(sentBeforeClaim)
+            .filter((message) => message.threadId === manager.threadId)
+            .map((message) => message.text),
+          [
+            `Assignment Ticket 1 stalled: The lead's latest run failed. Investigate its lead thread, then call factory_recover to rebrief or replace the lead, or recommend to the user.
+
+${CLAIM_WAKE}`,
+          ],
+        );
         // The merge card reads the replaced lead's links too, so #7 is offered to merge.
         assert.deepStrictEqual(
           (yield* workspace(service)).assignments.map((entry) => [
