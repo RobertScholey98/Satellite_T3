@@ -795,6 +795,7 @@ const ClaimWakePayload = Schema.Struct({
       repository: Schema.String,
       number: Schema.Number,
       headSha: Schema.NullOr(Schema.String),
+      merged: Schema.optional(Schema.Boolean),
     }),
   ),
 });
@@ -4031,15 +4032,15 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                       .map(
                         (pullRequest) =>
                           `${pullRequest.repository}#${pullRequest.number}${
-                            pullRequest.headSha === null
-                              ? " (head unknown)"
-                              : ` at ${pullRequest.headSha.slice(0, 12)}`
+                            pullRequest.merged === true
+                              ? " (merged)"
+                              : pullRequest.headSha === null
+                                ? " (head unknown)"
+                                : ` at ${pullRequest.headSha.slice(0, 12)}`
                           }`,
                       )
                       .join(", ")
-              }. Check the evidence with factory_status${
-                payload.pullRequests.length === 0 ? "." : "; the user reviews and merges."
-              }`,
+              }. Check the evidence with factory_status.`,
             ),
           );
           break;
@@ -4180,18 +4181,46 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     protect(
       Effect.gen(function* () {
         const runs = yield* deps.readThreadRuns(leadThreadId);
-        // Read outside the lock; an unknown head never blocks the claim.
+        const pullRequests = (input.pullRequests ?? []).map(normalizeThreadPullRequestKey);
+        const linked = new Map(
+          (runs?.pullRequests ?? []).map((link) => [pullRequestKey(link), link]),
+        );
+        // Checked before the head reads so a bad claim costs no host calls. Both inputs are read
+        // once, so the lock has nothing newer to check this against.
+        const unlinked = pullRequests.find((key) => !linked.has(pullRequestKey(key)));
+        if (unlinked !== undefined)
+          return yield* error(
+            "invalid",
+            `Link #${unlinked.number} to this thread before claiming.`,
+          );
+        // The lock re-validates the lead; this read only supplies the project for the head reads.
         const projectId = ProjectId.make((yield* requireLead(leadThreadId)).project_id);
-        const heads = yield* Effect.forEach(
-          (input.pullRequests ?? []).map(normalizeThreadPullRequestKey),
-          (key) =>
-            deps.readPullRequestHead({ projectId, ...key }).pipe(
-              Effect.map((headSha) => ({
+        // The manager hears of every pull request the assignment waits on, claimed or only linked.
+        // A closed one no longer gates it, and a merged one has no head left to check.
+        const waitedOn = new Map<string, ThreadPullRequestKey>();
+        for (const key of [
+          ...pullRequests,
+          ...[...linked.values()].map(normalizeThreadPullRequestKey),
+        ])
+          if (linked.get(pullRequestKey(key))?.state !== "closed")
+            waitedOn.set(pullRequestKey(key), key);
+        // Read outside the lock; an unknown head never blocks the claim.
+        const heads = yield* Effect.forEach([...waitedOn.values()], (key) =>
+          linked.get(pullRequestKey(key))?.merged === true
+            ? Effect.succeed({
                 repository: key.repository,
                 number: key.number,
-                headSha,
-              })),
-            ),
+                headSha: null,
+                merged: true,
+              })
+            : deps.readPullRequestHead({ projectId, ...key }).pipe(
+                Effect.map((headSha) => ({
+                  repository: key.repository,
+                  number: key.number,
+                  headSha,
+                  merged: false,
+                })),
+              ),
         );
         const id = yield* lock(
           Effect.gen(function* () {
@@ -4200,14 +4229,6 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
               return yield* error(
                 "conflict",
                 `${row.title} is ${row.state}; a completion claim needs it active, blocked or waiting on the user.`,
-              );
-            const pullRequests = (input.pullRequests ?? []).map(normalizeThreadPullRequestKey);
-            const linked = new Set((runs?.pullRequests ?? []).map(pullRequestKey));
-            const unlinked = pullRequests.find((key) => !linked.has(pullRequestKey(key)));
-            if (unlinked !== undefined)
-              return yield* error(
-                "invalid",
-                `Link #${unlinked.number} to this thread before claiming.`,
               );
             const at = yield* now;
             yield* sql`UPDATE factory_assignments SET claim_json=${json({

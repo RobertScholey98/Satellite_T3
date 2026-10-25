@@ -1872,7 +1872,7 @@ const RETRO_REQUEST =
   "All pull requests for Ticket 1 are merged. Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.";
 
 const CLAIM_WAKE =
-  "The lead of Ticket 1 claims it complete with acme/app#7 (head unknown). Check the evidence with factory_status; the user reviews and merges.";
+  "The lead of Ticket 1 claims it complete with acme/app#7 (head unknown). Check the evidence with factory_status.";
 const RETRO_WAKE =
   "All pull requests for Ticket 1 are merged and its lead is writing the team retro. You will be woken for your manager retro once it is done.";
 
@@ -1906,7 +1906,7 @@ describe("FactoryService completion claims", () => {
             [lead, RETRO_REQUEST],
             [
               manager.threadId,
-              `${CLAIM_WAKE}
+              `The lead of Ticket 1 claims it complete with acme/app#7 (merged). Check the evidence with factory_status.
 
 ${RETRO_WAKE}`,
             ],
@@ -1938,11 +1938,43 @@ ${RETRO_WAKE}`,
             .filter((message) => message.threadId === manager.threadId)
             .map((message) => message.text);
         assert.deepStrictEqual(toManager(), [
-          "The lead of Ticket 1 claims it complete with acme/app#7 at 0123456789ab. Check the evidence with factory_status; the user reviews and merges.",
+          "The lead of Ticket 1 claims it complete with acme/app#7 at 0123456789ab. Check the evidence with factory_status.",
         ]);
 
         yield* service.sweep;
         assert.strictEqual(toManager().length, 1);
+      }),
+    ),
+  );
+
+  it.effect("names the pull requests linked to the lead's thread that the claim leaves out", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadRuns, sentMessages, pullRequestHeads } = factory;
+        const { manager, lead, sentBefore } = yield* startedAssignment(factory);
+        threadRuns.set(
+          lead,
+          idleRun({
+            pullRequests: [
+              pullRequest(7, false),
+              { ...pullRequest(9, false), state: "closed" as const },
+            ],
+          }),
+        );
+        pullRequestHeads.set(7, "0123456789abcdef0123456789abcdef01234567");
+
+        const claimed = yield* service.claimComplete(lead, { evidence: "Checks pass." });
+        assert.strictEqual(claimed.waitingReason, "Pull requests await the user's review: #7.");
+        assert.deepStrictEqual(
+          sentMessages
+            .slice(sentBefore)
+            .filter((message) => message.threadId === manager.threadId)
+            .map((message) => message.text),
+          [
+            "The lead of Ticket 1 claims it complete with acme/app#7 at 0123456789ab. Check the evidence with factory_status.",
+          ],
+        );
       }),
     ),
   );
@@ -1979,7 +2011,10 @@ ${RETRO_WAKE}`,
         assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["claim", "retro"]);
         assert.deepStrictEqual(
           sentMessages.slice(sentBefore).map((message) => message.text),
-          [CLAIM_WAKE, RETRO_REQUEST],
+          [
+            "The lead of Ticket 1 claims it complete with acme/app#7 (head unknown), acme/app#8 (merged). Check the evidence with factory_status.",
+            RETRO_REQUEST,
+          ],
         );
       }),
     ),

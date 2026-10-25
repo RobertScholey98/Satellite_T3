@@ -96,7 +96,7 @@ describe("FactoryService control paths", () => {
         // The claim wakes the manager at once, with the held paths it had not heard about yet.
         const managerText = `Assignment Ticket 1: ${leadText}
 
-The lead of Ticket 1 claims it complete with acme/app#7 (head unknown). Check the evidence with factory_status; the user reviews and merges.`;
+The lead of Ticket 1 claims it complete with acme/app#7 (head unknown). Check the evidence with factory_status.`;
         assert.strictEqual(sentMessages.at(-1)!.threadId, manager.threadId);
         assert.strictEqual(sentMessages.at(-1)!.text, managerText);
 
