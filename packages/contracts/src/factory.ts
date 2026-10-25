@@ -371,7 +371,7 @@ export const FactoryOnboardingResult = Schema.Struct({
   controlPaths: Schema.Array(FactoryControlPath).check(Schema.isMaxLength(100)),
   /** Factory team ids this manager may staff; empty means every team. */
   teamIds: Schema.Array(Id).check(Schema.isMaxLength(50)),
-  /** Stored for a per-manager cap on running assignments; the environment cap still governs. */
+  /** This manager's cap on running assignments; the environment's cap applies as well. */
   concurrencyCap: ConcurrencyCap,
 });
 export type FactoryOnboardingResult = typeof FactoryOnboardingResult.Type;
