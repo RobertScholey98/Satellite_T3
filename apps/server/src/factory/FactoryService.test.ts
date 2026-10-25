@@ -2152,6 +2152,27 @@ ${CLAIM_WAKE}`,
             pullRequests: [{ host: "github.com", repository: "acme/app", number: 7 }],
           });
           assert.strictEqual(claimed.state, "retro");
+
+          // Who is claiming, and whether the assignment can still be claimed, are told first.
+          const unlinkedClaim = {
+            evidence: "Checks pass.",
+            pullRequests: [{ host: "github.com", repository: "acme/app", number: 9 }],
+          };
+          const ended = yield* service.claimComplete(lead, unlinkedClaim).pipe(Effect.flip);
+          assert.deepStrictEqual(
+            [ended.reason, ended.message],
+            [
+              "conflict",
+              "Ticket 1 is retro; a completion claim needs it active, blocked or waiting on the user.",
+            ],
+          );
+          const notLead = yield* service
+            .claimComplete(manager.threadId!, unlinkedClaim)
+            .pipe(Effect.flip);
+          assert.deepStrictEqual(
+            [notLead.reason, notLead.message],
+            ["not-found", "This thread is not a factory lead."],
+          );
         }),
       ),
   );

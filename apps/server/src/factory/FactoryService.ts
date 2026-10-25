@@ -4179,9 +4179,22 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       ),
     );
 
+  const requireClaimableLead = Effect.fnUntraced(function* (leadThreadId: ThreadId) {
+    const row = yield* requireLead(leadThreadId);
+    if (!CLAIMABLE_STATES.has(row.state))
+      return yield* error(
+        "conflict",
+        `${row.title} is ${row.state}; a completion claim needs it active, blocked or waiting on the user.`,
+      );
+    return row;
+  });
+
   const claimComplete: FactoryServiceShape["claimComplete"] = (leadThreadId, input) =>
     protect(
       Effect.gen(function* () {
+        // The lock re-validates the lead; this read reports a non-lead or an ended assignment
+        // before a link error, and supplies the project and the assignment.
+        const lead = yield* requireClaimableLead(leadThreadId);
         const runs = yield* deps.readThreadRuns(leadThreadId);
         const pullRequests = (input.pullRequests ?? []).map(normalizeThreadPullRequestKey);
         const linked = new Map(
@@ -4195,8 +4208,6 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             "invalid",
             `Link #${unlinked.number} to this thread before claiming.`,
           );
-        // The lock re-validates the lead; this read only supplies the project and the assignment.
-        const lead = yield* requireLead(leadThreadId);
         const projectId = ProjectId.make(lead.project_id);
         // The manager hears of every pull request the assignment waits on, claimed or only linked,
         // including links on replaced leads' threads as settleClaim gates on them.
@@ -4234,12 +4245,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         );
         const id = yield* lock(
           Effect.gen(function* () {
-            const row = yield* requireLead(leadThreadId);
-            if (!CLAIMABLE_STATES.has(row.state))
-              return yield* error(
-                "conflict",
-                `${row.title} is ${row.state}; a completion claim needs it active, blocked or waiting on the user.`,
-              );
+            const row = yield* requireClaimableLead(leadThreadId);
             const at = yield* now;
             yield* sql`UPDATE factory_assignments SET claim_json=${json({
               evidence: input.evidence,
