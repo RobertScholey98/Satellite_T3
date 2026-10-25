@@ -101,6 +101,41 @@ It writes `SatelliteT3-2.0.0-alpha.0-arm64.dmg` and `.zip` to `release/`. See
 Launch a packaged build only with `T3CODE_HOME` set to a scratch directory: without it the app
 opens `~/.satellite-t3`, the installed app's live data.
 
+## Debugging a staged install
+
+The build installs each stage (on Windows the app and the server sidecar, on macOS and Linux one
+merged app) with `vp install --prod` and no lockfile, so a range can resolve to a newer release
+than CI tested. On the host platform, the build's `--keep-stage` flag keeps the stage directory so
+you can rerun the install there (see [Desktop artifacts](./development.md#desktop-artifacts)).
+To rebuild another platform's stage or iterate on its manifest, write a scratch `.ts` script
+outside the repository that mirrors
+[`build-desktop-artifact.ts`](../../scripts/build-desktop-artifact.ts) up to the install: the
+build's main program for the app stage, or `stageWindowsServerSidecar` for the sidecar, including
+its catalog resolution. The helpers they call are exported, and importing the file has no side
+effects because the CLI runs only under `import.meta.main`. Write the stage's `package.json` and
+`pnpm-workspace.yaml` into an empty directory, and copy `patches/` when the stage has patched
+dependencies. Run the script with `node` from `apps/server`, and load `effect`,
+`@effect/platform-node`, and `yaml` through `createRequire` anchored at `apps/server`. Then, in the
+stage directory, run (`vp.cmd` in PowerShell):
+
+```sh
+<repo>/node_modules/.bin/vp install --prod
+```
+
+A failed install leaves a `pnpm-lock.yaml` that records only the `packageManager` entry, so it does
+not show what was resolved. To see which version a range picks, copy the stage's two manifests to
+a separate directory, delete `patchedDependencies` from the YAML, and run
+`vp install --prod --lockfile-only`. The `importers` entry in the new lockfile shows the version.
+Delete the package's `overrides` entry too if you want the range's own result rather than the pin.
+
+The test "pins every patched staged external to its patched version" in
+[`build-desktop-artifact.test.ts`](../../scripts/build-desktop-artifact.test.ts) builds the merged
+macOS universal dependency set. It fails when a patched direct stage dependency's override, or its
+spec when there is no override, is not exactly the patched version. New patched externals are
+covered without editing the test. It does not catch ranges on unpatched externals, patches on
+transitive dependencies, patches on packages that only the
+Windows or Linux stage installs, or a pinned version that is missing from the registry.
+
 ## What the workflow does not do
 
 No code signing or notarization, no Linux or Windows arm64 builds, no CLI archives, npm package,
