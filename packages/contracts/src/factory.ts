@@ -896,6 +896,12 @@ export const FactoryReportDependencyInput = Schema.Struct({
 });
 export type FactoryReportDependencyInput = typeof FactoryReportDependencyInput.Type;
 
+/** The lead asks its manager something only the manager or the user can answer. */
+export const FactoryAskManagerInput = Schema.Struct({
+  question: TrimmedNonEmptyString.check(Schema.isMaxLength(4000)),
+});
+export type FactoryAskManagerInput = typeof FactoryAskManagerInput.Type;
+
 /** The manager's diagnosis of a stalled assignment: brief the same lead again, or replace it. */
 export const FactoryRecoverInput = Schema.Struct({
   assignmentId: Id,

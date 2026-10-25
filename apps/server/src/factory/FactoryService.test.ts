@@ -2691,6 +2691,77 @@ describe("FactoryService findings", () => {
   );
 });
 
+describe("FactoryService lead questions", () => {
+  const QUESTION = "May this assignment change the shared retry policy?";
+  const QUESTION_WAKE = `The lead of Ticket 1 asks: ${QUESTION}\n\nReply in its thread with t3_thread_send (threadId lead-1).`;
+
+  it.effect("sends a lead's question to the manager's thread at once", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, sentMessages } = factory;
+        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
+
+        const asked = yield* service.askManager(lead, { question: QUESTION });
+        assert.isFalse(asked.managerPaused);
+        assert.strictEqual(asked.assignment.state, "active");
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["question"]);
+        assert.deepStrictEqual(
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
+          [[manager.threadId, QUESTION_WAKE]],
+        );
+
+        yield* service.sweep;
+        assert.strictEqual(sentMessages.length - sentBefore, 1);
+      }),
+    ),
+  );
+
+  it.effect("holds a question for a paused manager until it resumes", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, sentMessages } = factory;
+        const { manager, lead } = yield* startedAssignment(factory);
+        yield* service.pauseManager({
+          requestId: "pause-1",
+          managerId: manager.id,
+          scope: "manager",
+        });
+        const sentBefore = sentMessages.length;
+
+        const asked = yield* service.askManager(lead, { question: QUESTION });
+        assert.isTrue(asked.managerPaused);
+        yield* service.sweep;
+        assert.strictEqual(sentMessages.length, sentBefore);
+
+        yield* service.resumeManager({ requestId: "resume-1", managerId: manager.id });
+        yield* service.sweep;
+        assert.deepStrictEqual(
+          sentMessages
+            .slice(sentBefore)
+            .filter((message) => message.threadId === manager.threadId)
+            .map((message) => message.text),
+          [QUESTION_WAKE],
+        );
+      }),
+    ),
+  );
+
+  it.effect("refuses a thread that does not lead an assignment", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { manager } = yield* startedAssignment(factory);
+        const refused = yield* factory.service
+          .askManager(manager.threadId!, { question: QUESTION })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "not-found");
+      }),
+    ),
+  );
+});
+
 describe("FactoryService retro", () => {
   it.effect(
     "wakes the manager for its retro once the team retro is done, and completes after",

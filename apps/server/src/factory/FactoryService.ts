@@ -84,6 +84,7 @@ import {
   type FactoryRecordFindingInput,
   type FactoryRecoverInput,
   type FactoryReportDependencyInput,
+  type FactoryAskManagerInput,
   type FactoryRole,
   type FactoryRoleBrief,
   type FactorySimilarTicket,
@@ -471,6 +472,14 @@ export interface FactoryServiceShape {
     leadThreadId: ThreadId,
     input: FactoryReportDependencyInput,
   ) => Effect.Effect<FactoryDependency, FactoryOperationError>;
+  /** The lead in this thread asks its manager a question; a paused manager hears it on resume. */
+  readonly askManager: (
+    leadThreadId: ThreadId,
+    input: FactoryAskManagerInput,
+  ) => Effect.Effect<
+    { readonly assignment: FactoryAssignment; readonly managerPaused: boolean },
+    FactoryOperationError
+  >;
   /**
    * The manager in this thread spends a recovery on a stalled assignment, or hands it to the user
    * once the allowance is spent.
@@ -791,6 +800,15 @@ const ClaimWakePayload = Schema.Struct({
 });
 const decodeClaimWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(ClaimWakePayload)),
+);
+const QuestionWakePayload = Schema.Struct({
+  title: Schema.String,
+  assignmentId: Schema.String,
+  leadThreadId: Schema.String,
+  question: Schema.String,
+});
+const decodeQuestionWake = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(QuestionWakePayload)),
 );
 const decodeHandbackWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(HandbackWakePayload)),
@@ -4025,6 +4043,13 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             ),
           );
           break;
+        case "question":
+          Option.map(decodeQuestionWake(row.payload_json), (payload) =>
+            lines.push(
+              `The lead of ${payload.title} asks: ${payload.question}\n\nReply in its thread with t3_thread_send (threadId ${payload.leadThreadId}).`,
+            ),
+          );
+          break;
       }
     }
     return lines.join("\n\n");
@@ -4244,6 +4269,31 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         );
         yield* publish;
         return dependency;
+      }),
+    );
+
+  const askManager: FactoryServiceShape["askManager"] = (leadThreadId, input) =>
+    protect(
+      Effect.gen(function* () {
+        const row = yield* lock(
+          Effect.gen(function* () {
+            const row = yield* requireLead(leadThreadId);
+            yield* writeWake(row, "question", {
+              title: row.title,
+              assignmentId: row.id,
+              leadThreadId,
+              question: input.question,
+            });
+            return row;
+          }),
+        );
+        yield* publish;
+        yield* wakeManagerNow(row.manager_id);
+        const manager = yield* readManager(row.manager_id);
+        return {
+          assignment: yield* readAssignment(row.id),
+          managerPaused: isPaused(manager.state),
+        };
       }),
     );
 
@@ -5718,6 +5768,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     assignmentForThread,
     claimComplete,
     reportDependency,
+    askManager,
     recover,
     complete,
     cancel,

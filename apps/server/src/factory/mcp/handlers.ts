@@ -291,6 +291,20 @@ const make = Effect.gen(function* () {
         };
       }),
     ),
+    factory_ask_manager: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingLead(NOT_A_LEAD);
+        const { assignment, managerPaused } = yield* factory
+          .askManager(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        return {
+          assignment,
+          message: managerPaused
+            ? "The manager is paused; it gets your question once the user resumes it. Keep working on anything the question does not block; the answer arrives in this thread."
+            : "Sent to the manager. Keep working on anything the question does not block; the answer arrives in this thread.",
+        };
+      }),
+    ),
     factory_recover: McpToolAccess.actsAsCaller((input) =>
       Effect.gen(function* () {
         const { threadId } = yield* callingManager(NOT_A_MANAGER);
