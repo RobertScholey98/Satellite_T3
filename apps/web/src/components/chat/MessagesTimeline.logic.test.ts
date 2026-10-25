@@ -192,6 +192,66 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("acts on the newest proposal that succeeded, not a later refused call", () => {
+    const proposalCall = (
+      id: string,
+      second: number,
+      output: unknown,
+    ): OrchestrationV2ProjectedTurnItem => {
+      const at = DateTime.makeUnsafe(`2026-10-23T12:00:${String(second).padStart(2, "0")}.000Z`);
+      const item: OrchestrationV2TurnItem = {
+        id: TurnItemId.make(id),
+        threadId: ThreadId.make("manager-thread"),
+        runId: RunId.make("onboarding-run"),
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: second,
+        status: "completed",
+        title: null,
+        startedAt: at,
+        completedAt: at,
+        updatedAt: at,
+        type: "dynamic_tool",
+        toolName: "mcp__t3-code__factory_propose_onboarding",
+        input: {},
+        output,
+      };
+      return {
+        position: second,
+        visibility: "local",
+        sourceThreadId: item.threadId,
+        sourceItemId: item.id,
+        item,
+      };
+    };
+    const proposed = { structuredContent: { managerId: "manager" }, content: [] };
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: deriveTimelineEntriesFromVisibleTurnItems({
+        visibleTurnItems: [
+          proposalCall("first-proposal", 1, proposed),
+          proposalCall("revised-proposal", 2, proposed),
+          proposalCall("refused-proposal", 3, {
+            content: [{ type: "text", text: "Only an onboarding manager can propose." }],
+            isError: true,
+          }),
+        ],
+        optimisticMessages: [],
+      }),
+      isWorking: false,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(
+      rows.flatMap((row) => (row.kind === "factory-onboarding" ? [[row.id, row.latest]] : [])),
+    ).toEqual([
+      ["first-proposal", false],
+      ["revised-proposal", true],
+    ]);
+  });
+
   it("stops stranded thinking after a steer and follows the next thought or tool", () => {
     const runId = RunId.make("steered-run");
     const at = "2026-10-01T06:19:10Z";
