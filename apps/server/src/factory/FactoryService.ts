@@ -2015,6 +2015,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    */
   const createManager: FactoryServiceShape["createManager"] = (input) =>
     protect(
+      // The RPC server interrupts a request when its client disconnects. Once the row commits, its
+      // thread must still launch and be remembered, or a retry inserts a second manager.
       Effect.gen(function* () {
         const created = yield* lock(
           Effect.gen(function* () {
@@ -2104,7 +2106,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           return yield* error("unavailable", launched.failure.message);
         }
         return yield* lock(rememberManager(input.requestId, input, created.id));
-      }),
+      }).pipe(Effect.uninterruptible),
     );
 
   const adoptManagerDefinitions: FactoryServiceShape["adoptManagerDefinitions"] = protect(
@@ -2165,6 +2167,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   /** Pausing the project also interrupts every lead's run, except threads the user took over. */
   const pauseManager: FactoryServiceShape["pauseManager"] = (input) =>
     protect(
+      // A disconnect interrupts the request, and a replay interrupts no leads, so once the pause
+      // commits every lead must still be interrupted.
       Effect.gen(function* () {
         const paused = yield* lock(pauseManagerRow(input));
         for (const lead of paused.leads)
@@ -2184,7 +2188,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
               ),
             );
         return paused.manager;
-      }),
+      }).pipe(Effect.uninterruptible),
     );
 
   const resumeManager: FactoryServiceShape["resumeManager"] = (input) =>
@@ -2335,15 +2339,18 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    * approval is remembered and published. A failed launch puts the manager back in onboarding on
    * its old thread, keeping a pause or retirement made meanwhile, so approving again starts over.
    */
-  const approveOnce = Effect.fnUntraced(function* (input: FactoryManagersApproveOnboardingInput) {
+  const approveOnce = Effect.fnUntraced(function* (
+    input: FactoryManagersApproveOnboardingInput,
+    restore: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
+  ) {
     const { pickup } = input.result;
     // Pickup columns are checked against the boards as they are now, not as proposed: a
     // column that stopped being Ready since must not be approved.
     const boards =
       pickup.enabled || pickup.columns.length > 0
-        ? yield* onboardingBoards((yield* readManager(input.managerId)).projectId)
+        ? yield* restore(onboardingBoards((yield* readManager(input.managerId)).projectId))
         : [];
-    const teamIds = yield* factoryTeamIds;
+    const teamIds = yield* restore(factoryTeamIds);
     const approved = yield* lock(
       Effect.gen(function* () {
         const replay = yield* replayManager(input.requestId, input);
@@ -2492,7 +2499,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         }
         const done = Deferred.makeUnsafe<FactoryManager, FactoryOperationError>();
         approvalsInFlight.set(input.requestId, { hash: hash(input), done });
-        return yield* protect(approveOnce(input)).pipe(
+        // A disconnect interrupts the request. Once the approval commits the manager is on its new
+        // thread, so that thread must still launch, or be rolled back, before a retry can tell.
+        return yield* protect(
+          Effect.uninterruptibleMask((restore) => approveOnce(input, restore)),
+        ).pipe(
           Effect.onExit((exit) => Deferred.done(done, exit)),
           Effect.ensuring(Effect.sync(() => approvalsInFlight.delete(input.requestId))),
         );
@@ -4602,6 +4613,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    */
   const cancel: FactoryServiceShape["cancel"] = (input) =>
     protect(
+      // A disconnect interrupts the request, and a replay returns early, so once the cancel commits
+      // the lead must still be interrupted and told to stop.
       Effect.gen(function* () {
         const applied = yield* lock(
           Effect.gen(function* () {
@@ -4655,11 +4668,13 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         }
         yield* publish;
         return assignment;
-      }),
+      }).pipe(Effect.uninterruptible),
     );
 
   const answerProtectedPaths: FactoryServiceShape["answerProtectedPaths"] = (input) =>
     protect(
+      // A disconnect interrupts the request, and a replay answers nothing, so once the answer
+      // commits the lead must still hear it and a claim it frees must still settle.
       Effect.gen(function* () {
         const applied = yield* lock(
           Effect.gen(function* () {
@@ -4743,7 +4758,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             : yield* deps.readThreadRuns(ThreadId.make(row.lead_thread_id)),
         );
         return yield* readAssignment(row.id);
-      }),
+      }).pipe(Effect.uninterruptible),
     );
 
   const setTakenOver = (

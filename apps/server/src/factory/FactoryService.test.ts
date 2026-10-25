@@ -315,6 +315,32 @@ describe("FactoryService managers", () => {
     ),
   );
 
+  it.effect("finishes a committed create when the client disconnects during its launch", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { service, controls, launches } = yield* makeHarness({ config: ENVIRONMENT });
+        const launching = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringLaunch = Deferred.succeed(launching, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const creating = yield* create(service).pipe(Effect.forkChild);
+        yield* Deferred.await(launching);
+        // What the RPC server does to a disconnected client's requests.
+        creating.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(creating);
+
+        const retried = yield* create(service);
+        assert.strictEqual(yield* managerRowCount, 1);
+        assert.deepStrictEqual(
+          launches.map((launch) => launch.threadId),
+          [retried.threadId],
+        );
+      }),
+    ),
+  );
+
   it.effect("creates a second manager in a project that already has one", () =>
     withDatabase(
       Effect.gen(function* () {
@@ -954,6 +980,35 @@ describe("FactoryService primed manager thread", () => {
         const approved = yield* approve;
         assert.deepStrictEqual(yield* Fiber.join(repeat!), approved);
         assert.strictEqual(launches.length, launchesBefore + 1);
+      }),
+    ),
+  );
+
+  it.effect("finishes a committed approval when the client disconnects during its launch", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, controls, boards, settles } = factory;
+        boards.push(board([]));
+        const created = yield* create(service);
+        yield* service.proposeOnboarding(created.threadId!, PROPOSAL);
+        const launching = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringLaunch = Deferred.succeed(launching, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const input = { requestId: "approve-1", managerId: created.id, result: RESULT };
+        const approving = yield* service.approveOnboarding(input).pipe(Effect.forkChild);
+        yield* Deferred.await(launching);
+        // What the RPC server does to a disconnected client's requests.
+        approving.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(approving);
+
+        assert.deepStrictEqual(settles, [created.threadId]);
+        const retried = yield* service.approveOnboarding(input);
+        assert.strictEqual(retried.state, "ready");
+        assert.strictEqual(retried.onboardingThreadId, created.threadId);
       }),
     ),
   );
@@ -2341,6 +2396,43 @@ describe("FactoryService completion", () => {
       }),
     ),
   );
+
+  it.effect("finishes a committed cancel when the client disconnects during it", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, controls, interrupts, sentMessages } = factory;
+        const { assignment, lead, sentBefore } = yield* startedAssignment(factory);
+        const interrupting = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringInterrupt = Deferred.succeed(interrupting, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const cancelling = yield* service
+          .cancel({ requestId: "cancel-1", assignmentId: assignment.id, reason: "Descoped" })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(interrupting);
+        // What the RPC server does to a disconnected client's requests.
+        cancelling.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(cancelling);
+
+        assert.deepStrictEqual(
+          interrupts.map((interrupt) => [interrupt.threadId, interrupt.commandId]),
+          [[lead, "factory-cancel:cancel-1"]],
+        );
+        assert.deepStrictEqual(
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
+          [
+            [
+              lead,
+              "The user cancelled Ticket 1: Descoped. Stop the work. Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.",
+            ],
+          ],
+        );
+      }),
+    ),
+  );
 });
 
 describe("FactoryService takeover", () => {
@@ -2443,6 +2535,34 @@ describe("FactoryService project pause", () => {
         threadRuns.set(lead, idleRun({ latestRunStatus: "interrupted" }));
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "active");
+      }),
+    ),
+  );
+
+  it.effect("interrupts the leads of a committed pause when the client disconnects during it", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, controls, interrupts } = factory;
+        const { manager, lead } = yield* startedAssignment(factory);
+        const interrupting = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringInterrupt = Deferred.succeed(interrupting, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const pausing = yield* service
+          .pauseManager({ requestId: "pause-1", managerId: manager.id, scope: "project" })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(interrupting);
+        // What the RPC server does to a disconnected client's requests.
+        pausing.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(pausing);
+
+        assert.deepStrictEqual(
+          interrupts.map((interrupt) => [interrupt.threadId, interrupt.commandId]),
+          [[lead, `factory-pause:pause-1:${lead}`]],
+        );
       }),
     ),
   );

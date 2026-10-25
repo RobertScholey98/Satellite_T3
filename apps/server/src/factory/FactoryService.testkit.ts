@@ -264,6 +264,8 @@ interface HarnessControls {
   launchFailures: number;
   /** Runs once inside the next launch, before it succeeds or fails. */
   duringLaunch: Effect.Effect<void, FactoryOperationError> | null;
+  /** Runs once inside the next thread interrupt, before it is recorded. */
+  duringInterrupt: Effect.Effect<void> | null;
   /** What the usage rate cache holds; null when usage tracking has cached none. */
   rateTable: RateTable | null;
   /** The repository's default branch as git reports it; null when it cannot be read. */
@@ -300,6 +302,7 @@ export const makeHarness = (options: HarnessOptions = {}) =>
       ticketFailures: 0,
       launchFailures: options.launchFailures ?? 0,
       duringLaunch: null,
+      duringInterrupt: null,
       rateTable: null,
       defaultBranch: "trunk",
       catalog: CATALOG,
@@ -426,7 +429,12 @@ export const makeHarness = (options: HarnessOptions = {}) =>
             );
           }),
         ),
-      interruptThread: (input) => Effect.sync(() => void interrupts.push(input)),
+      interruptThread: (input) =>
+        Effect.suspend(() => {
+          const during = controls.duringInterrupt ?? Effect.void;
+          controls.duringInterrupt = null;
+          return during;
+        }).pipe(Effect.andThen(Effect.sync(() => void interrupts.push(input)))),
       settleThread: (input) => Effect.sync(() => void settles.push(input.threadId)),
       readDefaultBranch: () => Effect.sync(() => controls.defaultBranch),
       readPullRequestFiles: (input) =>

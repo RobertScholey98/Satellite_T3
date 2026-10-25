@@ -1,6 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
 import type { FactoryAssignment } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -629,6 +631,56 @@ describe("FactoryService control paths", () => {
         assert.strictEqual(settled.state, "waiting-user");
         assert.strictEqual(settled.waitingReason, "Pull requests await the user's review: #7.");
         assert.deepStrictEqual(settled.controlViolations, []);
+      }),
+    ),
+  );
+
+  it.effect("settles a held claim when the client disconnects during the answer", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles, controls, sentMessages } = factory;
+        const { assignment, lead } = yield* startedTeam(factory);
+        pullRequestFiles.set(7, ["AGENTS.md"]);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
+        yield* service.reconcileThread(lead);
+        const claimed = yield* service.claimComplete(lead, {
+          evidence: "Tests pass.",
+          pullRequests: [PR_7],
+        });
+        const sentBefore = sentMessages.length;
+        const sending = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringSend = Deferred.succeed(sending, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const answering = yield* answer(
+          service,
+          assignment,
+          claimed.protectedPathAsks[0]!.id,
+          "allow",
+          "allow-1",
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(sending);
+        // What the RPC server does to a disconnected client's requests.
+        answering.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(answering);
+
+        assert.deepStrictEqual(
+          sentMessages
+            .slice(sentBefore, sentBefore + 1)
+            .map((message) => [message.threadId, message.text]),
+          [
+            [
+              lead,
+              "The user allowed edits to these protected files for this assignment: AGENTS.md. You may edit them for this assignment only. Tell any running worker who needs them.",
+            ],
+          ],
+        );
+        const settled = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(settled.state, "waiting-user");
+        assert.strictEqual(settled.waitingReason, "Pull requests await the user's review: #7.");
       }),
     ),
   );
