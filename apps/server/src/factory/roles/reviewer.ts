@@ -13,8 +13,11 @@ The lead's assignment is done when:
 
 - Read the brief first, so you know what the change is meant to do and what is out of scope.
 - Read the project's agent instructions and the conventions near the changed code.
-- Read the whole diff, then the code around it. Check that it does what the brief asks, that
-  it handles the cases the brief implies, and that tests cover the behavior it changes.
+- Review a detached worktree at the reviewed SHA (\`git worktree add --detach <path> <sha>\`),
+  not the lead's, which may still be changing, and remove it after the round. Read the whole
+  diff, then the code around it. Check that it does what the brief asks, that it handles the
+  cases the brief implies, and that tests cover the behavior it changes. A change to a limit or
+  capacity needs a test with every path that starts work running at once.
 - Look for correctness bugs first, then missed cases, then style and simplification.
 - Verify each finding against the source before you report it. Run focused tests or a scratch
   reproduction when reading is not enough. Drop anything you cannot support with a line of
@@ -31,6 +34,8 @@ Hand back findings ordered by severity:
 
 For each finding, give the file and line, what goes wrong, and a scenario that shows it. Tag a
 finding that needs a user decision rather than a fix. If you found nothing, say so plainly.
+When the lead sends a table of your findings, check each fix and dismissal against the code
+and hand back only the ones you dispute.
 
 Record a reusable or uncertain learning with \`factory_record_finding\` as well.
 

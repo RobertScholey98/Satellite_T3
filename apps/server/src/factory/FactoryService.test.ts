@@ -10,6 +10,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  type FactoryAmendAssignmentInput,
   type FactoryAssignmentsEvent,
   type FactoryManager,
   type FactoryManagerDefinition,
@@ -1270,6 +1271,24 @@ describe("FactoryService role briefs", () => {
           ),
           defined.text,
         );
+
+        // A worker definition that never names {{protectedPaths}} still gets the list, once.
+        yield* configStore.writeWorker({
+          id: "implementer",
+          name: "Implementer",
+          models: { dynamic: true, models: [] },
+          description: "Implements the change.",
+        });
+        const own = yield* service.roleBrief(PROJECT_ID, "implementer", managerId);
+        assert.strictEqual(own.source, "definition");
+        assert.isTrue(own.text.startsWith("Implements the change.\n\n# Project\n\n"), own.text);
+        assert.isTrue(
+          own.text.endsWith(
+            `\n\n${WORKER_RULES}\n- Never edit the protected control paths:\n\n- AGENTS.md`,
+          ),
+          own.text,
+        );
+        assert.strictEqual(own.text.split("- AGENTS.md").length - 1, 1);
       }),
     ),
   );
@@ -2877,6 +2896,184 @@ describe("FactoryService findings", () => {
           assert.strictEqual(stranger.reason, "not-found");
         }),
       ),
+  );
+});
+
+describe("FactoryService amend", () => {
+  const ONE_PR = "One pull request to main, ready for review.";
+  const REASON = "The user asked for one pull request";
+
+  it.effect("briefs team members from the amended completion condition", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { manager, assignment, lead } = yield* startedTeam(factory);
+        yield* asLegacyTeam(assignment.id);
+
+        const amended = yield* factory.service.amendAssignment(manager.threadId!, {
+          assignmentId: assignment.id,
+          completionCondition: ONE_PR,
+          reason: REASON,
+        });
+        assert.strictEqual(amended.completionCondition, ONE_PR);
+        assert.strictEqual(amended.brief, START.brief);
+        const plan = yield* factory.service.planDelegation(lead, {
+          role: "reviewer",
+          task: "Review it.",
+        });
+        assert.include(plan.task, `The lead's assignment is done when:\n\n${ONE_PR}`);
+        assert.notInclude(plan.task, START.completionCondition);
+      }),
+    ),
+  );
+
+  it.effect("tells the lead once what changed and logs the old and new text", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, sentMessages } = factory;
+        const { manager, assignment, lead, mark, sentBefore } = yield* startedAssignment(factory);
+
+        yield* service.amendAssignment(manager.threadId!, {
+          assignmentId: assignment.id,
+          brief: "Fix the crash when the list is empty or missing.",
+          completionCondition: ONE_PR,
+          reason: REASON,
+        });
+        assert.deepStrictEqual(
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
+          [
+            [
+              lead,
+              `The manager amended Ticket 1: The user asked for one pull request.\n\nThe brief is now:\n\nFix the crash when the list is empty or missing.\n\nThe completion condition is now:\n\n${ONE_PR}`,
+            ],
+          ],
+        );
+        yield* service.sweep;
+        assert.strictEqual(sentMessages.length - sentBefore, 1);
+
+        // A brief already in place is left out of the log and the message.
+        yield* service.amendAssignment(manager.threadId!, {
+          assignmentId: assignment.id,
+          brief: "Fix the crash when the list is empty or missing.",
+          completionCondition: "Two pull requests.",
+          reason: "The user changed their mind.",
+        });
+        assert.strictEqual(
+          sentMessages.at(-1)!.text,
+          "The manager amended Ticket 1: The user changed their mind.\n\nThe completion condition is now:\n\nTwo pull requests.",
+        );
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["amend", "amend"]);
+        const [second, first] = yield* service.listLog({ managerId: manager.id, limit: 2 });
+        assert.deepInclude(first, {
+          kind: "amend",
+          reason: REASON,
+          payload: {
+            before: { brief: START.brief, completionCondition: START.completionCondition },
+            after: {
+              brief: "Fix the crash when the list is empty or missing.",
+              completionCondition: ONE_PR,
+            },
+          },
+        });
+        assert.deepStrictEqual(second!.payload, {
+          before: { completionCondition: ONE_PR },
+          after: { completionCondition: "Two pull requests." },
+        });
+      }),
+    ),
+  );
+
+  it.effect("does not message a lead the user has taken over", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, sentMessages } = factory;
+        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        yield* service.takeOver({ requestId: "take-1", threadId: lead });
+        const sentBefore = sentMessages.length;
+
+        const amended = yield* service.amendAssignment(manager.threadId!, {
+          assignmentId: assignment.id,
+          completionCondition: ONE_PR,
+          reason: REASON,
+        });
+        assert.strictEqual(amended.completionCondition, ONE_PR);
+        assert.strictEqual(sentMessages.length, sentBefore);
+      }),
+    ),
+  );
+
+  it.effect("refuses other threads, unchanged text, and assignments past their work", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, sentMessages } = factory;
+        const { manager, assignment, lead, mark } = yield* startedAssignment(factory);
+        const amend = { assignmentId: assignment.id, completionCondition: ONE_PR, reason: REASON };
+        const refusal = (threadId: ThreadId, input: FactoryAmendAssignmentInput = amend) =>
+          Effect.gen(function* () {
+            const sentBefore = sentMessages.length;
+            const failure = yield* service.amendAssignment(threadId, input).pipe(Effect.flip);
+            assert.strictEqual(sentMessages.length, sentBefore);
+            return failure.reason;
+          });
+
+        assert.strictEqual(yield* refusal(lead), "not-found");
+        const other = yield* create(service, "create-2", "Grace");
+        assert.strictEqual(yield* refusal(other.threadId!), "not-found");
+        assert.strictEqual(
+          yield* refusal(manager.threadId!, { assignmentId: assignment.id, reason: REASON }),
+          "invalid",
+        );
+        assert.strictEqual(
+          yield* refusal(manager.threadId!, {
+            ...amend,
+            brief: START.brief,
+            completionCondition: START.completionCondition,
+          }),
+          "invalid",
+        );
+
+        yield* service.claimComplete(lead, { evidence: "Fixed without a pull request." });
+        assert.strictEqual(yield* refusal(manager.threadId!), "conflict");
+        yield* service.retroDone(lead);
+        yield* service.complete(manager.threadId!, {
+          assignmentId: assignment.id,
+          teamVerdict: VERDICT,
+        });
+        assert.strictEqual(yield* refusal(manager.threadId!), "conflict");
+        assert.notInclude(yield* logKinds(service, manager.id, mark), "amend");
+      }),
+    ),
+  );
+
+  it.effect("refuses a cancelled assignment", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, sentMessages } = factory;
+        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        yield* service.cancel({ requestId: "cancel-1", assignmentId: assignment.id, reason: "x" });
+        yield* service.retroDone(lead);
+        const ended = yield* service.complete(manager.threadId!, {
+          assignmentId: assignment.id,
+          teamVerdict: VERDICT,
+        });
+        assert.strictEqual(ended.state, "cancelled");
+        const sentBefore = sentMessages.length;
+
+        const refused = yield* service
+          .amendAssignment(manager.threadId!, {
+            assignmentId: assignment.id,
+            completionCondition: ONE_PR,
+            reason: REASON,
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "conflict");
+        assert.strictEqual(sentMessages.length, sentBefore);
+      }),
+    ),
   );
 });
 

@@ -15,13 +15,17 @@ left before you change anything.
   it in live data read from a read-only snapshot and, through the manager, walk the user through
   how it behaves today before you propose changes. For stacked work, settle the end-state data
   model, migration ids and contract fields, and commit the contract, before client implementers
-  start.
+  start. Before you change a state machine, list every writer of its state and give the
+  implementer and reviewer a table of each state against each new event. When a field changes
+  meaning, trace every client feed that carries it.
 - Staff the work from the team in your assignment. Give each member one scoped change, the
   files it may touch, and how you will check its result. Give parallel workers whole modules,
   never regions of one large file. Before parallel work starts, one owner writes the shared
   contracts, migration columns and cross-owner hooks, and each brief says which layer every
   input it uses lives on. Check every symbol a brief names against the target ref with
-  \`git grep\` before you send it.
+  \`git grep\` before you send it, and paste in the exact commands and facts the worker needs:
+  a fresh worker remembers no earlier round. When the wording is the design, as in prompts,
+  docs or role text, you may write it yourself and staff only a reviewer.
 - A question that needs the manager or the user goes to \`factory_ask_manager\`; the answer
   arrives in this thread. Never wait for an answer in your own thread: keep working on
   whatever the question does not block.
@@ -29,14 +33,25 @@ left before you change anything.
   yourself before you claim anything is done.
 - Review in rounds of about 1,500 lines from a committed base..head, with server and UI
   reviewed separately. A review brief names the shared integration paths the change flows
-  through beyond the diff, and asks the reviewer to tag findings that need a user decision;
-  escalate those to the manager in the same round. Every round after the first gets a table of
-  the previous round's findings with the commit that fixed each one.
+  through beyond the diff (for agent-facing text, every surface that renders or returns it),
+  and asks the reviewer to tag findings that need a user decision; escalate those to the
+  manager in the same round. Round 1 gets the draft pull request body, and an audit brief names
+  every hazard class to look for. On a branch that merges another, brief \`<base>..HEAD\` for
+  scope, \`<merged head>..HEAD\` for the team's own work and \`git show --remerge-diff <merge>\`
+  for the resolution, and have the reviewer check the callers of every shared helper either
+  side changed. Every round after the first gets a table of the previous round's findings with
+  the commit that fixed each one or the reason it was dismissed. Before the pull request is
+  marked ready, even after one round, send the reviewer that table for its last round.
 - A verifier brief for a migration tests both the write to the new home and the read of a
   record that existed before, with one fake input per migrated kind.
-- Open a pull request for each coherent change and link it to this thread. When it is ready,
-  mark it ready for review and stop. The user reviews and merges every pull request; you never
-  do.
+- An assignment delivers one pull request: open it as a draft and link it to this thread.
+  Separate concerns are separate commits in it, not separate pull requests; for factory work
+  this overrides a project's one-concern-per-PR rule. After each follow-up commit, recheck its
+  body: every test it names exists, whether each fails on the base branch or only on the commit
+  before, and each changed file's upstream status (\`git cat-file -e upstream/main:<path>\` in a
+  fork). It stays a draft until review and verification are done and CI is green; mark it ready
+  for review when you claim complete, and stop. The user reviews and merges every pull request;
+  you never do.
 - When the task truly needs an edit to a protected file, keep the edit and wait for the user's
   answer rather than reverting it. The user can allow it for this assignment. A pull request
   body names any protected files the user allowed under their own heading.

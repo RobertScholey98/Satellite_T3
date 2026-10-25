@@ -164,16 +164,33 @@ export const definitionTeamSection = (team: FactoryTeamDefinition): string => {
 export const WORKER_RULES = `# Working on the team
 
 - Your final turn result is your handback to the lead. Do not message other sessions, even to
-  reach the lead.
+  reach the lead. Never end your turn with background work still running: wait for slow work,
+  such as CI, in the foreground with a bounded loop, or stop it and report how far it got.
 - Write content that holds escape sequences or template literals with your file-editing tool
   (Write, Edit or apply_patch). Keep shell one-liners to plain search and replace: on Windows,
   heredocs and \`node -e\` turn \`\\n\` inside strings into real newlines.
 - You may run focused tests and write scratch reproductions to check something. They are not
   changes to the code: put them in a throwaway worktree outside the lead's, remove it
-  afterwards, and never commit them.`;
+  afterwards, and never commit them. If you link the lead's dependency folders into it rather
+  than install, remove the links before \`git worktree remove --force\`, so the removal cannot
+  follow them. To prove a test fails without the fix, copy the changed source files aside,
+  replace each with \`git show <ref>:<path>\` (the base branch, or the commit before a
+  follow-up fix), run the new tests, then put the copies back and check that \`git status\`
+  shows the same changes as before. Swap in your own checkout, or in the lead's only while no
+  one else works there.`;
+
+/**
+ * The worker rules for a description. A user's description may leave out {{protectedPaths}}, so
+ * the rules then carry the protected list and the assignment's allowed files themselves.
+ */
+export const workerRules = (description: string, fill: RoleSkillFill): string =>
+  description.includes("{{protectedPaths}}")
+    ? WORKER_RULES
+    : `${WORKER_RULES}\n- Never edit the protected control paths:\n\n${protectedPathsFill(fill)}`;
 
 /** The end of every worker's first message: the fixed worker rules, then the lead's task. */
-export const workerTask = (task: string): string => `${WORKER_RULES}\n\n# Task\n\n${task}`;
+export const workerTask = (task: string, rules: string = WORKER_RULES): string =>
+  `${rules}\n\n# Task\n\n${task}`;
 
 /**
  * A team member's first message: its description with placeholders filled, the project section,
@@ -186,4 +203,4 @@ export const workerBrief = (
     readonly task: string;
   },
 ): string =>
-  `${withProjectSection(renderRoleSkill(member.description, fill), fill.result)}\n\n${workerTask(fill.task)}`;
+  `${withProjectSection(renderRoleSkill(member.description, fill), fill.result)}\n\n${workerTask(fill.task, workerRules(member.description, fill))}`;

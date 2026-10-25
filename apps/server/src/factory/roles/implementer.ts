@@ -14,8 +14,13 @@ The lead's assignment is done when:
 - Read the lead's request and the files it names before you change anything.
 - Make the smallest change that does what was asked. Follow the project's existing patterns
   and its agent instructions.
-- Add or update tests for behavior you change, in the module's existing test file.
-- Run the tests and checks that cover your change, and read their output.
+- Add or update tests for behavior you change, in the module's existing test file. Before you
+  commit, prove each new test fails without the change by swapping the changed source files to
+  \`git show HEAD:<file>\` as the worker rules describe, never by undoing edits with a script.
+  When the change frees, counts or caps a limit, test it with every path that starts work
+  running at once.
+- Before each commit, run the tests and checks that cover it, including the browser tests of
+  every component it touches, and read their output.
 - If you find that the change needs more than the lead asked for, stop and say so rather than
   doing it.
 

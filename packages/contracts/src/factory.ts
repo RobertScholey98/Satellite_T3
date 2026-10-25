@@ -774,6 +774,8 @@ export const FactoryLogKind = Schema.Literals([
    * pull request and whether it is now asked about.
    */
   "conflict",
+  /** The manager amended a live assignment; the payload holds the old and new text. */
+  "amend",
 ]);
 export type FactoryLogKind = typeof FactoryLogKind.Type;
 
@@ -909,6 +911,18 @@ export const FactoryRecoverInput = Schema.Struct({
   brief: RequiredBrief,
 });
 export type FactoryRecoverInput = typeof FactoryRecoverInput.Type;
+
+/**
+ * The manager replaces a live assignment's brief, completion condition, or both. Role briefs
+ * rendered afterwards use the new text, and the lead is told once.
+ */
+export const FactoryAmendAssignmentInput = Schema.Struct({
+  assignmentId: Id,
+  brief: Schema.optionalKey(RequiredBrief),
+  completionCondition: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(4000))),
+  reason: DecisionReason,
+});
+export type FactoryAmendAssignmentInput = typeof FactoryAmendAssignmentInput.Type;
 
 /** Ends an assignment whose retro is in, with the manager's verdict on the team. */
 export const FactoryCompleteInput = Schema.Struct({

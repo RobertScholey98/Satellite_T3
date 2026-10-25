@@ -314,6 +314,18 @@ const make = Effect.gen(function* () {
         return { assignment, message: recoverMessage(assignment) };
       }),
     ),
+    factory_amend_assignment: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingManager(NOT_A_MANAGER);
+        const assignment = yield* factory
+          .amendAssignment(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        return {
+          assignment,
+          message: `Amended "${assignment.title}". Role briefs rendered from now on use the new text.`,
+        };
+      }),
+    ),
     factory_complete: McpToolAccess.actsAsCaller((input) =>
       Effect.gen(function* () {
         const { threadId } = yield* callingManager(NOT_A_MANAGER);
