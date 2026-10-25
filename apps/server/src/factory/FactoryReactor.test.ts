@@ -1,5 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
-import { type OrchestrationV2DomainEvent, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  type OrchestrationV2DomainEvent,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -9,8 +14,13 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as FactoryReactor from "./FactoryReactor.ts";
-import { type FactoryObservedThread, FactoryService } from "./FactoryService.ts";
+import {
+  type FactoryMergedPullRequest,
+  type FactoryObservedThread,
+  FactoryService,
+} from "./FactoryService.ts";
 
 const LEAD_THREAD = ThreadId.make("thread-lead");
 const CHILD_THREAD = ThreadId.make("thread-child");
@@ -18,56 +28,71 @@ const CHILD_THREAD = ThreadId.make("thread-child");
 type Call =
   | { readonly _tag: "sweep" }
   | { readonly _tag: "thread"; readonly threadId: ThreadId }
-  | { readonly _tag: "observe"; readonly thread: FactoryObservedThread };
+  | { readonly _tag: "observe"; readonly thread: FactoryObservedThread }
+  | { readonly _tag: "merged"; readonly merged: FactoryMergedPullRequest };
 
 /** The reactor reads only an event's type, thread and new thread's lineage and model. */
 const domainEvent = (type: OrchestrationV2DomainEvent["type"], threadId: ThreadId) =>
   ({ type, threadId }) as OrchestrationV2DomainEvent;
 
 /**
- * A started reactor over a recording service and a fake domain event stream. `emit` returns once
- * the reactor has queued the event's work and that work has drained; `minuteSweep` returns once
- * the next periodic sweep ran.
+ * A fake stream for the reactor to pull from. `push` returns once the reactor pulled the value and
+ * queued its work, which it does before pulling the next one.
+ */
+const handshakeStream = <A>() =>
+  Effect.gen(function* () {
+    const inbox = yield* Queue.unbounded<{
+      readonly value: A;
+      readonly consumed: Deferred.Deferred<void>;
+    }>();
+    let previous: Deferred.Deferred<void> | undefined;
+    const stream = Stream.fromEffectRepeat(
+      Effect.gen(function* () {
+        if (previous) yield* Deferred.succeed(previous, undefined);
+        const next = yield* Queue.take(inbox);
+        previous = next.consumed;
+        return next.value;
+      }),
+    );
+    const push = (value: A) =>
+      Effect.gen(function* () {
+        const consumed = yield* Deferred.make<void>();
+        yield* Queue.offer(inbox, { value, consumed });
+        yield* Deferred.await(consumed);
+      });
+    return { stream, push };
+  });
+
+/**
+ * A started reactor over a recording service and fake domain event and merge streams. `emit` and
+ * `merge` return once the reactor has queued the work and that work has drained; `minuteSweep`
+ * returns once the next periodic sweep ran.
  */
 const startReactor = Effect.gen(function* () {
   const calls = yield* Ref.make<ReadonlyArray<Call>>([]);
   const sweeps = yield* Queue.unbounded<void>();
-  const inbox = yield* Queue.unbounded<{
-    readonly event: OrchestrationV2DomainEvent;
-    readonly consumed: Deferred.Deferred<void>;
-  }>();
-  let previous: Deferred.Deferred<void> | undefined;
-  // The reactor pulls the next event only after it queued work for the previous one.
-  const streamDomainEvents = Stream.fromEffectRepeat(
-    Effect.gen(function* () {
-      if (previous) yield* Deferred.succeed(previous, undefined);
-      const next = yield* Queue.take(inbox);
-      previous = next.consumed;
-      return next.event;
-    }),
-  );
+  const events = yield* handshakeStream<OrchestrationV2DomainEvent>();
+  const merges = yield* handshakeStream<PullRequestService.PullRequestMergeEvent>();
   const record = (call: Call) => Ref.update(calls, (recorded) => [...recorded, call]);
   const reactor = yield* FactoryReactor.make.pipe(
     Effect.provide(
       Layer.mergeAll(
         Layer.mock(FactoryService)({
           sweep: record({ _tag: "sweep" }).pipe(Effect.ensuring(Queue.offer(sweeps, undefined))),
-          sweepDigests: Effect.void,
           reconcileThread: (threadId) => record({ _tag: "thread", threadId }),
+          reconcileMerge: (merged) => record({ _tag: "merged", merged }),
           observeThread: (thread) => record({ _tag: "observe", thread }),
         }),
-        Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents }),
+        Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: events.stream }),
+        Layer.mock(PullRequestService.PullRequestService)({
+          subscribeMerges: Effect.succeed(merges.stream),
+        }),
       ),
     ),
   );
   const sweepReceipt = Queue.take(sweeps).pipe(Effect.andThen(reactor.drain));
   const emitEvent = (event: OrchestrationV2DomainEvent) =>
-    Effect.gen(function* () {
-      const consumed = yield* Deferred.make<void>();
-      yield* Queue.offer(inbox, { event, consumed });
-      yield* Deferred.await(consumed);
-      yield* reactor.drain;
-    });
+    events.push(event).pipe(Effect.andThen(reactor.drain));
   yield* reactor.start();
   yield* sweepReceipt;
   return {
@@ -75,6 +100,8 @@ const startReactor = Effect.gen(function* () {
     emit: (type: OrchestrationV2DomainEvent["type"], threadId: ThreadId) =>
       emitEvent(domainEvent(type, threadId)),
     emitEvent,
+    merge: (event: PullRequestService.PullRequestMergeEvent) =>
+      merges.push(event).pipe(Effect.andThen(reactor.drain)),
     minuteSweep: TestClock.adjust("1 minute").pipe(Effect.andThen(sweepReceipt)),
   };
 });
@@ -159,6 +186,22 @@ describe("FactoryReactor", () => {
           _tag: "observe",
           thread: { threadId: CHILD_THREAD, parentThreadId: LEAD_THREAD, modelSelection },
         },
+      ]);
+    }),
+  );
+
+  it.effect("reconciles a pull request the user merges, without waiting for its sync", () =>
+    Effect.gen(function* () {
+      const reactor = yield* startReactor;
+      yield* reactor.merge({
+        projectId: ProjectId.make("project-1"),
+        repository: "acme/atlas",
+        number: 42,
+        mergedAt: "2026-10-24T09:00:00.000Z",
+      });
+      assert.deepStrictEqual(yield* reactor.calls, [
+        { _tag: "sweep" },
+        { _tag: "merged", merged: { repository: "acme/atlas", number: 42 } },
       ]);
     }),
   );

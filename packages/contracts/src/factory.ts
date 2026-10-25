@@ -54,10 +54,11 @@ export const FACTORY_WS_METHODS = {
   factoryManagersRetire: "factory.managers.retire",
   factoryManagersApproveOnboarding: "factory.managers.approveOnboarding",
   factoryManagersStartPickup: "factory.managers.startPickup",
+  factoryManagersUpdateSettings: "factory.managers.updateSettings",
   factoryAssignmentsList: "factory.assignments.list",
   factoryAssignmentsSubscribe: "factory.assignments.subscribe",
   factoryAssignmentsCancel: "factory.assignments.cancel",
-  factoryAssignmentsRefreshDigest: "factory.assignments.refreshDigest",
+  factoryAssignmentsAnswerProtectedPaths: "factory.assignments.answerProtectedPaths",
   factoryThreadsTakeOver: "factory.threads.takeOver",
   factoryThreadsHandBack: "factory.threads.handBack",
   factoryLogList: "factory.log.list",
@@ -208,16 +209,16 @@ export const FactoryGitIdentity = Schema.Union([
 export type FactoryGitIdentity = typeof FactoryGitIdentity.Type;
 
 const PickupGuidance = TrimmedString.check(Schema.isMaxLength(4000));
-const ConcurrencyCap = PositiveInt.check(Schema.isLessThanOrEqualTo(20));
+/** The most assignments one cap may allow, for the environment and for a manager. */
+export const FACTORY_CONCURRENCY_CAP_MAX = 20;
+const ConcurrencyCap = PositiveInt.check(Schema.isLessThanOrEqualTo(FACTORY_CONCURRENCY_CAP_MAX));
 const RecoveryAllowance = NonNegativeInt.check(Schema.isLessThanOrEqualTo(10));
-const DigestIntervalMinutes = PositiveInt.check(Schema.isLessThanOrEqualTo(24 * 60));
 const TeamPresets = Schema.Array(FactoryTeamPreset);
 
 export const FactoryConfig = Schema.Struct({
   concurrencyCap: ConcurrencyCap.pipe(Schema.withDecodingDefault(Effect.succeed(2))),
   /** Diagnosis-and-replan cycles per assignment. */
   recoveryAllowance: RecoveryAllowance.pipe(Schema.withDecodingDefault(Effect.succeed(1))),
-  digestIntervalMinutes: DigestIntervalMinutes.pipe(Schema.withDecodingDefault(Effect.succeed(10))),
   /** No manager starts while this is empty. */
   modelPool: ModelList,
   roleModels: FactoryRoleModels.pipe(
@@ -248,7 +249,6 @@ export const DEFAULT_FACTORY_CONFIG: FactoryConfig = Schema.decodeSync(FactoryCo
 export const FactoryConfigOverride = Schema.Struct({
   concurrencyCap: Schema.optionalKey(ConcurrencyCap),
   recoveryAllowance: Schema.optionalKey(RecoveryAllowance),
-  digestIntervalMinutes: Schema.optionalKey(DigestIntervalMinutes),
   modelPool: Schema.optionalKey(Schema.Array(ModelSelection)),
   roleModels: Schema.optionalKey(FactoryRoleModels),
   /** Added to the environment's presets; one with the same name replaces it. */
@@ -326,7 +326,13 @@ export const FactoryProjectRule = Schema.Struct({
 });
 export type FactoryProjectRule = typeof FactoryProjectRule.Type;
 
-export const FactoryPickupColumn = Schema.Struct({ boardId: Id, columnId: Id });
+export const FactoryPickupColumn = Schema.Struct({
+  boardId: Id,
+  columnId: Id,
+  /** The column's and its board's titles when the server last saved the pickup. */
+  title: Schema.optional(Schema.String),
+  boardTitle: Schema.optional(Schema.String),
+});
 export type FactoryPickupColumn = typeof FactoryPickupColumn.Type;
 
 const PickupLabels = Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(200))).check(
@@ -485,7 +491,11 @@ export const FactoryManagersSubscribeInput = Schema.Struct({});
 export type FactoryManagersSubscribeInput = typeof FactoryManagersSubscribeInput.Type;
 
 /** The environment's current managers, sent whole: there is at most one per project. */
-export const FactoryManagersEvent = Schema.Struct({ managers: Schema.Array(FactoryManager) });
+export const FactoryManagersEvent = Schema.Struct({
+  managers: Schema.Array(FactoryManager),
+  /** The environment's cap; a manager runs to the lower of it and its own. */
+  environmentConcurrencyCap: Schema.optional(ConcurrencyCap),
+});
 export type FactoryManagersEvent = typeof FactoryManagersEvent.Type;
 
 /** `requestId` keys the creation, so a repeated request returns the same manager. */
@@ -537,6 +547,19 @@ export type FactoryManagersApproveOnboardingInput =
 /** Starts pickup for a `ready` manager, which then becomes `active`. */
 export const FactoryManagersStartPickupInput = Schema.Struct({ requestId: Id, managerId: Id });
 export type FactoryManagersStartPickupInput = typeof FactoryManagersStartPickupInput.Type;
+
+/**
+ * Replaces an approved manager's settings. Rules keep the manager's questions; only answers
+ * change. The base branch is kept as stored. Without `modelSelection` the model stays.
+ */
+export const FactoryManagersUpdateSettingsInput = Schema.Struct({
+  requestId: Id,
+  managerId: Id,
+  result: FactoryOnboardingResult,
+  /** The manager's `updatedAt` the settings were read at; a later change refuses the save. */
+  expectedUpdatedAt: Schema.String,
+});
+export type FactoryManagersUpdateSettingsInput = typeof FactoryManagersUpdateSettingsInput.Type;
 
 export const FactoryAssignmentSource = Schema.Literals([
   "ticket",
@@ -606,20 +629,44 @@ export type FactoryChecklistStep = typeof FactoryChecklistStep.Type;
 
 const FactoryChecklist = Schema.Array(FactoryChecklistStep).check(Schema.isMaxLength(20));
 
-/** A summary of the lead's recent activity, and the activity it covers. */
-export const FactoryAssignmentDigest = Schema.Struct({
-  text: Schema.String,
-  generatedAt: Schema.String,
-  activityAt: Schema.String,
-});
-export type FactoryAssignmentDigest = typeof FactoryAssignmentDigest.Type;
-
 /** An open pull request that changes the manager's protected control paths. */
 export const FactoryControlViolation = Schema.Struct({
   pullRequest: ThreadPullRequestKey,
   paths: Schema.Array(Schema.String),
 });
 export type FactoryControlViolation = typeof FactoryControlViolation.Type;
+
+/** The most paths one ask names; the server splits a larger pull request across asks. */
+export const FACTORY_ASK_PATH_LIMIT = 50;
+
+const ProtectedPathsInput = Schema.Array(
+  TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+).check(Schema.isMinLength(1), Schema.isMaxLength(FACTORY_ASK_PATH_LIMIT));
+
+// A pull request's file paths are stored as the host reported them, so a stored ask neither
+// trims nor bounds them: either would stop an allowed path matching, or fail every read.
+const StoredProtectedPaths = Schema.Array(Schema.NonEmptyString).check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(FACTORY_ASK_PATH_LIMIT),
+);
+
+/**
+ * Protected files a team asks to edit for one assignment, named exactly. Only the user answers,
+ * and an answer covers every path in the ask. Declining an allowed ask revokes it; a declined ask
+ * may still be allowed later.
+ */
+export const FactoryProtectedPathAsk = Schema.Struct({
+  id: Id,
+  paths: StoredProtectedPaths,
+  reason: Schema.String.check(Schema.isMaxLength(2000)),
+  source: Schema.Literals(["commission", "pull-request"]),
+  /** The pull request that flagged the paths, for a `pull-request` ask. */
+  pullRequest: Schema.NullOr(ThreadPullRequestKey),
+  state: Schema.Literals(["open", "allowed", "declined"]),
+  createdAt: Schema.String,
+  answeredAt: Schema.NullOr(Schema.String),
+});
+export type FactoryProtectedPathAsk = typeof FactoryProtectedPathAsk.Type;
 
 /** The lead's claim that the completion condition is met. */
 export const FactoryAssignmentClaim = Schema.Struct({
@@ -680,9 +727,15 @@ export const FactoryAssignment = Schema.Struct({
   teamVerdict: Schema.NullOr(FactoryTeamVerdict),
   /** The lead's plan as it last reported it. */
   checklist: FactoryChecklist,
-  digest: Schema.NullOr(FactoryAssignmentDigest),
-  /** While any remain, the assignment waits on the user and cannot be offered as ready. */
+  /**
+   * Protected paths open pull requests change that the user has not allowed for this assignment.
+   * While any remain, the assignment waits on the user and cannot be offered as ready.
+   */
   controlViolations: Schema.Array(FactoryControlViolation),
+  /** Asks to edit protected files for this assignment, answered or not. */
+  protectedPathAsks: Schema.Array(FactoryProtectedPathAsk).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+  ),
   /** When the lead finished the team retro, and when the manager finished its own. */
   retro: Schema.Struct({
     teamDoneAt: Schema.NullOr(Schema.String),
@@ -716,6 +769,11 @@ export const FactoryLogKind = Schema.Literals([
   "ticket",
   /** Onboarding approved; the payload names the onboarding thread and the manager's new one. */
   "onboarded",
+  /**
+   * A lead was asked to rebase a pull request, or it stopped conflicting; the payload names the
+   * pull request and whether it is now asked about.
+   */
+  "conflict",
 ]);
 export type FactoryLogKind = typeof FactoryLogKind.Type;
 
@@ -813,6 +871,13 @@ export const FactoryCommissionInput = Schema.Struct({
   leadModel: Schema.optionalKey(ModelSelection),
   /** An open dependency this assignment delivers; the blocked assignment stays blocked until then. */
   dependencyId: Schema.optionalKey(Id),
+  /**
+   * Exact protected files the team will need to edit, and why. The user allows or declines them
+   * on the team's card; no agent can.
+   */
+  protectedPaths: Schema.optionalKey(
+    Schema.Struct({ paths: ProtectedPathsInput, reason: DecisionReason }),
+  ),
 });
 export type FactoryCommissionInput = typeof FactoryCommissionInput.Type;
 
@@ -856,9 +921,15 @@ export const FactoryAssignmentsCancelInput = Schema.Struct({
 });
 export type FactoryAssignmentsCancelInput = typeof FactoryAssignmentsCancelInput.Type;
 
-/** Rewrites the assignment's digest when its team has new activity; otherwise returns it as is. */
-export const FactoryAssignmentsRefreshDigestInput = Schema.Struct({ assignmentId: Id });
-export type FactoryAssignmentsRefreshDigestInput = typeof FactoryAssignmentsRefreshDigestInput.Type;
+/** The user's answer to one protected-path ask. Declining an allowed ask revokes it. */
+export const FactoryAssignmentsAnswerProtectedPathsInput = Schema.Struct({
+  requestId: Id,
+  assignmentId: Id,
+  askId: Id,
+  answer: Schema.Literals(["allow", "decline"]),
+});
+export type FactoryAssignmentsAnswerProtectedPathsInput =
+  typeof FactoryAssignmentsAnswerProtectedPathsInput.Type;
 
 /** The user takes over a factory thread; the factory stops acting on it until handed back. */
 export const FactoryThreadsTakeOverInput = Schema.Struct({ requestId: Id, threadId: ThreadId });
@@ -944,14 +1015,21 @@ export const FactoryWorkspaceAssignment = Schema.Struct({
   team: Schema.String,
   leadThreadId: Schema.NullOr(ThreadId),
   checklist: Schema.Array(FactoryChecklistStep),
-  digest: Schema.NullOr(FactoryAssignmentDigest),
   waitingReason: Schema.NullOr(Schema.String),
+  /** When the lead claimed the work complete, if it has. */
+  claimedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Protected paths open pull requests change that the user has not allowed. */
+  controlViolations: Schema.optional(Schema.Array(FactoryControlViolation)),
+  /** Asks to edit protected files for this assignment; the team's card answers them. */
+  protectedPathAsks: Schema.optional(Schema.Array(FactoryProtectedPathAsk)),
+  /** Leads the assignment had before `leadThreadId`; their pull requests still gate the claim. */
+  previousLeadThreadIds: Schema.optional(Schema.Array(ThreadId)),
 });
 export type FactoryWorkspaceAssignment = typeof FactoryWorkspaceAssignment.Type;
 
 /**
  * What the workspace shows of the factory, sent whole: current managers, live members, and
- * assignments that are live or ended in the last 24 hours.
+ * assignments that are live or ended in the last 24 hours, oldest first.
  */
 export const FactoryWorkspaceFeed = Schema.Struct({
   managers: Schema.Array(FactoryWorkspaceManager),
@@ -1015,46 +1093,63 @@ export type FactoryDraftScope = typeof FactoryDraftScope.Type;
 export const FactoryDraftState = Schema.Literals(["pending", "approved", "dismissed"]);
 export type FactoryDraftState = typeof FactoryDraftState.Type;
 
-/** A factory change a draft proposes, with the value it replaces. Stored, not yet applied. */
-export const FactoryProposedChange = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("preset"),
-    before: Schema.NullOr(FactoryTeamPreset),
-    after: FactoryTeamPreset,
-  }),
+const PresetChange = Schema.Struct({
+  kind: Schema.Literal("preset"),
+  before: Schema.NullOr(FactoryTeamPreset),
+  after: FactoryTeamPreset,
+});
+
+/** `pickupGuidance` moved onto the manager; a draft that stored it can no longer be applied. */
+const PROPOSABLE_SETTINGS = ["pickupGuidance", "concurrencyCap", "recoveryAllowance"] as const;
+
+const settingChange = <const Keys extends ReadonlyArray<string>>(keys: Keys) =>
   Schema.Struct({
     kind: Schema.Literal("setting"),
-    /** `pickupGuidance` moved onto the manager; a draft that stored it can no longer be applied. */
-    key: Schema.Literals([
-      "pickupGuidance",
-      "concurrencyCap",
-      "recoveryAllowance",
-      "digestIntervalMinutes",
-    ]),
+    key: Schema.Literals(keys),
     before: Schema.Unknown,
     after: Schema.Unknown,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("role-skill"),
-    role: FactoryRole,
-    before: Schema.NullOr(Schema.String),
-    after: Schema.String,
-  }),
-  /** A team definition in the factory config, created when `before` is null. */
-  Schema.Struct({
-    kind: Schema.Literal("team"),
-    before: Schema.NullOr(FactoryTeamDefinition),
-    after: FactoryTeamDefinition,
-  }),
-  /** A worker, lead or manager definition; `after` decodes as that kind's definition. */
-  Schema.Struct({
-    kind: Schema.Literal("definition"),
-    target: Schema.Literals(["worker", "lead", "manager"]),
-    before: Schema.NullOr(Schema.Unknown),
-    after: Schema.Unknown,
-  }),
+  });
+
+const RoleSkillChange = Schema.Struct({
+  kind: Schema.Literal("role-skill"),
+  role: FactoryRole,
+  before: Schema.NullOr(Schema.String),
+  after: Schema.String,
+});
+
+/** A team definition in the factory config, created when `before` is null. */
+const TeamChange = Schema.Struct({
+  kind: Schema.Literal("team"),
+  before: Schema.NullOr(FactoryTeamDefinition),
+  after: FactoryTeamDefinition,
+});
+
+/** A worker, lead or manager definition; `after` decodes as that kind's definition. */
+const DefinitionChange = Schema.Struct({
+  kind: Schema.Literal("definition"),
+  target: Schema.Literals(["worker", "lead", "manager"]),
+  before: Schema.NullOr(Schema.Unknown),
+  after: Schema.Unknown,
+});
+
+/** A factory change a draft proposes, with the value it replaces. Stored, not yet applied. */
+export const FactoryProposedChange = Schema.Union([
+  PresetChange,
+  // Drafts stored before team digests were removed may name the digest interval; they still decode.
+  settingChange([...PROPOSABLE_SETTINGS, "digestIntervalMinutes"]),
+  RoleSkillChange,
+  TeamChange,
+  DefinitionChange,
 ]);
 export type FactoryProposedChange = typeof FactoryProposedChange.Type;
+
+const ProposableChange = Schema.Union([
+  PresetChange,
+  settingChange(PROPOSABLE_SETTINGS),
+  RoleSkillChange,
+  TeamChange,
+  DefinitionChange,
+]);
 
 const DraftTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(240));
 const DraftBody = TrimmedNonEmptyString.check(Schema.isMaxLength(20_000));
@@ -1090,7 +1185,7 @@ export const FactoryDraftTicketInput = Schema.Struct({
   acceptanceCriteria: AcceptanceCriteria,
   /** Findings of this manager's teams that the draft takes up. */
   findingIds: Schema.optionalKey(Schema.Array(Id).check(Schema.isMaxLength(100))),
-  proposedChange: Schema.optionalKey(FactoryProposedChange),
+  proposedChange: Schema.optionalKey(ProposableChange),
 });
 export type FactoryDraftTicketInput = typeof FactoryDraftTicketInput.Type;
 
@@ -1299,6 +1394,14 @@ export const WsFactoryManagersStartPickupRpc = Rpc.make(
     error: FactoryRpcError,
   },
 );
+export const WsFactoryManagersUpdateSettingsRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryManagersUpdateSettings,
+  {
+    payload: FactoryManagersUpdateSettingsInput,
+    success: FactoryManager,
+    error: FactoryRpcError,
+  },
+);
 export const WsFactoryAssignmentsListRpc = Rpc.make(FACTORY_WS_METHODS.factoryAssignmentsList, {
   payload: FactoryAssignmentsListInput,
   success: Schema.Array(FactoryAssignment),
@@ -1318,10 +1421,10 @@ export const WsFactoryAssignmentsCancelRpc = Rpc.make(FACTORY_WS_METHODS.factory
   success: FactoryAssignment,
   error: FactoryRpcError,
 });
-export const WsFactoryAssignmentsRefreshDigestRpc = Rpc.make(
-  FACTORY_WS_METHODS.factoryAssignmentsRefreshDigest,
+export const WsFactoryAssignmentsAnswerProtectedPathsRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryAssignmentsAnswerProtectedPaths,
   {
-    payload: FactoryAssignmentsRefreshDigestInput,
+    payload: FactoryAssignmentsAnswerProtectedPathsInput,
     success: FactoryAssignment,
     error: FactoryRpcError,
   },

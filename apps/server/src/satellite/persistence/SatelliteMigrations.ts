@@ -6,6 +6,7 @@ import type * as SqlError from "effect/sql/SqlError";
 import { FactoryDefinitionsV1 } from "../../factory/migrations/FactoryDefinitionsV1.ts";
 import { FactoryManagersPerProjectV1 } from "../../factory/migrations/FactoryManagersPerProjectV1.ts";
 import { FactoryOnboardingResultV1 } from "../../factory/migrations/FactoryOnboardingResultV1.ts";
+import { FactoryProtectedPathAsksV1 } from "../../factory/migrations/FactoryProtectedPathAsksV1.ts";
 import { FactoryV1 } from "../../factory/migrations/FactoryV1.ts";
 import { IssueBoardsV2 } from "../../issues/migrations/IssueBoardsV2.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
@@ -34,6 +35,7 @@ export const satelliteMigrationEntries: ReadonlyArray<SatelliteMigration> = [
   [103, "FactoryOnboardingResultV1", FactoryOnboardingResultV1],
   [104, "FactoryDefinitionsV1", FactoryDefinitionsV1],
   [105, "FactoryManagersPerProjectV1", FactoryManagersPerProjectV1],
+  [106, "FactoryProtectedPathAsksV1", FactoryProtectedPathAsksV1],
 ];
 
 const run = Migrator.make({});

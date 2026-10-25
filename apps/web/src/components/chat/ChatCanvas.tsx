@@ -27,6 +27,16 @@ export function ChatCanvas({
         : next,
     );
   };
+  const [leftCard, setLeftCard] = useState<PreviewMiniPlayerObstacles["detailsCard"]>(null);
+  const reportLeftCard = (next: PreviewMiniPlayerObstacles["detailsCard"]) => {
+    setLeftCard((current) =>
+      current?.left === next?.left &&
+      current?.right === next?.right &&
+      current?.bottom === next?.bottom
+        ? current
+        : next,
+    );
+  };
   const [measurements, setMeasurements] = useState({
     width: 0,
     height: 0,
@@ -110,6 +120,7 @@ export function ChatCanvas({
       container,
       preview,
       detailsCard,
+      leftCard,
       findBar,
     }),
     previewKey: preview?.key ?? null,
@@ -117,6 +128,7 @@ export function ChatCanvas({
     clearPreview,
     registerTimeline,
     reportDetailsCard,
+    reportLeftCard,
     detailsCardTopInset: findBar?.bottom ?? 0,
   };
   const { layout } = context;

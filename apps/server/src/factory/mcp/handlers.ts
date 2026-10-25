@@ -193,21 +193,28 @@ const make = Effect.gen(function* () {
     ),
     factory_role_brief: McpToolAccess.reads(({ role }) =>
       Effect.gen(function* () {
-        const { projectId, managerId } = yield* callingManager(NOT_A_MANAGER_OR_LEAD).pipe(
-          Effect.map(({ manager }) => ({ projectId: manager.projectId, managerId: manager.id })),
+        const { projectId, managerId, assignmentId } = yield* callingManager(
+          NOT_A_MANAGER_OR_LEAD,
+        ).pipe(
+          Effect.map(({ manager }) => ({
+            projectId: manager.projectId,
+            managerId: manager.id,
+            assignmentId: undefined,
+          })),
           // The manager's refusal is kept, since it says when the manager's onboarding finished.
           Effect.catch((notManager) =>
             callingLead(NOT_A_MANAGER_OR_LEAD).pipe(
               Effect.map(({ assignment }) => ({
                 projectId: assignment.projectId,
                 managerId: assignment.managerId,
+                assignmentId: assignment.id,
               })),
               Effect.catch(() => Effect.fail(notManager)),
             ),
           ),
         );
         const brief = yield* factory
-          .roleBrief(projectId, role, managerId)
+          .roleBrief(projectId, role, managerId, assignmentId)
           .pipe(Effect.mapError(toolFailure));
         return {
           ...brief,

@@ -100,6 +100,31 @@ export function useFactoryManagers(
   return useAtomValue(environmentId === null ? UNSUBSCRIBED : managersAtom(environmentId));
 }
 
+const environmentCapAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make(
+    (get): number | undefined =>
+      Option.getOrUndefined(
+        AsyncResult.value(get(factoryEnvironment.managers({ environmentId, input: {} }))),
+      )?.environmentConcurrencyCap,
+  ).pipe(Atom.withLabel(`web-factory-environment-cap:${environmentId}`)),
+);
+
+/**
+ * A manager's own cap and the environment's, live from the managers feed; null until both are
+ * known. Work starts only while both have room.
+ */
+export function useFactoryManagerCaps(
+  environmentId: EnvironmentId,
+  managerId: string,
+): { readonly manager: number; readonly environment: number } | null {
+  const environment = useAtomValue(environmentCapAtom(environmentId));
+  const manager = useFactoryManagers(environmentId)?.find((entry) => entry.id === managerId)
+    ?.onboardingResult?.concurrencyCap;
+  // Before approval the manager has no cap of its own and runs to the environment's.
+  if (environment === undefined) return null;
+  return { manager: manager ?? environment, environment };
+}
+
 /** Live assignments plus those ended in the last day; `undefined` until the first event. */
 export function useFactoryAssignments(
   environmentId: EnvironmentId | null,
@@ -107,7 +132,7 @@ export function useFactoryAssignments(
   return useAtomValue(environmentId === null ? UNSUBSCRIBED : assignmentsAtom(environmentId));
 }
 
-/** Thread membership, checklists and digests for the manager workspace. */
+/** Thread membership and checklists for the manager workspace. */
 export function useFactoryWorkspace(
   environmentId: EnvironmentId | null,
 ): FactoryWorkspaceFeed | undefined {

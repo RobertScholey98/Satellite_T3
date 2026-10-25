@@ -284,3 +284,47 @@ describe("workspace card beside chat", () => {
     }
   });
 });
+
+describe("card in the left gutter", () => {
+  const withCards = (width: number, player: ChatCanvasPreview | null = null) =>
+    resolveChatCanvasLayout({
+      container: { width, height: 900 },
+      maxChatWidth: 736,
+      composerHeight: 180,
+      detailsCard: { left: width - 292, right: width - 12, bottom: 888 },
+      leftCard: { left: 12, right: 292, bottom: 400 },
+      preview: player,
+    });
+  it("keeps chat centred while it clears both cards", () => {
+    expect(withCards(1600).chat).toEqual({ left: 432, width: 736, insetStart: 276, insetEnd: 276 });
+  });
+  it("narrows chat between the cards, a clearance from each", () => {
+    expect(withCards(1300).chat).toEqual({ left: 324, width: 652, insetStart: 276, insetEnd: 276 });
+  });
+  it("narrows chat beside a dragged preview without crossing the left card", () => {
+    const { chat, frame } = withCards(1600, {
+      ...preview,
+      position: { x: 1000, y: 200 },
+      lastInteraction: "drag",
+    });
+    expect(chat.left).toBe(324);
+    expect(chat.left + chat.width).toBeLessThanOrEqual(frame!.x - 12);
+    expect(chat.width).toBeGreaterThanOrEqual(640);
+  });
+  it("places the card at the top left whatever the width, leaving the fit to the caller", () => {
+    const layout = {
+      container: { width: 1000, height: 900 },
+      lane: { padding: 48, minChatWidth: 640 },
+      frame: null,
+      topInset: 56,
+    };
+    expect(resolveThreadDetailsCardLayout({ ...layout, side: "left" })).toEqual({
+      x: 12,
+      right: 708,
+      width: 280,
+      y: 68,
+      height: 820,
+    });
+    expect(resolveThreadDetailsCardLayout(layout)).toBeNull();
+  });
+});

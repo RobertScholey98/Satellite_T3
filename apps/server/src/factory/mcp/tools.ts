@@ -173,7 +173,7 @@ export type CommissionResult = typeof CommissionResult.Type;
 
 const CommissionTool = Tool.make("factory_commission", {
   description:
-    "For an engineering manager. Start an assignment the user asked for in this thread. It skips the pickup guidance and the rule against starting `large` tickets, but still respects the concurrency cap. Pass the number of a ticket in any Ready column of a connected board, not only your pickup columns, to work on it; without one the lead gets its own worktree on a new branch. Pass `dependencyId` to deliver an open dependency another lead reported; that start ignores the cap, because the blocked assignment already holds a slot.",
+    "For an engineering manager. Start an assignment the user asked for in this thread. It skips the pickup guidance and the rule against starting `large` tickets, but still respects the concurrency cap. Pass the number of a ticket in any Ready column of a connected board, not only your pickup columns, to work on it; without one the lead gets its own worktree on a new branch. Pass `dependencyId` to deliver an open dependency another lead reported; that start ignores the cap, because the blocked assignment already holds a slot. Pass `protectedPaths` to name the exact protected files the team must edit, with the reason; patterns and unprotected paths are refused. The user allows or declines them on the team's card, and no agent can grant them.",
   parameters: FactoryCommissionInput,
   success: CommissionResult,
   failure: FactoryToolFailure,

@@ -23,7 +23,9 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/men
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useFactoryWorkspaceFeed } from "./factoryWorkspaceState";
+import { effectiveManagerCap } from "./factoryManagerSettings.logic";
 import {
+  useFactoryManagerCaps,
   useFactoryManagers,
   factoryEnvironment,
   factoryErrorMessage,
@@ -190,7 +192,6 @@ function FactoryManagerRow(props: {
   readonly assignments: ReadonlyArray<FactoryWorkspaceAssignment>;
 }) {
   const { environmentId, manager } = props;
-  const getConfig = useAtomCommand(factoryEnvironment.getConfig, { reportFailure: false });
   const listLog = useAtomCommand(factoryEnvironment.listLog, { reportFailure: false });
   const pauseCommand = useAtomCommand(factoryEnvironment.pauseManager, { reportFailure: false });
   const resumeCommand = useAtomCommand(factoryEnvironment.resumeManager, {
@@ -206,7 +207,7 @@ function FactoryManagerRow(props: {
   const canPause = useAtomValue(factoryEnvironment.pauseManager.permissionAtom(environmentId));
   const canResume = useAtomValue(factoryEnvironment.resumeManager.permissionAtom(environmentId));
   const canRetire = useAtomValue(factoryEnvironment.retireManager.permissionAtom(environmentId));
-  const [cap, setCap] = useState<{ readonly key: string; readonly value: number } | null>(null);
+  const caps = useFactoryManagerCaps(environmentId, manager.id);
   const [pickup, setPickup] = useState<{ readonly key: string; readonly text: string } | null>(
     null,
   );
@@ -214,20 +215,8 @@ function FactoryManagerRow(props: {
 
   const running = props.assignments.filter(takesAssignmentSlot).length;
   const active = props.assignments.filter(isLiveAssignment).length;
-  const capKey = `${environmentId}\n${manager.projectId}`;
   // Pickups start assignments and move the manager's state; this key reloads the log on either.
   const logKey = `${environmentId}\n${manager.id}\n${manager.state}\n${props.assignments.length}`;
-
-  useEffect(() => {
-    let current = true;
-    void getConfig({ environmentId, input: { projectId: manager.projectId } }).then((result) => {
-      if (current && result._tag === "Success")
-        setCap({ key: capKey, value: result.value.effective.concurrencyCap });
-    });
-    return () => {
-      current = false;
-    };
-  }, [environmentId, manager.projectId, capKey, getConfig]);
 
   useEffect(() => {
     let current = true;
@@ -288,7 +277,8 @@ function FactoryManagerRow(props: {
   };
 
   const paused = manager.state === "manager-paused" || manager.state === "project-paused";
-  const capText = cap?.key === capKey ? ` of ${cap.value}` : "";
+  const capText =
+    caps === null ? "" : ` of ${effectiveManagerCap(caps.manager, caps.environment).cap}`;
   const retireBlocked = active > 0;
   const retireItem = (
     <MenuItem

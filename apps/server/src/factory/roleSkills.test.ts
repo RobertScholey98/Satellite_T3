@@ -28,6 +28,7 @@ const EMPTY: RoleSkillFill = {
   modelPool: [],
   allowedModels: [],
   protectedPaths: [],
+  allowedProtectedPaths: [],
   completionCondition: null,
 };
 
@@ -54,6 +55,7 @@ const HEADINGS = [
 describe("renderRoleSkill", () => {
   it("fills every placeholder, models as instance/model list items", () => {
     const text = renderRoleSkill(TEMPLATE, {
+      ...EMPTY,
       modelPool: [OPUS, GPT],
       allowedModels: [GPT],
       protectedPaths: [".github/workflows/**", "AGENTS.md"],
@@ -260,6 +262,26 @@ describe("leadBrief", () => {
     );
   });
 
+  it("lists the protected files the user allowed for the assignment", () => {
+    const brief = leadBrief({
+      protocol: PROTOCOL,
+      instructions: null,
+      fill: { ...BRIEF_FILL, allowedProtectedPaths: [".github/workflows/ci.yml"] },
+      result: null,
+      assignment: { title: "Fix CI", brief: "Fix the CI job.", completionCondition: "CI passes." },
+      team: null,
+    });
+    assert.strictEqual(
+      brief,
+      [
+        "# Protocol\n\nNever touch:\n\n- .github/**",
+        "The user allowed you to edit these protected files for this assignment only:",
+        "- .github/workflows/ci.yml",
+        "# Assignment\n\n## Fix CI\n\nFix the CI job.\n\n## Completion condition\n\nCI passes.",
+      ].join("\n\n"),
+    );
+  });
+
   it("says when the team may edit protected paths", () => {
     assert.include(
       definitionTeamSection({ ...TEAM, mayEditProtectedPaths: true }),
@@ -301,6 +323,28 @@ describe("workerBrief", () => {
         ].join("\n"),
         "# Task\n\nReview the List.tsx change.",
       ].join("\n\n"),
+    );
+  });
+
+  it("lists the protected files the user allowed for the assignment", () => {
+    const brief = workerBrief(
+      { description: "Implement it. Never touch:\n\n{{protectedPaths}}" },
+      {
+        ...BRIEF_FILL,
+        allowedProtectedPaths: [".github/workflows/ci.yml", ".github/actions/setup/action.yml"],
+        result: null,
+        task: "Fix the CI job.",
+      },
+    );
+    assert.isTrue(
+      brief.startsWith(
+        [
+          "Implement it. Never touch:\n\n- .github/**",
+          "The user allowed you to edit these protected files for this assignment only:",
+          "- .github/workflows/ci.yml\n- .github/actions/setup/action.yml",
+          "# Working on the team",
+        ].join("\n\n"),
+      ),
     );
   });
 

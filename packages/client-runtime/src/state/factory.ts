@@ -35,15 +35,16 @@ export function createFactoryEnvironmentAtoms<R, E>(
       WS_METHODS.factoryManagersApproveOnboarding,
     ),
     startPickup: command("managers:start-pickup", WS_METHODS.factoryManagersStartPickup),
+    updateSettings: command("managers:update-settings", WS_METHODS.factoryManagersUpdateSettings),
     listAssignments: command("assignments:list", WS_METHODS.factoryAssignmentsList),
     assignments: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:factory:assignments",
       tag: WS_METHODS.factoryAssignmentsSubscribe,
     }),
     cancelAssignment: command("assignments:cancel", WS_METHODS.factoryAssignmentsCancel),
-    refreshDigest: command(
-      "assignments:refresh-digest",
-      WS_METHODS.factoryAssignmentsRefreshDigest,
+    answerProtectedPaths: command(
+      "assignments:answer-protected-paths",
+      WS_METHODS.factoryAssignmentsAnswerProtectedPaths,
     ),
     takeOver: command("threads:take-over", WS_METHODS.factoryThreadsTakeOver),
     handBack: command("threads:hand-back", WS_METHODS.factoryThreadsHandBack),

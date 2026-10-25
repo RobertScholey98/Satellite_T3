@@ -17,6 +17,8 @@ export interface RoleSkillFill {
   readonly modelPool: ReadonlyArray<NamedModel>;
   readonly allowedModels: ReadonlyArray<NamedModel>;
   readonly protectedPaths: ReadonlyArray<string>;
+  /** Protected files the user allowed for the one assignment this brief serves. */
+  readonly allowedProtectedPaths: ReadonlyArray<string>;
   readonly completionCondition: string | null;
 }
 
@@ -30,6 +32,16 @@ const list = (items: ReadonlyArray<string>) =>
 const modelLabel = (model: NamedModel) =>
   "driver" in model ? `${model.driver}/${model.model}` : `${model.instanceId}/${model.model}`;
 
+// Part of the protected-paths fill, so role text that only names {{protectedPaths}} carries it.
+const protectedPathsFill = (fill: RoleSkillFill) =>
+  fill.allowedProtectedPaths.length === 0
+    ? list(fill.protectedPaths)
+    : `${list(fill.protectedPaths)}
+
+The user allowed you to edit these protected files for this assignment only:
+
+${list(fill.allowedProtectedPaths)}`;
+
 const models = (selections: ReadonlyArray<NamedModel>) => list(selections.map(modelLabel));
 
 /** Fills every placeholder a role skill may use; unknown `{{...}}` text is left alone. */
@@ -37,7 +49,7 @@ export const renderRoleSkill = (text: string, fill: RoleSkillFill): string => {
   const values: Record<string, string> = {
     modelPool: models(fill.modelPool),
     allowedModels: models(fill.allowedModels),
-    protectedPaths: list(fill.protectedPaths),
+    protectedPaths: protectedPathsFill(fill),
     completionCondition: fill.completionCondition?.trim() || "(no assignment yet)",
     // Text written before guidance moved onto the onboarding result still names it.
     pickupGuidance: "(see the Project section)",
