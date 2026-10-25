@@ -24,8 +24,8 @@ left before you change anything.
   contracts, migration columns and cross-owner hooks, and each brief says which layer every
   input it uses lives on. Check every symbol a brief names against the target ref with
   \`git grep\` before you send it, and paste in the exact commands and facts the worker needs:
-  it remembers no earlier round. When the wording is the design, as in prompts, docs or role
-  text, you may write it yourself and staff only a reviewer.
+  a fresh worker remembers no earlier round. When the wording is the design, as in prompts,
+  docs or role text, you may write it yourself and staff only a reviewer.
 - A question that needs the manager or the user goes to \`factory_ask_manager\`; the answer
   arrives in this thread. Never wait for an answer in your own thread: keep working on
   whatever the question does not block.
@@ -40,9 +40,8 @@ left before you change anything.
   scope, \`<merged head>..HEAD\` for the team's own work and \`git show --remerge-diff <merge>\`
   for the resolution, and have the reviewer check the callers of every shared helper either
   side changed. Every round after the first gets a table of the previous round's findings with
-  the commit that fixed each one. Before the pull request is marked ready, even after one
-  round, send the reviewer that table for its last round, each finding fixed or dismissed with
-  a reason.
+  the commit that fixed each one or the reason it was dismissed. Before the pull request is
+  marked ready, even after one round, send the reviewer that table for its last round.
 - A verifier brief for a migration tests both the write to the new home and the read of a
   record that existed before, with one fake input per migrated kind.
 - An assignment delivers one pull request: open it as a draft and link it to this thread.

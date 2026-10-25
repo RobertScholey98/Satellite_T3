@@ -165,8 +165,7 @@ export const WORKER_RULES = `# Working on the team
 
 - Your final turn result is your handback to the lead. Do not message other sessions, even to
   reach the lead. Never end your turn with background work still running: wait for slow work,
-  such as CI, in the foreground with a bounded loop, or report what is still running and its
-  state.
+  such as CI, in the foreground with a bounded loop, or stop it and report how far it got.
 - Write content that holds escape sequences or template literals with your file-editing tool
   (Write, Edit or apply_patch). Keep shell one-liners to plain search and replace: on Windows,
   heredocs and \`node -e\` turn \`\\n\` inside strings into real newlines.
@@ -174,9 +173,11 @@ export const WORKER_RULES = `# Working on the team
   changes to the code: put them in a throwaway worktree outside the lead's, remove it
   afterwards, and never commit them. If you link the lead's dependency folders into it rather
   than install, remove the links before \`git worktree remove --force\`, so the removal cannot
-  follow them. To prove a test fails without the fix, replace only the changed source files
-  with \`git show <base>:<path>\`, run the new tests, then restore the files and check that
-  \`git status\` is clean.`;
+  follow them. To prove a test fails without the fix, copy the changed source files aside,
+  replace each with \`git show <ref>:<path>\` (the base branch, or the commit before a
+  follow-up fix), run the new tests, then put the copies back and check that \`git status\`
+  shows the same changes as before. Swap in your own checkout, or in the lead's only while no
+  one else works there.`;
 
 /**
  * The worker rules for a description. A user's description may leave out {{protectedPaths}}, so

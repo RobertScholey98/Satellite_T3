@@ -314,8 +314,7 @@ describe("workerBrief", () => {
           "",
           "- Your final turn result is your handback to the lead. Do not message other sessions, even to",
           "  reach the lead. Never end your turn with background work still running: wait for slow work,",
-          "  such as CI, in the foreground with a bounded loop, or report what is still running and its",
-          "  state.",
+          "  such as CI, in the foreground with a bounded loop, or stop it and report how far it got.",
           "- Write content that holds escape sequences or template literals with your file-editing tool",
           "  (Write, Edit or apply_patch). Keep shell one-liners to plain search and replace: on Windows,",
           "  heredocs and `node -e` turn `\\n` inside strings into real newlines.",
@@ -323,9 +322,11 @@ describe("workerBrief", () => {
           "  changes to the code: put them in a throwaway worktree outside the lead's, remove it",
           "  afterwards, and never commit them. If you link the lead's dependency folders into it rather",
           "  than install, remove the links before `git worktree remove --force`, so the removal cannot",
-          "  follow them. To prove a test fails without the fix, replace only the changed source files",
-          "  with `git show <base>:<path>`, run the new tests, then restore the files and check that",
-          "  `git status` is clean.",
+          "  follow them. To prove a test fails without the fix, copy the changed source files aside,",
+          "  replace each with `git show <ref>:<path>` (the base branch, or the commit before a",
+          "  follow-up fix), run the new tests, then put the copies back and check that `git status`",
+          "  shows the same changes as before. Swap in your own checkout, or in the lead's only while no",
+          "  one else works there.",
           "- Never edit the protected control paths:",
           "",
           "- .github/**",
@@ -349,7 +350,7 @@ describe("workerBrief", () => {
     assert.isTrue(
       brief.endsWith(
         [
-          "  `git status` is clean.\n- Never edit the protected control paths:",
+          "  one else works there.\n- Never edit the protected control paths:",
           "- .github/**",
           ALLOWED,
           "- .github/workflows/ci.yml",
@@ -459,7 +460,7 @@ describe("the lead protocol", () => {
     assert.include(lead, "escalate those to the manager in the same round.");
     assert.include(
       lead,
-      "a table of the previous round's findings with the commit that fixed each one.",
+      "a table of the previous round's findings with the commit that fixed each one or the reason it was dismissed.",
     );
     assert.include(
       lead,
@@ -489,7 +490,7 @@ describe("the lead protocol", () => {
   it("makes briefs self-contained and lets the lead write wording that is the design", () => {
     assert.include(
       lead,
-      "paste in the exact commands and facts the worker needs: it remembers no earlier round.",
+      "paste in the exact commands and facts the worker needs: a fresh worker remembers no earlier round.",
     );
     assert.include(
       lead,
@@ -512,7 +513,7 @@ describe("the lead protocol", () => {
     );
     assert.include(
       lead,
-      "Before the pull request is marked ready, even after one round, send the reviewer that table for its last round, each finding fixed or dismissed with a reason.",
+      "Before the pull request is marked ready, even after one round, send the reviewer that table for its last round.",
     );
   });
 
@@ -549,7 +550,7 @@ describe("the worker rules and starter descriptions", () => {
   it("tell every worker to finish background work and prove red by swapping changed files", () => {
     assert.include(
       rules,
-      "Never end your turn with background work still running: wait for slow work, such as CI, in the foreground with a bounded loop, or report what is still running and its state.",
+      "Never end your turn with background work still running: wait for slow work, such as CI, in the foreground with a bounded loop, or stop it and report how far it got.",
     );
     assert.include(
       rules,
@@ -557,7 +558,7 @@ describe("the worker rules and starter descriptions", () => {
     );
     assert.include(
       rules,
-      "To prove a test fails without the fix, replace only the changed source files with `git show <base>:<path>`, run the new tests, then restore the files and check that `git status` is clean.",
+      "To prove a test fails without the fix, copy the changed source files aside, replace each with `git show <ref>:<path>` (the base branch, or the commit before a follow-up fix), run the new tests, then put the copies back and check that `git status` shows the same changes as before. Swap in your own checkout, or in the lead's only while no one else works there.",
     );
   });
 
@@ -565,7 +566,7 @@ describe("the worker rules and starter descriptions", () => {
     const implementer = flat(DEFAULT_ROLE_SKILLS.implementer);
     assert.include(
       implementer,
-      "Prove each new test fails without the change by restoring the old source with `git show HEAD:<file>`, never by undoing edits with a script.",
+      "Before you commit, prove each new test fails without the change by swapping the changed source files to `git show HEAD:<file>` as the worker rules describe, never by undoing edits with a script.",
     );
     assert.include(
       implementer,
@@ -586,6 +587,10 @@ describe("the worker rules and starter descriptions", () => {
     assert.include(
       reviewer,
       "A change to a limit or capacity needs a test with every path that starts work running at once.",
+    );
+    assert.include(
+      reviewer,
+      "When the lead sends a table of your findings, check each fix and dismissal against the code and hand back only the ones you dispute.",
     );
   });
 

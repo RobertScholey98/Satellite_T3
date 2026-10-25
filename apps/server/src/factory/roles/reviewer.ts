@@ -34,6 +34,8 @@ Hand back findings ordered by severity:
 
 For each finding, give the file and line, what goes wrong, and a scenario that shows it. Tag a
 finding that needs a user decision rather than a fix. If you found nothing, say so plainly.
+When the lead sends a table of your findings, check each fix and dismissal against the code
+and hand back only the ones you dispute.
 
 Record a reusable or uncertain learning with \`factory_record_finding\` as well.
 
