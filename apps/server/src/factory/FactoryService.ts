@@ -3091,6 +3091,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       team: requested.team,
     });
     if (picked.kind === "refused") return yield* refusal("invalid", picked.message);
+    if (requested.protectedPaths !== undefined && picked.team.mayEditProtectedPaths)
+      return yield* refusal(
+        "invalid",
+        `${picked.team.name} may already edit protected paths, so it needs no ask; leave protectedPaths out.`,
+      );
     const lead = leadModelFor(picked.team, files, requested.leadModel);
     if ("refusal" in lead) return yield* refusal("invalid", lead.refusal);
     const modelSelection = lead.model;

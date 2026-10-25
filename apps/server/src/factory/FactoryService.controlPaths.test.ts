@@ -16,6 +16,8 @@ import {
   setupDone,
   SYNC_WORK,
   DUO_TEAM,
+  makeHarness,
+  TEAM_FACTORY,
   workspace,
 } from "./FactoryService.testkit.ts";
 
@@ -316,6 +318,37 @@ describe("FactoryService control paths", () => {
         assert.deepStrictEqual(unflagged.controlViolations, []);
         assert.deepStrictEqual(askPaths(unflagged), askPaths(allowed));
         assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
+      }),
+    ),
+  );
+
+  it.effect("refuses an ask for a team that may already edit protected paths", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeHarness({
+          config: TEAM_FACTORY,
+          definitions: {
+            teams: [
+              DUO_TEAM,
+              { ...DUO_TEAM, id: "workflow", name: "Workflow", mayEditProtectedPaths: true },
+            ],
+          },
+        });
+        const { manager } = yield* setupDone(factory, yield* activeManager(factory));
+        const failure = yield* factory.service
+          .commission(manager.threadId!, {
+            ...SYNC_WORK,
+            teamId: "workflow",
+            protectedPaths: { paths: ["AGENTS.md"], reason: "The task rewrites the instructions." },
+          })
+          .pipe(Effect.flip);
+        assert.deepStrictEqual(
+          [failure.reason, failure.message],
+          [
+            "invalid",
+            "Workflow may already edit protected paths, so it needs no ask; leave protectedPaths out.",
+          ],
+        );
       }),
     ),
   );
