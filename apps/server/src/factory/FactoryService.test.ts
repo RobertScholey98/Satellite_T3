@@ -1270,6 +1270,24 @@ describe("FactoryService role briefs", () => {
           ),
           defined.text,
         );
+
+        // A worker definition that never names {{protectedPaths}} still gets the list, once.
+        yield* configStore.writeWorker({
+          id: "implementer",
+          name: "Implementer",
+          models: { dynamic: true, models: [] },
+          description: "Implements the change.",
+        });
+        const own = yield* service.roleBrief(PROJECT_ID, "implementer", managerId);
+        assert.strictEqual(own.source, "definition");
+        assert.isTrue(own.text.startsWith("Implements the change.\n\n# Project\n\n"), own.text);
+        assert.isTrue(
+          own.text.endsWith(
+            `\n\n${WORKER_RULES}\n- Never edit the protected control paths:\n\n- AGENTS.md`,
+          ),
+          own.text,
+        );
+        assert.strictEqual(own.text.split("- AGENTS.md").length - 1, 1);
       }),
     ),
   );

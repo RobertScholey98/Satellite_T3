@@ -174,6 +174,7 @@ import {
   type RoleSkillSource,
   withProjectSection,
   workerBrief,
+  workerRules,
   WORKER_RULES,
   workerTask,
 } from "./roleSkills.ts";
@@ -2769,7 +2770,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           );
           return {
             role,
-            text: `${text}\n\n${WORKER_RULES}`,
+            text: `${text}\n\n${workerRules(worker.description, fill)}`,
             source: "definition",
           } satisfies FactoryRoleBrief;
         }

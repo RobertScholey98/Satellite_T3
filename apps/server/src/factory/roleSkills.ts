@@ -178,8 +178,18 @@ export const WORKER_RULES = `# Working on the team
   with \`git show <base>:<path>\`, run the new tests, then restore the files and check that
   \`git status\` is clean.`;
 
+/**
+ * The worker rules for a description. A user's description may leave out {{protectedPaths}}, so
+ * the rules then carry the protected list and the assignment's allowed files themselves.
+ */
+export const workerRules = (description: string, fill: RoleSkillFill): string =>
+  description.includes("{{protectedPaths}}")
+    ? WORKER_RULES
+    : `${WORKER_RULES}\n- Never edit the protected control paths:\n\n${protectedPathsFill(fill)}`;
+
 /** The end of every worker's first message: the fixed worker rules, then the lead's task. */
-export const workerTask = (task: string): string => `${WORKER_RULES}\n\n# Task\n\n${task}`;
+export const workerTask = (task: string, rules: string = WORKER_RULES): string =>
+  `${rules}\n\n# Task\n\n${task}`;
 
 /**
  * A team member's first message: its description with placeholders filled, the project section,
@@ -192,4 +202,4 @@ export const workerBrief = (
     readonly task: string;
   },
 ): string =>
-  `${withProjectSection(renderRoleSkill(member.description, fill), fill.result)}\n\n${workerTask(fill.task)}`;
+  `${withProjectSection(renderRoleSkill(member.description, fill), fill.result)}\n\n${workerTask(fill.task, workerRules(member.description, fill))}`;

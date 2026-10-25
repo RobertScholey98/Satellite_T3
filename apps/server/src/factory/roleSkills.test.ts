@@ -326,10 +326,52 @@ describe("workerBrief", () => {
           "  follow them. To prove a test fails without the fix, replace only the changed source files",
           "  with `git show <base>:<path>`, run the new tests, then restore the files and check that",
           "  `git status` is clean.",
+          "- Never edit the protected control paths:",
+          "",
+          "- .github/**",
         ].join("\n"),
         "# Task\n\nReview the List.tsx change.",
       ].join("\n\n"),
     );
+  });
+
+  const ALLOWED_FILL = {
+    ...BRIEF_FILL,
+    allowedProtectedPaths: [".github/workflows/ci.yml"],
+    result: null,
+    task: "Fix the CI job.",
+  };
+  const ALLOWED = "The user allowed you to edit these protected files for this assignment only:";
+  const count = (text: string, part: string) => text.split(part).length - 1;
+
+  it("gives a description without {{protectedPaths}} the protected list in its rules", () => {
+    const brief = workerBrief({ description: "Implements the change." }, ALLOWED_FILL);
+    assert.isTrue(
+      brief.endsWith(
+        [
+          "  `git status` is clean.\n- Never edit the protected control paths:",
+          "- .github/**",
+          ALLOWED,
+          "- .github/workflows/ci.yml",
+          "# Task\n\nFix the CI job.",
+        ].join("\n\n"),
+      ),
+      brief,
+    );
+    assert.strictEqual(count(brief, "- .github/**"), 1);
+    assert.strictEqual(count(brief, ALLOWED), 1);
+    assert.strictEqual(count(brief, "- .github/workflows/ci.yml"), 1);
+  });
+
+  it("renders the protected list once when the description names {{protectedPaths}}", () => {
+    const brief = workerBrief(
+      { description: "Implement it. Never touch:\n\n{{protectedPaths}}" },
+      ALLOWED_FILL,
+    );
+    assert.strictEqual(count(brief, "- .github/**"), 1);
+    assert.strictEqual(count(brief, ALLOWED), 1);
+    assert.strictEqual(count(brief, "- .github/workflows/ci.yml"), 1);
+    assert.notInclude(brief, "Never edit the protected control paths");
   });
 
   it("lists the protected files the user allowed for the assignment", () => {
