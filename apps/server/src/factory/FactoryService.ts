@@ -34,6 +34,7 @@ import {
   ProjectId,
   resolveFactoryConfig,
   RuntimeMode,
+  type FactoryAmendAssignmentInput,
   type FactoryAssignmentState,
   type FactoryAssignmentsAnswerProtectedPathsInput,
   type FactoryAssignmentsCancelInput,
@@ -488,6 +489,14 @@ export interface FactoryServiceShape {
   readonly recover: (
     managerThreadId: ThreadId,
     input: FactoryRecoverInput,
+  ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
+  /**
+   * The manager in this thread replaces a live assignment's brief or completion condition, and
+   * its lead is told once.
+   */
+  readonly amendAssignment: (
+    managerThreadId: ThreadId,
+    input: FactoryAmendAssignmentInput,
   ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
   /** The manager in this thread ends an assignment whose retro is in. */
   readonly complete: (
@@ -4809,6 +4818,66 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       }),
     );
 
+  const amendAssignment: FactoryServiceShape["amendAssignment"] = (managerThreadId, input) =>
+    protect(
+      // A disconnect interrupts the request, so once the amendment commits the lead must still
+      // hear it.
+      Effect.gen(function* () {
+        const manager = yield* requireManager(managerThreadId);
+        const { row, after } = yield* lock(
+          Effect.gen(function* () {
+            const row = yield* ownAssignment(manager, input.assignmentId);
+            if (!CAPACITY_STATES.has(row.state))
+              return yield* error(
+                "conflict",
+                `${row.title} is ${row.state}; only a live assignment can be amended.`,
+              );
+            if (input.brief === undefined && input.completionCondition === undefined)
+              return yield* error("invalid", "Give a new brief, completion condition, or both.");
+            const brief = input.brief !== undefined && input.brief !== row.brief;
+            const condition =
+              input.completionCondition !== undefined &&
+              input.completionCondition !== row.completion_condition;
+            if (!brief && !condition)
+              return yield* error(
+                "invalid",
+                `${row.title} already has this text; nothing changed.`,
+              );
+            const before = {
+              ...(brief ? { brief: row.brief } : {}),
+              ...(condition ? { completionCondition: row.completion_condition } : {}),
+            };
+            const after = {
+              ...(brief ? { brief: input.brief } : {}),
+              ...(condition ? { completionCondition: input.completionCondition } : {}),
+            };
+            const at = yield* now;
+            yield* sql`UPDATE factory_assignments SET
+                brief=${after.brief ?? row.brief},
+                completion_condition=${after.completionCondition ?? row.completion_condition},
+                updated_at=${at} WHERE id=${row.id}`;
+            yield* writeLog(manager.id, row.id, "amend", input.reason, { before, after });
+            return { row, after };
+          }),
+        );
+        // A user who took over the lead thread directs it themselves.
+        if (row.lead_thread_id !== null && row.lead_taken_over !== 1)
+          yield* notifyLead(
+            row.project_id,
+            row.lead_thread_id,
+            [
+              `The manager amended ${row.title}: ${sentence(input.reason)}`,
+              ...(after.brief === undefined ? [] : [`The brief is now:\n\n${after.brief}`]),
+              ...(after.completionCondition === undefined
+                ? []
+                : [`The completion condition is now:\n\n${after.completionCondition}`]),
+            ].join("\n\n"),
+          );
+        yield* publish;
+        return yield* readAssignment(row.id);
+      }).pipe(Effect.uninterruptible),
+    );
+
   const complete: FactoryServiceShape["complete"] = (managerThreadId, input) =>
     protect(
       Effect.gen(function* () {
@@ -6024,6 +6093,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     reportDependency,
     askManager,
     recover,
+    amendAssignment,
     complete,
     cancel,
     answerProtectedPaths,
