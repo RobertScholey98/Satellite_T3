@@ -141,6 +141,7 @@ For authorized mobile verification, a missing or outdated native client is a bui
 - UI changes need before/after images. Motion or timing needs a short video.
 - Upload PR evidence to GitHub. Never commit PR-only screenshots or assets such as `.github/pr-assets/`.
 - One concern per PR. If the description says "also", split it.
+- List the upstream files a PR touches with `node scripts/upstream-files.ts <base>..<head>` (`--first-parent` for the branch's own commits).
 - When babysitting: poll checks and comments newer than the last push, verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
 
 ## Documentation
