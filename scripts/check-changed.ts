@@ -70,7 +70,7 @@ for (const file of code) {
   }
 }
 
-// knip:check takes about 35 s and cannot be scoped to a package. Any code
+// knip:check is the slowest step and cannot be scoped to a package. Any code
 // change can leave a file, export, or dependency unused (removing the last
 // import of a helper does), so it runs whenever code or a manifest changes.
 const runKnip = files.some(

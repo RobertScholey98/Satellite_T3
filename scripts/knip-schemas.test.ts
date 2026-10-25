@@ -149,3 +149,63 @@ it("allows types and schemas through the real Knip CLI without hiding runtime or
     NodeFS.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+it("checks each tsconfig's exports when their programs share a source file", () => {
+  const cwd = NodeFS.mkdtempSync(NodePath.join(import.meta.dirname, ".knip-test-"));
+  const write = (file: string, content: string) => {
+    NodeFS.mkdirSync(NodePath.dirname(NodePath.join(cwd, file)), { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(cwd, file), content);
+  };
+  try {
+    write(
+      "package.json",
+      JSON.stringify({ private: true, type: "module", dependencies: { effect: "*" } }),
+    );
+    write(
+      "knip.json",
+      JSON.stringify({
+        entry: ["*/entry.ts"],
+        project: ["**/*.ts"],
+        includeEntryExports: true,
+        include: ["exports", "duplicates"],
+      }),
+    );
+    write("shared.ts", `import * as S from "effect/Schema"; export const Shared = S.String;`);
+    // "a" and "c" compile alike and so share parsed files; "b" does not.
+    const configs = {
+      a: { module: "NodeNext", strict: true },
+      b: { module: "NodeNext", strict: false, target: "ES2015" },
+      c: { module: "NodeNext", strict: true },
+    };
+    for (const [dir, compilerOptions] of Object.entries(configs)) {
+      write(`${dir}/tsconfig.json`, JSON.stringify({ compilerOptions }));
+      write(
+        `${dir}/entry.ts`,
+        `export { Shared as ${dir}Schema } from "../shared.ts"; export const ${dir}Value = 1;`,
+      );
+    }
+    const result = NodeChildProcess.spawnSync(
+      NodeProcess.execPath,
+      [
+        cli,
+        "--directory",
+        cwd,
+        "--config",
+        NodePath.join(cwd, "knip.json"),
+        "--no-config-hints",
+        "--reporter",
+        "json",
+        "--preprocessor",
+        preprocessor,
+      ],
+      { encoding: "utf8" },
+    );
+    expect(result.status, result.stderr).toBe(1);
+    const reported = JSON.parse(result.stdout).issues.flatMap(
+      (issue: { exports: { name: string }[] }) => issue.exports.map(({ name }) => name),
+    );
+    expect(reported.sort()).toEqual(["aValue", "bValue", "cValue"]);
+  } finally {
+    NodeFS.rmSync(cwd, { recursive: true, force: true });
+  }
+});
