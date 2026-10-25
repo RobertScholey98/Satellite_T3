@@ -36,7 +36,7 @@ import {
   factoryEnvironment,
   factoryErrorMessage,
   unwrapFactoryResult,
-  useFactoryManagerCaps,
+  useFactoryEnvironmentCap,
   useFactoryManagers,
 } from "./factoryState";
 import { FACTORY_CARD_CLASS } from "./FactoryThreadStack";
@@ -92,7 +92,7 @@ function ManagerSettings(props: {
   }, [error]);
   // Whole boards are read only to edit pickup; saved columns carry their titles.
   const boards = useReadyBoards(environmentId, manager.projectId, draft !== null);
-  const caps = useFactoryManagerCaps(environmentId, manager.id);
+  const environmentCap = useFactoryEnvironmentCap(environmentId);
   // Counted as the Factory row counts them, so the two agree.
   const running = (useFactoryWorkspaceFeed(environmentId)?.assignments ?? []).filter(
     (assignment) => assignment.managerId === manager.id && takesAssignmentSlot(assignment),
@@ -107,7 +107,7 @@ function ManagerSettings(props: {
         ? column.title
         : `${column.title} on ${column.boardTitle}`;
   const shown = draft === null ? result : managerSettingsResult(result, draft);
-  const cap = caps === null ? null : effectiveManagerCap(shown.concurrencyCap, caps.environment);
+  const cap = environmentCap === undefined ? null : effectiveManagerCap(shown, environmentCap);
   const capNote =
     cap === null ? null : (
       <p className="text-2xs text-muted-foreground">

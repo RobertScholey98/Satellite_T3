@@ -14,9 +14,8 @@ import {
   factoryErrorMessage,
   unwrapFactoryResult,
   useFactoryAssignments,
-  useFactoryManagerCaps,
+  useFactoryManagerCap,
 } from "./factoryState";
-import { effectiveManagerCap } from "./factoryManagerSettings.logic";
 import { managerStatusText, runningAssignmentCount } from "./FactoryTriageState";
 
 /**
@@ -38,7 +37,7 @@ export function FactoryIssuesManagerStatus({
   const resumeManager = useAtomCommand(factoryEnvironment.resumeManager, { reportFailure: false });
   const running = runningAssignmentCount(useFactoryAssignments(environmentId), manager.id);
 
-  const caps = useFactoryManagerCaps(environmentId, manager.id);
+  const cap = useFactoryManagerCap(environmentId, manager.id);
 
   const paused = manager.state === "manager-paused" || manager.state === "project-paused";
   const perform = async (title: string, request: () => Promise<unknown>) => {
@@ -75,11 +74,7 @@ export function FactoryIssuesManagerStatus({
       <MenuTrigger
         render={<Button size="micro" variant="ghost-muted" aria-label={`${manager.name} status`} />}
       >
-        {managerStatusText(
-          manager,
-          running,
-          caps === null ? null : effectiveManagerCap(caps.manager, caps.environment).cap,
-        )}
+        {managerStatusText(manager, running, cap === null ? null : cap.cap)}
       </MenuTrigger>
       <MenuPopup align="start">
         {paused ? null : (

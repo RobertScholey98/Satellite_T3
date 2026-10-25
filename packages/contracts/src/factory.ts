@@ -247,6 +247,10 @@ export const DEFAULT_FACTORY_CONFIG: FactoryConfig = Schema.decodeSync(FactoryCo
  * silently reset the environment's.
  */
 export const FactoryConfigOverride = Schema.Struct({
+  /**
+   * Ignored, and refused on save: one manager runs per project, so its own cap is the project's.
+   * Kept so overrides stored before that still decode.
+   */
   concurrencyCap: Schema.optionalKey(ConcurrencyCap),
   recoveryAllowance: Schema.optionalKey(RecoveryAllowance),
   modelPool: Schema.optionalKey(Schema.Array(ModelSelection)),
@@ -256,13 +260,16 @@ export const FactoryConfigOverride = Schema.Struct({
 });
 export type FactoryConfigOverride = typeof FactoryConfigOverride.Type;
 
-/** The environment config with a project's overrides applied. Presets merge by name. */
+/**
+ * The environment config with a project's overrides applied. Presets merge by name, and the
+ * concurrency cap stays the environment's.
+ */
 export const resolveFactoryConfig = (
   environment: FactoryConfig,
   override: FactoryConfigOverride | null,
 ): FactoryConfig => {
   if (override === null) return environment;
-  const { teamPresets, ...replaced } = override;
+  const { teamPresets, concurrencyCap: _ignored, ...replaced } = override;
   const presets =
     teamPresets === undefined
       ? environment.teamPresets
@@ -364,7 +371,7 @@ export const FactoryOnboardingResult = Schema.Struct({
   controlPaths: Schema.Array(FactoryControlPath).check(Schema.isMaxLength(100)),
   /** Factory team ids this manager may staff; empty means every team. */
   teamIds: Schema.Array(Id).check(Schema.isMaxLength(50)),
-  /** Stored for a per-manager cap on running assignments; the environment cap still governs. */
+  /** This manager's cap on running assignments; the environment's cap applies as well. */
   concurrencyCap: ConcurrencyCap,
 });
 export type FactoryOnboardingResult = typeof FactoryOnboardingResult.Type;

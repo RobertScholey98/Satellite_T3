@@ -4,7 +4,6 @@ import type {
   FactoryManager,
   FactoryOnboardingProposal,
   FactoryOnboardingResult,
-  ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
 import { Link, useNavigate, useRouter } from "@tanstack/react-router";
@@ -25,6 +24,7 @@ import {
   factoryEnvironment,
   factoryErrorMessage,
   unwrapFactoryResult,
+  useFactoryEnvironmentCap,
   useFactoryManagers,
 } from "./factoryState";
 import { pinFactoryManagerThread, unpinFactoryThread } from "./factoryWorkspaceState";
@@ -199,7 +199,6 @@ function OnboardingCardBody(props: {
       key={manager.onboardingProposal.proposedAt}
       environmentId={props.environmentId}
       managerId={manager.id}
-      projectId={manager.projectId}
       proposal={manager.onboardingProposal}
       onApprove={(result) => props.onApprove(manager.id, result)}
       approveError={props.approveError}
@@ -224,7 +223,6 @@ function Section(props: { readonly title: string; readonly children: ReactNode }
 function OnboardingProposalForm(props: {
   readonly environmentId: EnvironmentId;
   readonly managerId: string;
-  readonly projectId: ProjectId;
   readonly proposal: FactoryOnboardingProposal;
   readonly onApprove: (result: FactoryOnboardingResult) => Promise<void>;
   readonly approveError: string | null;
@@ -234,7 +232,6 @@ function OnboardingProposalForm(props: {
   const canApprove = useAtomValue(
     factoryEnvironment.approveOnboarding.permissionAtom(environmentId),
   );
-  const getConfig = useAtomCommand(factoryEnvironment.getConfig, { reportFailure: false });
   const [form, setForm] = useState<OnboardingForm>(() => {
     const saved = formDrafts.get(props.managerId);
     return saved?.proposedAt === proposal.proposedAt ? saved.form : initialOnboardingForm(proposal);
@@ -244,38 +241,20 @@ function OnboardingProposalForm(props: {
     setForm(next);
   };
   // Approve waits for the real cap rather than sending a guess.
-  const [config, setConfig] = useState<{ readonly cap: number } | "loading" | "failed">("loading");
+  const environmentCap = useFactoryEnvironmentCap(environmentId);
   const [newPath, setNewPath] = useState("");
   const [note, setNote] = useState("");
   const [asked, setAsked] = useState<ReadonlySet<number>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let current = true;
-    void getConfig({
-      environmentId,
-      input: { projectId: props.projectId },
-    }).then((result) => {
-      if (!current) return;
-      setConfig(
-        result._tag === "Success" ? { cap: result.value.effective.concurrencyCap } : "failed",
-      );
-    });
-    return () => {
-      current = false;
-    };
-  }, [environmentId, props.projectId, getConfig]);
-
   // Only the review controls need the approve permission; sending into the thread does not.
   const readOnly = !canApprove || busy;
   const send = props.onSendMessage;
   const blocker =
-    config === "loading"
+    environmentCap === undefined
       ? "Loading the factory settings…"
-      : config === "failed"
-        ? "Could not read the factory settings"
-        : onboardingApproveBlocker(proposal, form);
+      : onboardingApproveBlocker(proposal, form);
   const boards = proposal.detected.boards.filter((board) => board.readyColumns.length > 0);
   const pickupUnavailable =
     proposal.detected.boards.length === 0
@@ -296,10 +275,10 @@ function OnboardingProposalForm(props: {
     return failure === null;
   };
   const approve = async () => {
-    if (typeof config !== "object") return;
+    if (environmentCap === undefined) return;
     // The card above shows the outcome; a failure lands in `approveError`.
     setBusy(true);
-    await props.onApprove(onboardingResultFromForm(proposal, form, config.cap));
+    await props.onApprove(onboardingResultFromForm(proposal, form, environmentCap));
     setBusy(false);
   };
   const draftTicket = (index: number, finding: string) => {

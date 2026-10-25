@@ -503,7 +503,7 @@ describe("FactoryService capacity", () => {
         const status = yield* factory.service.status(manager.id);
         assert.deepStrictEqual(
           [status.concurrencyCap, status.activeCount, status.capacityFree],
-          [5, 1, false],
+          [2, 1, false],
         );
         assert.strictEqual(
           yield* pickupRefusal(factory, manager.threadId!, { issueNumber: 2 }),

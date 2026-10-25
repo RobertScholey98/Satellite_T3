@@ -26,9 +26,10 @@ default lead and manager, and one **Standard** team.
 - A model list runs its first available model in order. Turn on **Dynamic** to let the lead pick
   per task for a member, or the manager per ticket for a team's lead. An empty list means any model
   in the pool.
-- The environment's **concurrency cap** and the git identity stay on this machine. A manager also
-  has its own cap, set when you approve its onboarding and changed in its **Settings**; work starts
-  only when both have room.
+- The environment's **concurrency cap** and the git identity stay on this machine. Two caps
+  apply: the environment's, counted across every manager, and each manager's own, set when you
+  approve its onboarding and changed in its **Settings**. Work starts only when both have room. A
+  project has no cap of its own; its manager's cap is the project's.
 - **Runs on** appears when this machine has more than one instance of a provider, such as two Claude
   accounts. It picks which one runs the factory's models for that provider; **First available** uses
   whichever comes first. It stays on this machine. If the chosen instance goes away, the factory uses

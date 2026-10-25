@@ -28,8 +28,10 @@ import {
   unwrapFactoryResult,
   useFactoryAssignments,
   useFactoryDrafts,
+  useFactoryEnvironmentCap,
   useFactoryManagers,
 } from "./factoryState";
+import { effectiveManagerCap } from "./factoryManagerSettings.logic";
 import {
   type FactoryTeamRow,
   factoryAssignmentTokens,
@@ -90,31 +92,7 @@ function FactoryManagersSection({
   const managers = useFactoryManagers(environmentId)?.filter(
     (manager) => manager.state !== "retired",
   );
-  const getConfig = useAtomCommand(factoryEnvironment.getConfig, { reportFailure: false });
-  const projectKey = [...new Set((managers ?? []).map((manager) => manager.projectId))]
-    .toSorted()
-    .join("\n");
-  const [caps, setCaps] = useState<ReadonlyMap<string, number>>(new Map());
-  useEffect(() => {
-    if (!projectKey) return;
-    let current = true;
-    const projectIds = projectKey.split("\n") as ProjectId[];
-    void Promise.all(
-      projectIds.map((projectId) =>
-        getConfig({ environmentId, input: { projectId } }).then((result) =>
-          result._tag === "Success"
-            ? ([projectId, result.value.effective.concurrencyCap] as const)
-            : null,
-        ),
-      ),
-    ).then((entries) => {
-      if (current)
-        setCaps(new Map(entries.filter((entry): entry is [ProjectId, number] => entry !== null)));
-    });
-    return () => {
-      current = false;
-    };
-  }, [environmentId, getConfig, projectKey]);
+  const environmentCap = useFactoryEnvironmentCap(environmentId);
 
   const canPause = useAtomValue(factoryEnvironment.pauseManager.permissionAtom(environmentId));
   const canResume = useAtomValue(factoryEnvironment.resumeManager.permissionAtom(environmentId));
@@ -162,7 +140,10 @@ function FactoryManagersSection({
       ) : (
         managers.map((manager) => {
           const state = STATE_BADGES[manager.state as keyof typeof STATE_BADGES];
-          const cap = caps.get(manager.projectId);
+          const cap =
+            environmentCap === undefined
+              ? undefined
+              : effectiveManagerCap(manager.onboardingResult, environmentCap).cap;
           const paused = manager.state === "manager-paused" || manager.state === "project-paused";
           return (
             <SettingsRow

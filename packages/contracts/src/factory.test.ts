@@ -1,7 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
-import { FactoryAssignment } from "./factory.ts";
+import {
+  FactoryAssignment,
+  FactoryConfig,
+  FactoryConfigOverride,
+  resolveFactoryConfig,
+} from "./factory.ts";
 
 const decodeAssignment = Schema.decodeUnknownSync(FactoryAssignment);
 
@@ -59,5 +64,18 @@ describe("FactoryAssignment", () => {
       protectedPathAsks: [ask([" AGENTS.md", long])],
     });
     expect(decoded.protectedPathAsks[0]!.paths).toEqual([" AGENTS.md", long]);
+  });
+});
+
+describe("resolveFactoryConfig", () => {
+  it("keeps the environment's cap over a stored project cap", () => {
+    const environment = Schema.decodeSync(FactoryConfig)({ concurrencyCap: 4 });
+    const override = Schema.decodeUnknownSync(FactoryConfigOverride)({
+      concurrencyCap: 1,
+      recoveryAllowance: 5,
+    });
+    const effective = resolveFactoryConfig(environment, override);
+    expect(effective.concurrencyCap).toBe(4);
+    expect(effective.recoveryAllowance).toBe(5);
   });
 });

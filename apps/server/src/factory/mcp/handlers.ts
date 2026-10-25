@@ -42,7 +42,7 @@ const statusMessage = ({
   readyTickets,
 }: FactoryStatus) => {
   const unjudged = readyTickets.filter((ticket) => !ticket.judged).length;
-  // `capacityFree` covers the environment's cap too, so no room while under the manager's own cap
+  // `capacityFree` covers the environment's cap too, so no room while under the reported cap
   // means the environment, shared by every project, is full.
   const capacity = capacityFree
     ? "capacity is free"

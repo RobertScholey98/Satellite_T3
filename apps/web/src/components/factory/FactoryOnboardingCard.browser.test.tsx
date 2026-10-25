@@ -12,12 +12,13 @@ import { userEvent } from "vite-plus/test/browser";
 
 const state = vi.hoisted(() => ({
   managers: [] as ReadonlyArray<FactoryManager>,
+  environmentCap: undefined as number | undefined,
   approve: vi.fn(),
-  getConfig: vi.fn(),
 }));
 vi.mock(import("./factoryState"), async (importOriginal) => ({
   ...(await importOriginal()),
   useFactoryManagers: () => state.managers,
+  useFactoryEnvironmentCap: () => state.environmentCap,
 }));
 // Permissions are read through atoms; this suite is about the card, so the grant holds.
 vi.mock(import("@effect/atom-react"), async (importOriginal) => ({
@@ -25,14 +26,10 @@ vi.mock(import("@effect/atom-react"), async (importOriginal) => ({
   useAtomValue: (() => true) as never,
 }));
 // Commands are the boundary under test: Approve must send exactly the reviewed result.
-vi.mock(import("~/state/use-atom-command"), async (importOriginal) => {
-  const { factoryEnvironment } = await import("./factoryState");
-  return {
-    ...(await importOriginal()),
-    useAtomCommand: ((command: unknown) =>
-      command === factoryEnvironment.approveOnboarding ? state.approve : state.getConfig) as never,
-  };
-});
+vi.mock(import("~/state/use-atom-command"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useAtomCommand: (() => state.approve) as never,
+}));
 
 import { fakeTimers, render } from "../../../test/render";
 import { FactoryOnboardingCard } from "./FactoryOnboardingCard";
@@ -93,10 +90,7 @@ const manager: FactoryManager = {
 function setup() {
   state.managers = [manager];
   state.approve.mockReset().mockResolvedValue({ _tag: "Success", value: manager });
-  state.getConfig.mockReset().mockResolvedValue({
-    _tag: "Success",
-    value: { effective: { concurrencyCap: 3 } },
-  });
+  state.environmentCap = 3;
 }
 
 const card = () => (
@@ -233,12 +227,12 @@ it("shows the server's refusal on the card", async () => {
     .toHaveTextContent("Backlog is not a Ready column of Atlas board.");
 });
 
-it("will not approve without the factory settings rather than guess the cap", async () => {
+it("will not approve before the environment's cap arrives rather than guess it", async () => {
   setup();
-  state.getConfig.mockResolvedValue({ _tag: "Failure", cause: Cause.fail(new Error("offline")) });
+  state.environmentCap = undefined;
   await using screen = await render(card());
 
-  await expect.element(screen.getByText("Could not read the factory settings")).toBeVisible();
+  await expect.element(screen.getByText("Loading the factory settings…")).toBeVisible();
   await expect.element(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
 });
 

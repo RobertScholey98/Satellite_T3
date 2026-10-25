@@ -1928,6 +1928,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     return (yield* deps.configStore.read).managers[0]?.instructions;
   });
 
+  const withoutCap = ({ concurrencyCap: _, ...rest }: FactoryConfigOverride) => rest;
+
   const configView = Effect.fnUntraced(function* (projectId: ProjectId | undefined) {
     const environment = yield* environmentConfig();
     if (projectId === undefined) {
@@ -1937,7 +1939,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         configured: environment.configured,
       } satisfies FactoryConfigView;
     }
-    const override = yield* projectOverride(projectId);
+    const stored = yield* projectOverride(projectId);
+    // A cap stored before projects lost theirs still decodes, but echoing it back would make
+    // a client that edits another key and saves the override get refused.
+    const override = stored === null ? null : withoutCap(stored);
     return {
       environment: environment.config,
       override,
@@ -1984,6 +1989,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           yield* sql`DELETE FROM factory_config WHERE scope_key=${scopeKey}`;
           return yield* configView(input.projectId);
         }
+        if (input.override.concurrencyCap !== undefined)
+          return yield* error(
+            "invalid",
+            "A project has no concurrency cap of its own. Set the cap on the environment, or as the manager's own cap.",
+          );
         const environment = (yield* environmentConfig()).config;
         if (overrideWidensPool(environment, input.override))
           return yield* error(
@@ -3077,7 +3087,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         const room = yield* capacity(manager);
         return {
           manager,
-          concurrencyCap: room.managerCap,
+          concurrencyCap: Math.min(room.managerCap, room.environmentCap),
           activeCount: room.managerTaken,
           capacityFree: room.free,
           assignments,
