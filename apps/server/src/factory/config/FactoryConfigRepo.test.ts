@@ -1,6 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -80,6 +82,27 @@ const machine = (name: string, options: { readonly identity?: boolean } = {}) =>
         .pipe(Effect.andThen(fs.writeFileString(file(relativePath), contents)));
     const read = (relativePath: string) => fs.readFileString(file(relativePath));
     return { repo, reopen, directory, backupsDirectory, file, write, read };
+  });
+
+/** Git whose next command with `arg` waits, before it runs, until released. */
+const holdingGit = (arg: string) =>
+  Effect.gen(function* () {
+    const git = yield* GitVcsDriver.GitVcsDriver;
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let armed = true;
+    const driver = GitVcsDriver.GitVcsDriver.of({
+      ...git,
+      execute: (input) => {
+        if (!armed || !input.args.includes(arg)) return git.execute(input);
+        armed = false;
+        return Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(git.execute(input)),
+        );
+      },
+    });
+    return { driver, started, release };
   });
 
 const bareRemote = Effect.gen(function* () {
@@ -292,6 +315,33 @@ describe("FactoryConfigRepo", () => {
       });
     }),
   );
+  live("leaves the config as it was when the client disconnects during a connect", () =>
+    Effect.gen(function* () {
+      const remote = yield* bareRemote;
+      const a = yield* machine("a");
+      yield* a.write("workers/implementer.md", "implementer v1\n");
+      yield* a.repo.connect({ url: remote });
+      const b = yield* machine("b");
+      yield* b.write("workers/own.md", "b's own worker\n");
+      const held = yield* holdingGit("checkout");
+      const repo = yield* b.reopen.pipe(
+        Effect.provideService(GitVcsDriver.GitVcsDriver, held.driver),
+      );
+
+      const connecting = yield* repo
+        .connect({ url: remote, choice: "use-repo" })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(held.started);
+      // What the RPC server does to a disconnected client's requests.
+      connecting.interruptUnsafe();
+      yield* Deferred.succeed(held.release, undefined);
+      yield* Fiber.await(connecting);
+
+      assert.deepStrictEqual(yield* b.repo.status, { connected: false });
+      assert.strictEqual(yield* b.read("workers/own.md"), "b's own worker\n");
+    }),
+  );
+
   live("leaves the config as it was when the repo's config cannot be checked out", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

@@ -520,13 +520,19 @@ export const applyImport = Effect.fn("FactoryConfigImport.apply")(function* (
   const planned = planImport(yield* store.read, bundle, decision);
   if (Result.isFailure(planned)) return yield* planned.failure;
   const plan = planned.success;
-  if (plan.backup) yield* backupFactoryConfig(store.directory);
-  yield* store.writeSettings(plan.settings);
-  for (const { kind, id } of plan.remove) yield* store.remove(kind, id);
-  for (const definition of plan.workers) yield* store.writeWorker(definition);
-  for (const definition of plan.leads) yield* store.writeLead(definition);
-  for (const definition of plan.managers) yield* store.writeManager(definition);
-  for (const team of plan.teams) yield* store.writeTeam(team);
+  // A disconnect interrupts the request, and stopping after a replace's removes would leave
+  // definitions missing, so once the backup starts every write runs.
+  yield* Effect.uninterruptible(
+    Effect.gen(function* () {
+      if (plan.backup) yield* backupFactoryConfig(store.directory);
+      yield* store.writeSettings(plan.settings);
+      for (const { kind, id } of plan.remove) yield* store.remove(kind, id);
+      for (const definition of plan.workers) yield* store.writeWorker(definition);
+      for (const definition of plan.leads) yield* store.writeLead(definition);
+      for (const definition of plan.managers) yield* store.writeManager(definition);
+      for (const team of plan.teams) yield* store.writeTeam(team);
+    }),
+  );
   const view = yield* store.read;
   return { ...view, problems: [...view.problems, ...plan.skipped] };
 });

@@ -384,14 +384,17 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
         );
     }
     const backup = yield* backUp;
-    for (const entry of CONFIG_LAYOUT_ENTRIES) {
-      yield* fs.remove(path.join(directory, entry), { recursive: true }).pipe(
-        Effect.catchReason("PlatformError", "NotFound", () => Effect.void),
-        Effect.mapError(storage("clear")),
-      );
-    }
-    yield* checkOut(branch).pipe(
-      Effect.tapError(() =>
+    yield* Effect.gen(function* () {
+      for (const entry of CONFIG_LAYOUT_ENTRIES) {
+        yield* fs.remove(path.join(directory, entry), { recursive: true }).pipe(
+          Effect.catchReason("PlatformError", "NotFound", () => Effect.void),
+          Effect.mapError(storage("clear")),
+        );
+      }
+      yield* checkOut(branch);
+    }).pipe(
+      // On interruption too: a disconnect interrupts the request, and the files must come back.
+      Effect.onError(() =>
         // An entry the config never had is missing from the backup too, which is fine.
         Effect.forEach(CONFIG_LAYOUT_ENTRIES, (entry) =>
           fs
@@ -491,7 +494,9 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
       return "connected" as const;
     });
 
-    const outcome = yield* attempt.pipe(Effect.tapError(() => undo));
+    // On interruption too: a disconnect interrupts the request, and a connect left half done
+    // would read as connected to the same URL next time.
+    const outcome = yield* attempt.pipe(Effect.onError(() => undo));
     if (outcome === "needs-choice") {
       yield* undo;
       return { outcome } as const;

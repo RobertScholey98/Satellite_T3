@@ -22,6 +22,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 
 import { fromAdapters } from "./IssueHost.ts";
 import {
@@ -132,6 +133,29 @@ export const makeIssueHarness = Effect.fn("makeIssueHarness")(function* (
   const threads = new Map<string, IssueThreadFacts>();
   let heldRead: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null =
     null;
+  let heldLaunch: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null =
+    null;
+  let heldStatement: {
+    readonly text: string;
+    readonly started: Deferred.Deferred<void>;
+    readonly release: Deferred.Deferred<void>;
+  } | null = null;
+  const realSql = yield* SqlClient.SqlClient;
+  // Statements run synchronously, so a test can stop a request between two of them only here.
+  const sql = new Proxy(realSql, {
+    apply: (target, thisArg, args: unknown[]) => {
+      const statement: Effect.Effect<unknown, SqlError> = Reflect.apply(target, thisArg, args);
+      const held = heldStatement;
+      const strings = args[0];
+      if (!held || !Array.isArray(strings) || !strings.join("?").includes(held.text))
+        return statement;
+      heldStatement = null;
+      return Deferred.succeed(held.started, undefined).pipe(
+        Effect.andThen(Deferred.await(held.release)),
+        Effect.andThen(statement),
+      );
+    },
+  });
   let threadCount = 0;
   let linkCount = 0;
 
@@ -223,6 +247,12 @@ export const makeIssueHarness = Effect.fn("makeIssueHarness")(function* (
     readThread: (threadId) => Effect.sync(() => threads.get(threadId) ?? null),
     allocateThreadId: () => Effect.sync(() => ThreadId.make(`thread-${++threadCount}`)),
     launchThread: Effect.fn("IssueServiceTest.launchThread")(function* (input) {
+      const held = heldLaunch;
+      heldLaunch = null;
+      if (held) {
+        yield* Deferred.succeed(held.started, undefined);
+        yield* Deferred.await(held.release);
+      }
       launches.push(input);
       if (failures.launch) return yield* failures.launch;
       if (!threads.has(input.threadId))
@@ -234,7 +264,8 @@ export const makeIssueHarness = Effect.fn("makeIssueHarness")(function* (
         });
     }),
   };
-  const service = yield* makeIssueService(dependencies);
+  const make = makeIssueService(dependencies).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+  const service = yield* make;
 
   const updateThread = (
     threadId: ThreadId,
@@ -258,7 +289,7 @@ export const makeIssueHarness = Effect.fn("makeIssueHarness")(function* (
   return {
     service,
     /** A second service on the same database, as after a server restart. */
-    restart: makeIssueService(dependencies),
+    restart: make,
     calls,
     writes,
     launches,
@@ -275,6 +306,22 @@ export const makeIssueHarness = Effect.fn("makeIssueHarness")(function* (
     holdNextRead: Effect.gen(function* () {
       const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
       heldRead = held;
+      return held;
+    }),
+    /** Holds the next thread launch open before it is recorded, until released. */
+    holdNextLaunch: Effect.gen(function* () {
+      const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
+      heldLaunch = held;
+      return held;
+    }),
+    /** Holds the next SQL statement containing `text` open before it runs, until released. */
+    holdNextStatement: Effect.fn("IssueServiceTest.holdNextStatement")(function* (text: string) {
+      const held = {
+        text,
+        started: yield* Deferred.make<void>(),
+        release: yield* Deferred.make<void>(),
+      };
+      heldStatement = held;
       return held;
     }),
 
