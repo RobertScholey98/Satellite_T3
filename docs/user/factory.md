@@ -112,16 +112,17 @@ Below that, a **Pull requests** card lists the teams' open pull requests, the on
 first, the longest waiting at the top. **Merge** appears once the lead has claimed the work done,
 checks pass, and the host reports no conflicts; it merges with the project's default method.
 Otherwise the row says what it waits on, such as **In progress** or **Needs rebase**. A team whose
-pull request starts conflicting is asked to rebase it. A pull request that changes protected paths
-names them, and merging it asks you to confirm overriding the hold.
+pull request starts conflicting is asked to rebase it. Once every pull request of an assignment is
+merged, its retro starts straight away.
 
 The factory holds a pull request that changes protected files, and the team's card asks you about
 them. **Allow** lets that team edit exactly those files, for this assignment only; the hold lifts
 once nothing else is protected. **Decline** tells the lead to revert them. You can **Revoke** an
 allowed file later, which holds the pull request again, and allow a declined one after all. A
 manager that knows a team needs protected files can ask when it commissions the work, so the card
-asks before the team starts.
-Once every pull request of an assignment is merged, its retro starts straight away.
+asks before the team starts. On the **Pull requests** card, a pull request lists the protected
+files it still changes, those waiting for your answer apart from those the factory holds, and
+merging it anyway asks you to confirm.
 
 A lead's details panel shows **Lead for the manager** with the assignment's state. Its menu, and
 the ticket chip's menu, offer **Take over** (the manager stops steering that assignment while you
