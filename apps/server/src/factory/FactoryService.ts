@@ -1918,6 +1918,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     return (yield* deps.configStore.read).managers[0]?.instructions;
   });
 
+  const withoutCap = ({ concurrencyCap: _, ...rest }: FactoryConfigOverride) => rest;
+
   const configView = Effect.fnUntraced(function* (projectId: ProjectId | undefined) {
     const environment = yield* environmentConfig();
     if (projectId === undefined) {
@@ -1927,7 +1929,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         configured: environment.configured,
       } satisfies FactoryConfigView;
     }
-    const override = yield* projectOverride(projectId);
+    const stored = yield* projectOverride(projectId);
+    // A cap stored before projects lost theirs still decodes, but echoing it back would make
+    // a client that edits another key and saves the override get refused.
+    const override = stored === null ? null : withoutCap(stored);
     return {
       environment: environment.config,
       override,
