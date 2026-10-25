@@ -25,7 +25,6 @@ import { UsageShareBar } from "../usage/UsageShareBar";
 import {
   factoryEnvironment,
   factoryErrorMessage,
-  factoryManagerOwnCap,
   unwrapFactoryResult,
   useFactoryAssignments,
   useFactoryDrafts,
@@ -144,8 +143,7 @@ function FactoryManagersSection({
           const cap =
             environmentCap === undefined
               ? undefined
-              : effectiveManagerCap(factoryManagerOwnCap(manager, environmentCap), environmentCap)
-                  .cap;
+              : effectiveManagerCap(manager.onboardingResult, environmentCap).cap;
           const paused = manager.state === "manager-paused" || manager.state === "project-paused";
           return (
             <SettingsRow

@@ -104,8 +104,15 @@ export function toggleSettingsColumn(
   return { ...draft, columns: ticked ? [...rest, column] : rest };
 }
 
-/** Work starts only while both caps have room, so the lower one is what the manager runs to. */
-export function effectiveManagerCap(managerCap: number, environmentCap: number) {
+/**
+ * Work starts only while both caps have room, so the lower one is what the manager runs to. Before
+ * approval a manager has no result, so no cap of its own, and runs to the environment's.
+ */
+export function effectiveManagerCap(
+  result: FactoryOnboardingResult | null | undefined,
+  environmentCap: number,
+) {
+  const managerCap = result?.concurrencyCap ?? environmentCap;
   return {
     cap: Math.min(managerCap, environmentCap),
     limitedByEnvironment: environmentCap < managerCap,

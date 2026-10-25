@@ -77,8 +77,22 @@ describe("manager settings draft", () => {
 
 describe("effectiveManagerCap", () => {
   it("is the lower cap, and says when the environment's is the one limiting", () => {
-    expect(effectiveManagerCap(4, 2)).toEqual({ cap: 2, limitedByEnvironment: true });
-    expect(effectiveManagerCap(1, 2)).toEqual({ cap: 1, limitedByEnvironment: false });
-    expect(effectiveManagerCap(2, 2)).toEqual({ cap: 2, limitedByEnvironment: false });
+    expect(effectiveManagerCap({ ...STORED, concurrencyCap: 4 }, 2)).toEqual({
+      cap: 2,
+      limitedByEnvironment: true,
+    });
+    expect(effectiveManagerCap({ ...STORED, concurrencyCap: 1 }, 2)).toEqual({
+      cap: 1,
+      limitedByEnvironment: false,
+    });
+    expect(effectiveManagerCap({ ...STORED, concurrencyCap: 2 }, 2)).toEqual({
+      cap: 2,
+      limitedByEnvironment: false,
+    });
+  });
+
+  it("is the environment's cap for a manager not yet onboarded", () => {
+    expect(effectiveManagerCap(null, 3)).toEqual({ cap: 3, limitedByEnvironment: false });
+    expect(effectiveManagerCap(undefined, 3)).toEqual({ cap: 3, limitedByEnvironment: false });
   });
 });

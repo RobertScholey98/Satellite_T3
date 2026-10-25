@@ -19,6 +19,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "~/connection/runtime";
 import type { EnvironmentPresentation } from "~/state/environments";
+import { effectiveManagerCap } from "./factoryManagerSettings.logic";
 
 export const factoryEnvironment = createFactoryEnvironmentAtoms(connectionAtomRuntime);
 
@@ -109,31 +110,17 @@ const environmentCapAtom = Atom.family((environmentId: EnvironmentId) =>
   ).pipe(Atom.withLabel(`web-factory-environment-cap:${environmentId}`)),
 );
 
-/**
- * A manager's own cap and the environment's, live from the managers feed; null until both are
- * known. Work starts only while both have room.
- */
-export function useFactoryManagerCaps(
-  environmentId: EnvironmentId,
-  managerId: string,
-): { readonly manager: number; readonly environment: number } | null {
+/** The cap a manager runs to, live from the managers feed; null until the environment's is known. */
+export function useFactoryManagerCap(environmentId: EnvironmentId, managerId: string) {
   const environment = useFactoryEnvironmentCap(environmentId);
   const manager = useFactoryManagers(environmentId)?.find((entry) => entry.id === managerId);
   if (environment === undefined) return null;
-  return { manager: factoryManagerOwnCap(manager, environment), environment };
+  return effectiveManagerCap(manager?.onboardingResult, environment);
 }
 
 /** The environment's cap from the managers feed; `undefined` until the first event. */
 export function useFactoryEnvironmentCap(environmentId: EnvironmentId): number | undefined {
   return useAtomValue(environmentCapAtom(environmentId));
-}
-
-/** Before approval a manager has no cap of its own and runs to the environment's. */
-export function factoryManagerOwnCap(
-  manager: FactoryManager | undefined,
-  environmentCap: number,
-): number {
-  return manager?.onboardingResult?.concurrencyCap ?? environmentCap;
 }
 
 /** Live assignments plus those ended in the last day; `undefined` until the first event. */

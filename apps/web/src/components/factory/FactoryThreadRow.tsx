@@ -23,9 +23,8 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/men
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useFactoryWorkspaceFeed } from "./factoryWorkspaceState";
-import { effectiveManagerCap } from "./factoryManagerSettings.logic";
 import {
-  useFactoryManagerCaps,
+  useFactoryManagerCap,
   useFactoryManagers,
   factoryEnvironment,
   factoryErrorMessage,
@@ -207,7 +206,7 @@ function FactoryManagerRow(props: {
   const canPause = useAtomValue(factoryEnvironment.pauseManager.permissionAtom(environmentId));
   const canResume = useAtomValue(factoryEnvironment.resumeManager.permissionAtom(environmentId));
   const canRetire = useAtomValue(factoryEnvironment.retireManager.permissionAtom(environmentId));
-  const caps = useFactoryManagerCaps(environmentId, manager.id);
+  const cap = useFactoryManagerCap(environmentId, manager.id);
   const [pickup, setPickup] = useState<{ readonly key: string; readonly text: string } | null>(
     null,
   );
@@ -277,8 +276,7 @@ function FactoryManagerRow(props: {
   };
 
   const paused = manager.state === "manager-paused" || manager.state === "project-paused";
-  const capText =
-    caps === null ? "" : ` of ${effectiveManagerCap(caps.manager, caps.environment).cap}`;
+  const capText = cap === null ? "" : ` of ${cap.cap}`;
   const retireBlocked = active > 0;
   const retireItem = (
     <MenuItem
