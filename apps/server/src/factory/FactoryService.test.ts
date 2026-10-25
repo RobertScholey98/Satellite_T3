@@ -1176,6 +1176,62 @@ describe("FactoryService primed manager thread", () => {
     ),
   );
 
+  it.effect("starts pickup with one pickup wake for the Ready tickets and no launch", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, boards, sentMessages, launches } = factory;
+        boards.push(
+          board([
+            { number: 1, columnId: READY },
+            { number: 2, columnId: READY },
+            { number: 3, columnId: BACKLOG },
+          ]),
+        );
+        const { manager } = yield* approved(factory);
+        assert.strictEqual(manager.state, "ready");
+        const mark = yield* logMark(service, manager.id);
+        const sentBefore = sentMessages.length;
+        const launchesBefore = launches.length;
+
+        yield* service.startPickup({ requestId: "start-1", managerId: manager.id });
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["wake"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["pickup"]);
+        assert.deepStrictEqual(
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
+          [
+            [
+              manager.threadId,
+              "These Ready tickets are waiting for your judgement: #1 Ticket 1 (https://github.com/acme/app/issues/1), #2 Ticket 2 (https://github.com/acme/app/issues/2); call factory_status, then factory_pickup for each.",
+            ],
+          ],
+        );
+        assert.deepStrictEqual(launches.slice(launchesBefore), []);
+      }),
+    ),
+  );
+
+  it.effect("starts pickup without a log entry, message or launch when nothing is Ready", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, boards, sentMessages, launches } = factory;
+        boards.push(board([{ number: 1, columnId: BACKLOG }]));
+        const { manager } = yield* approved(factory);
+        assert.strictEqual(manager.state, "ready");
+        const mark = yield* logMark(service, manager.id);
+        const sentBefore = sentMessages.length;
+        const launchesBefore = launches.length;
+
+        const started = yield* service.startPickup({ requestId: "start-1", managerId: manager.id });
+        assert.strictEqual(started.state, "active");
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), []);
+        assert.deepStrictEqual(sentMessages.slice(sentBefore), []);
+        assert.deepStrictEqual(launches.slice(launchesBefore), []);
+      }),
+    ),
+  );
+
   it.effect("pauses a ready manager and resumes it ready", () =>
     withDatabase(
       Effect.gen(function* () {

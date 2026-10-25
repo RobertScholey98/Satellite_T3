@@ -565,6 +565,11 @@ export const makeFactory = makeHarness({
 });
 export type Factory = Effect.Success<typeof makeFactory>;
 
+/**
+ * startPickup's first wake already offers the Ready tickets, so a test measuring a sweep's pickup
+ * wake makes its tickets Ready after setup (`activeManager`, then `setupDone`); otherwise the sweep
+ * dedupes the tickets startPickup offered.
+ */
 export const approve = (
   factory: Factory,
   managerId: string,
