@@ -95,7 +95,7 @@ function setup() {
   state.approve.mockReset().mockResolvedValue({ _tag: "Success", value: manager });
   state.getConfig.mockReset().mockResolvedValue({
     _tag: "Success",
-    value: { effective: { concurrencyCap: 3 } },
+    value: { environment: { concurrencyCap: 3 } },
   });
 }
 

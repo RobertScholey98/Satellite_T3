@@ -117,12 +117,23 @@ export function useFactoryManagerCaps(
   environmentId: EnvironmentId,
   managerId: string,
 ): { readonly manager: number; readonly environment: number } | null {
-  const environment = useAtomValue(environmentCapAtom(environmentId));
-  const manager = useFactoryManagers(environmentId)?.find((entry) => entry.id === managerId)
-    ?.onboardingResult?.concurrencyCap;
-  // Before approval the manager has no cap of its own and runs to the environment's.
+  const environment = useFactoryEnvironmentCap(environmentId);
+  const manager = useFactoryManagers(environmentId)?.find((entry) => entry.id === managerId);
   if (environment === undefined) return null;
-  return { manager: manager ?? environment, environment };
+  return { manager: factoryManagerOwnCap(manager, environment), environment };
+}
+
+/** The environment's cap from the managers feed; `undefined` until the first event. */
+export function useFactoryEnvironmentCap(environmentId: EnvironmentId): number | undefined {
+  return useAtomValue(environmentCapAtom(environmentId));
+}
+
+/** Before approval a manager has no cap of its own and runs to the environment's. */
+export function factoryManagerOwnCap(
+  manager: FactoryManager | undefined,
+  environmentCap: number,
+): number {
+  return manager?.onboardingResult?.concurrencyCap ?? environmentCap;
 }
 
 /** Live assignments plus those ended in the last day; `undefined` until the first event. */

@@ -259,7 +259,7 @@ function OnboardingProposalForm(props: {
     }).then((result) => {
       if (!current) return;
       setConfig(
-        result._tag === "Success" ? { cap: result.value.effective.concurrencyCap } : "failed",
+        result._tag === "Success" ? { cap: result.value.environment.concurrencyCap } : "failed",
       );
     });
     return () => {
