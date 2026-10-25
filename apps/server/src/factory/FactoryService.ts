@@ -1027,6 +1027,31 @@ const needsHold = (
   (row.state === "active" ||
     (row.state === "waiting-user" && HOLDABLE_WAITS.has(row.waiting_kind)));
 
+/**
+ * The state a stalled or blocked assignment returns to work in. Unallowed flags it left the hold
+ * with, such as a revoke while it was out, hold it again; they were announced already, so this
+ * wakes no one.
+ */
+const returnToWork = (row: {
+  readonly control_violations_json: string;
+  readonly protected_path_asks_json: string;
+}) =>
+  Effect.all([
+    parse(ControlViolations, row.control_violations_json),
+    parse(ProtectedPathAsks, row.protected_path_asks_json),
+  ]).pipe(
+    Effect.map(([violations, asks]) => {
+      const effective = effectiveViolations(violations, asks);
+      return effective.length === 0
+        ? { state: "active" as const, kind: null, reason: null }
+        : {
+            state: "waiting-user" as const,
+            kind: "control" as const,
+            reason: controlReason(effective),
+          };
+    }),
+  );
+
 /** How the user answered an ask, as the manager and the lead are told it. */
 const answerText = (
   verb: "allowed" | "declined" | "revoked",
@@ -1802,9 +1827,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    * launch that failed never keeps the place for good.
    *
    * A place counts work running at once, not delegations: a member whose task finished frees its
-   * place without ending its row, so its stats and feed stay. Only delegation is checked here: a
-   * follow-up sent to a finished member's thread is never refused, so the lead skill routes more
-   * work through delegation, and such a follow-up still counts against the place while it runs.
+   * place without ending its row, so its stats and feed stay. A follow-up to a finished member
+   * goes through delegation too, with `continueThreadId`. A plain `t3_thread_send` to its thread
+   * is never refused, so the lead skill forbids it; such a follow-up still counts against the
+   * place while it runs.
    */
   const heldPlaces = new Map<string, ReadonlyArray<number>>();
   const PLACE_HOLD_MS = 5 * 60_000;
@@ -1823,14 +1849,34 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     (!runs.deleted &&
       (runs.runInProgress || runs.pendingRequests > 0 || runs.latestRunStatus === null));
 
+  /**
+   * Threads a follow-up plan was made for, as expiry times, until the lead re-records them. Until
+   * its follow-up starts, the thread still reads as finished, so this keeps a second plan off it.
+   */
+  const pendingFollowUps = new Map<string, number>();
+
   /** Holds one of the place's seats for a plan, or fails when every seat is taken or held. */
   const reservePlace = (
     assignmentId: string,
-    place: Place & { readonly count: number; readonly busy: string },
+    place: Place & {
+      readonly count: number;
+      readonly busy: string;
+      readonly idle?: { readonly threadId: ThreadId; readonly busy: string };
+    },
   ) =>
     lock(
       Effect.gen(function* () {
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        // A failed send never re-records its thread, so its expired entry is dropped here.
+        for (const [threadId, expiry] of pendingFollowUps)
+          if (expiry <= nowMs) pendingFollowUps.delete(threadId);
+        // Checked under the lock so two follow-ups to one finished thread cannot both pass.
+        if (
+          place.idle !== undefined &&
+          ((pendingFollowUps.get(place.idle.threadId) ?? 0) > nowMs ||
+            threadHoldsPlace(yield* deps.readThreadRuns(place.idle.threadId)))
+        )
+          return yield* error("conflict", place.idle.busy);
         const key = placeKey(assignmentId, place);
         const held = (heldPlaces.get(key) ?? []).filter((expiry) => expiry > nowMs);
         heldPlaces.set(key, held);
@@ -1844,18 +1890,23 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                 WHERE assignment_id=${assignmentId} AND role=${place.role}
                 AND joined != 'observed' AND ended_at IS NULL`;
         let busy = held.length;
+        // Safe under the lock: this reads the orchestrator's projections (a nested transaction, a
+        // savepoint in this fiber) and never calls back into the factory. Tests stub it.
         for (const member of live)
           if (threadHoldsPlace(yield* deps.readThreadRuns(ThreadId.make(member.thread_id))))
             busy += 1;
         if (busy >= place.count) return yield* error("conflict", place.busy);
         heldPlaces.set(key, [...held, nowMs + PLACE_HOLD_MS]);
+        if (place.idle !== undefined)
+          pendingFollowUps.set(place.idle.threadId, nowMs + PLACE_HOLD_MS);
       }),
     );
 
   /** A recorded worker now takes the place itself, so the oldest hold on it is let go. */
-  const releasePlace = (assignmentId: string, place: Place) => {
+  const releasePlace = (assignmentId: string, place: Place, threadId: string) => {
     const key = placeKey(assignmentId, place);
     heldPlaces.set(key, (heldPlaces.get(key) ?? []).slice(1));
+    pendingFollowUps.delete(threadId);
   };
 
   /**
@@ -3548,6 +3599,24 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             pullRequest,
           ]),
         );
+        // Flags the assignment left the hold with, such as a revoke while it was blocked, still
+        // hold the claim; the user's merge or close of that pull request lets it through.
+        const unheld = effectiveViolations(
+          yield* parse(ControlViolations, row.control_violations_json),
+          yield* parse(ProtectedPathAsks, row.protected_path_asks_json),
+        ).filter((violation) => {
+          const link = linked.get(pullRequestKey(violation.pullRequest));
+          if (link === undefined) return !isMerge(merged, violation.pullRequest);
+          return !link.merged && link.state !== "closed";
+        });
+        if (unheld.length > 0) {
+          if (!needsHold(row, unheld)) return null;
+          const at = yield* now;
+          yield* sql`UPDATE factory_assignments SET ${enterState("waiting-user", at)},
+              waiting_kind='control',waiting_reason=${controlReason(unheld)},updated_at=${at}
+              WHERE id=${id}`;
+          return { retro: false, row } as const;
+        }
         const gated = new Map<string, ThreadPullRequestKey>();
         for (const pullRequest of [...claim.pullRequests, ...linked.values()])
           gated.set(pullRequestKey(pullRequest), pullRequest);
@@ -3594,7 +3663,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    * the lock, and records which touch the manager's control paths. Paths the user allowed for the
    * assignment do not count. A newly flagged path sends the assignment to the user, records an ask
    * for a path no ask names yet, and tells the lead and the manager unless the user already
-   * declined it; once none remain the assignment returns to work. A failed read leaves that pull
+   * declined it; once none remain the assignment returns to work. An unlinked pull request's flag
+   * stays until the user merges it or allows its files. A failed read leaves that pull
    * request for the next reconcile. True when the assignment's state changed, so the caller stops
    * there.
    */
@@ -3610,15 +3680,30 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     const open = runs.pullRequests.filter(
       (pullRequest) => pullRequest.state === "open" && pullRequest.updatedAt !== null,
     );
-    const openKeys = new Set(open.map(pullRequestKey));
     const checked = yield* parse(ControlChecked, row.control_checked_json);
     const stored = yield* parse(ControlViolations, row.control_violations_json);
+    // A flag ends only with its pull request's merge or close, or a fresh read without protected
+    // paths. A replacement lead that has not linked the pull request, or whose link has not
+    // synced, ends nothing.
+    const latest = new Map(
+      (stored.length === 0
+        ? []
+        : [...withMerge(yield* previousLeadLinks(row.id), merged), ...runs.pullRequests]
+      ).map((link) => [pullRequestKey(link), link]),
+    );
+    const ended = (violation: FactoryControlViolation) => {
+      const link = latest.get(pullRequestKey(violation.pullRequest));
+      return (
+        isMerge(merged, violation.pullRequest) ||
+        (link !== undefined && (link.merged || link.state === "closed"))
+      );
+    };
     const due = open.filter(
       (pullRequest) => checked[pullRequestKey(pullRequest)] !== pullRequest.updatedAt,
     );
     if (
       due.length === 0 &&
-      stored.every((violation) => openKeys.has(pullRequestKey(violation.pullRequest))) &&
+      !stored.some(ended) &&
       !needsHold(
         row,
         effectiveViolations(stored, yield* parse(ProtectedPathAsks, row.protected_path_asks_json)),
@@ -3676,7 +3761,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         const nextChecked = { ...(yield* parse(ControlChecked, current.control_checked_json)) };
         const byKey = new Map(
           before
-            .filter((violation) => openKeys.has(pullRequestKey(violation.pullRequest)))
+            .filter((violation) => !ended(violation))
             .map((violation) => [pullRequestKey(violation.pullRequest), violation]),
         );
         const at = yield* now;
@@ -3781,7 +3866,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     }
   });
 
-  /** Whether the assignment's claim or any of its lead threads links the merged pull request. */
+  /**
+   * Whether the assignment's claim, any of its lead threads or a stored control flag names the
+   * merged pull request.
+   */
   const involvesMerge = Effect.fnUntraced(function* (
     row: AssignmentRow,
     runs: FactoryThreadRuns,
@@ -3791,6 +3879,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     const claim =
       row.claim_json === null ? null : yield* parse(FactoryAssignmentClaim, row.claim_json);
     if (claim?.pullRequests.some((pullRequest) => isMerge(merged, pullRequest))) return true;
+    const stored = yield* parse(ControlViolations, row.control_violations_json);
+    if (stored.some((violation) => isMerge(merged, violation.pullRequest))) return true;
     return (yield* previousLeadLinks(row.id)).some((link) => isMerge(merged, link));
   });
 
@@ -4398,9 +4488,13 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           yield* lock(
             Effect.gen(function* () {
               const at = yield* now;
-              yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},
-                  recovery_used=${attempt},waiting_kind=NULL,waiting_reason=NULL,updated_at=${at}
-                  WHERE id=${row.id}`;
+              const back = yield* returnToWork(
+                (yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
+                    WHERE id=${row.id}`)[0] ?? row,
+              );
+              yield* sql`UPDATE factory_assignments SET ${enterState(back.state, at)},
+                  recovery_used=${attempt},waiting_kind=${back.kind},waiting_reason=${back.reason},
+                  updated_at=${at} WHERE id=${row.id}`;
               yield* writeLog(manager.id, row.id, "recovery", input.brief, {
                 action: input.action,
                 attempt,
@@ -4467,9 +4561,14 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           yield* lock(
             Effect.gen(function* () {
               const at = yield* now;
-              yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},
+              const back = yield* returnToWork(
+                (yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
+                    WHERE id=${row.id}`)[0] ?? row,
+              );
+              yield* sql`UPDATE factory_assignments SET ${enterState(back.state, at)},
                   recovery_used=${attempt},lead_thread_id=${threadId},
-                  waiting_kind=NULL,waiting_reason=NULL,updated_at=${at} WHERE id=${row.id}`;
+                  waiting_kind=${back.kind},waiting_reason=${back.reason},updated_at=${at}
+                  WHERE id=${row.id}`;
               if (row.lead_thread_id !== null)
                 yield* sql`UPDATE factory_members SET ended_at=${at}
                     WHERE thread_id=${row.lead_thread_id} AND ended_at IS NULL`;
@@ -4520,14 +4619,21 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       const open = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM factory_dependencies
           WHERE blocked_assignment_id=${blocked.id} AND state='open'`;
       if ((open[0]?.count ?? 0) > 0) continue;
-      yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},waiting_kind=NULL,
-          waiting_reason=NULL,updated_at=${at} WHERE id=${blocked.id}`;
-      if (blocked.lead_thread_id !== null)
+      const back = yield* returnToWork(blocked);
+      yield* sql`UPDATE factory_assignments SET ${enterState(back.state, at)},
+          waiting_kind=${back.kind},waiting_reason=${back.reason},updated_at=${at}
+          WHERE id=${blocked.id}`;
+      if (blocked.lead_thread_id !== null) {
+        const text = `${dependency.title} is done (${delivering.title}). Confirm it unblocks you and continue.`;
         unblocked.push({
           projectId: blocked.project_id,
           threadId: blocked.lead_thread_id,
-          text: `${dependency.title} is done (${delivering.title}). Confirm it unblocks you and continue.`,
+          text:
+            back.kind === "control"
+              ? `${text} It is still held on protected files. ${back.reason}`
+              : text,
         });
+      }
     }
     return unblocked;
   });
@@ -5038,11 +5144,103 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     } satisfies FactoryDelegationPlan;
   });
 
+  /**
+   * More work for a finished member, in its own thread and on its own model. It takes a place
+   * through the same check as a new delegation, so a follow-up never runs past the team's count.
+   */
+  const planContinuation = Effect.fnUntraced(function* (
+    row: LeadAssignmentRow,
+    team: FactoryTeamSpec,
+    threadId: ThreadId,
+    input: FactoryDelegateInput,
+  ) {
+    const rows = yield* sql<MemberRow & { model_selection_json: string | null }>`SELECT *
+        FROM factory_members WHERE thread_id=${threadId} AND assignment_id=${row.id}
+        AND joined != 'observed' AND ended_at IS NULL`;
+    const recorded = rows[0];
+    if (recorded === undefined || recorded.role === "lead" || recorded.role === "manager")
+      return yield* error(
+        "invalid",
+        `${threadId} is not a member of ${row.title}'s team. Delegate without continueThreadId to start one.`,
+      );
+    const member = yield* decodeMember(recorded);
+    let place: Place & { readonly count: number; readonly busy: string };
+    let label: string;
+    if (team.definition !== undefined) {
+      const named =
+        member.memberName === undefined
+          ? undefined
+          : findTeamMember(team.definition, member.memberName);
+      if (named === undefined)
+        return yield* error(
+          "invalid",
+          `${threadId} is no longer one of ${team.definition.name}'s members.`,
+        );
+      if (
+        input.member !== undefined &&
+        findTeamMember(team.definition, input.member)?.name !== named.name
+      )
+        return yield* error("invalid", `${threadId} is ${named.name}, not ${input.member}.`);
+      label = named.name;
+      place = {
+        kind: "member",
+        name: named.name,
+        count: named.count,
+        busy: `The team allows ${named.count} × ${named.name} and ${named.count === 1 ? "it is" : "all are"} busy.`,
+      };
+    } else {
+      const staffed = team.members.find((candidate) => candidate.role === member.role);
+      if (staffed === undefined)
+        return yield* error("invalid", `The team for ${row.title} has no ${member.role}.`);
+      if (input.role !== undefined && input.role !== member.role)
+        return yield* error("invalid", `${threadId} is a ${member.role}, not a ${input.role}.`);
+      label = `The ${member.role}`;
+      place = {
+        kind: "role",
+        role: member.role,
+        count: staffed.count,
+        busy: `The team allows ${staffed.count} ${member.role}${staffed.count === 1 ? "" : "s"} and all are busy.`,
+      };
+    }
+    if (recorded.model_selection_json === null)
+      return yield* error("invalid", `${threadId} has no recorded model to continue on.`);
+    const modelSelection = yield* parse(ModelSelection, recorded.model_selection_json);
+    if (
+      input.modelSelection !== undefined &&
+      modelKey(input.modelSelection) !== modelKey(modelSelection)
+    )
+      return yield* error(
+        "invalid",
+        `${threadId} runs ${modelSelection.model} (${modelSelection.instanceId}); a follow-up keeps its thread's model.`,
+      );
+    const runs = yield* deps.readThreadRuns(threadId);
+    if (runs?.deleted)
+      return yield* error(
+        "invalid",
+        `${threadId} was deleted. Delegate without continueThreadId to start a new one.`,
+      );
+    yield* reservePlace(row.id, {
+      ...place,
+      idle: { threadId, busy: `${label} is still working in ${threadId}; wait for it to finish.` },
+    });
+    return {
+      role: member.role,
+      ...(member.memberName === undefined ? {} : { member: member.memberName }),
+      title: input.title ?? `${label}: ${row.title}`.slice(0, 120),
+      task: workerTask(input.task),
+      modelSelection,
+      allowedModels: [modelSelection],
+      continueThreadId: threadId,
+    } satisfies FactoryDelegationPlan;
+  });
+
   const planDelegation: FactoryServiceShape["planDelegation"] = (leadThreadId, input) =>
     protect(
       Effect.gen(function* () {
         const row = yield* requireLead(leadThreadId);
         const team = yield* parse(FactoryTeamSpec, row.team_json);
+        if (input.continueThreadId !== undefined)
+          return yield* planContinuation(row, team, input.continueThreadId, input);
         if (team.definition !== undefined)
           return yield* planMemberDelegation(row, team.definition, input);
         if (input.role === undefined)
@@ -5151,6 +5349,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
               named === undefined
                 ? { kind: "role", role: input.role }
                 : { kind: "member", name: named.name },
+              input.threadId,
             );
             return yield* decodeMember(rows[0]);
           }),

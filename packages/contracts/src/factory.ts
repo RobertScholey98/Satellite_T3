@@ -960,6 +960,8 @@ export const FactoryDelegateInput = Schema.Struct({
   task: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
   title: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
   modelSelection: Schema.optionalKey(ModelSelection),
+  /** Gives this finished member of your team more work in its own thread, on its own model. */
+  continueThreadId: Schema.optionalKey(ThreadId),
 });
 export type FactoryDelegateInput = typeof FactoryDelegateInput.Type;
 
@@ -971,6 +973,8 @@ export const FactoryDelegationPlan = Schema.Struct({
   task: Schema.String,
   modelSelection: ModelSelection,
   allowedModels: Schema.Array(ModelSelection),
+  /** The member thread that takes `task` as a follow-up; `task` is then the task section only. */
+  continueThreadId: Schema.optionalKey(ThreadId),
 });
 export type FactoryDelegationPlan = typeof FactoryDelegationPlan.Type;
 
