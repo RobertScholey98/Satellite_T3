@@ -1938,6 +1938,44 @@ describe("FactoryService sweep", () => {
     ),
   );
 
+  it.effect("holds a second delivery until the first marks its wake delivered", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, boards, sentMessages, controls } = factory;
+        const { manager, sentBefore } = yield* setupDone(factory, yield* activeManager(factory));
+        boards.push(board([{ number: 1, columnId: READY }]));
+        const sending = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringSend = Deferred.succeed(sending, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const first = yield* service.sweep.pipe(Effect.forkChild);
+        yield* Deferred.await(sending);
+
+        const secondReading = yield* Deferred.make<void>();
+        controls.beforeWakeRead = Deferred.succeed(secondReading, undefined);
+        // Runs the second sweep until it suspends: on the delivery lock, or past the wake read.
+        const second = yield* service.sweep.pipe(Effect.forkChild({ startImmediately: true }));
+        assert.isFalse(yield* Deferred.isDone(secondReading));
+
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(first);
+        yield* Fiber.join(second);
+        assert.deepStrictEqual(
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
+          [
+            [
+              manager.threadId,
+              "These Ready tickets are waiting for your judgement: #1 Ticket 1 (https://github.com/acme/app/issues/1); call factory_status, then factory_pickup for each.",
+            ],
+          ],
+        );
+        assert.isTrue(yield* Deferred.isDone(secondReading));
+      }),
+    ),
+  );
+
   it.effect("stalls a paused manager's lead without waking the manager", () =>
     withDatabase(
       Effect.gen(function* () {

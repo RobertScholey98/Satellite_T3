@@ -356,6 +356,8 @@ export interface FactoryServiceDependencies {
     readonly title: string;
     readonly body: string;
   }) => Effect.Effect<IssueRef, FactoryOperationError>;
+  /** Test seam: runs inside wake delivery just before it reads the undelivered wakes. */
+  readonly readingWakes?: (managerId: string) => Effect.Effect<void>;
 }
 
 export interface FactoryServiceShape {
@@ -4171,6 +4173,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
 
   const deliverWakes = Effect.fnUntraced(function* (manager: FactoryManager) {
     if (manager.threadId === null) return;
+    if (deps.readingWakes) yield* deps.readingWakes(manager.id);
     const rows = yield* sql<LogRow>`SELECT * FROM factory_log
         WHERE manager_id=${manager.id} AND kind='wake' AND delivered_at IS NULL
         ORDER BY sequence`;

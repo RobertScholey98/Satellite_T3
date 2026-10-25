@@ -253,6 +253,8 @@ interface HarnessControls {
   sendFailures: number;
   /** Runs once inside the next message sent to a thread, before it succeeds or fails. */
   duringSend: Effect.Effect<void> | null;
+  /** Runs once inside the next wake delivery, just before it reads the undelivered wakes. */
+  beforeWakeRead: Effect.Effect<void> | null;
   attemptFailures: number;
   fileReadFailures: number;
   ticketFailures: number;
@@ -289,6 +291,7 @@ export const makeHarness = (options: HarnessOptions = {}) =>
     const controls: HarnessControls = {
       sendFailures: 0,
       duringSend: null,
+      beforeWakeRead: null,
       attemptFailures: 0,
       fileReadFailures: 0,
       ticketFailures: 0,
@@ -455,6 +458,12 @@ export const makeHarness = (options: HarnessOptions = {}) =>
           );
         }),
       readPullRequestHead: (input) => Effect.sync(() => pullRequestHeads.get(input.number) ?? null),
+      readingWakes: () =>
+        Effect.suspend(() => {
+          const before = controls.beforeWakeRead ?? Effect.void;
+          controls.beforeWakeRead = null;
+          return before;
+        }),
       createTicket: (input) =>
         Effect.suspend(() => {
           ticketRequests.push(input);
