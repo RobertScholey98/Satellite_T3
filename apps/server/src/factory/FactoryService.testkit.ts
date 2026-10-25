@@ -640,6 +640,10 @@ export const setupDone = (factory: Factory, manager: FactoryManager) =>
     };
   });
 
+/**
+ * Tests pin these literally, so a new wake or log entry on an existing path fails every test that
+ * pins `logKinds`, `wakeReasons` or `sentMessages` for that path.
+ */
 export const logKinds = (service: Service, managerId: string, mark: number) =>
   logSince(service, managerId, mark).pipe(
     Effect.map((entries) => entries.map((entry) => entry.kind)),
@@ -663,7 +667,10 @@ export const SYNC_WORK = {
   complexity: "large",
 } as const;
 
-/** A lead thread at rest after a completed run, with no questions or pull requests. */
+/**
+ * A lead thread at rest after a completed run, with no questions or pull requests. A "replace"
+ * recovery hands over the stalled lead's worktree, so it needs a `worktreePath` here.
+ */
 export const idleRun = (overrides: Partial<FactoryThreadRuns> = {}): FactoryThreadRuns => ({
   deleted: false,
   latestRunStatus: "completed",
@@ -673,6 +680,10 @@ export const idleRun = (overrides: Partial<FactoryThreadRuns> = {}): FactoryThre
   worktreePath: null,
   ...overrides,
 });
+/**
+ * Reconciling this writes a stall wake without delivering it, so the next wake sent, such as a
+ * claim's or a question's, carries the stall in the same message.
+ */
 export const failedRun = idleRun({ latestRunStatus: "failed" });
 
 export const pullRequest = (number: number, merged: boolean, updatedAt: string | null = EPOCH) => ({
@@ -706,6 +717,7 @@ export const startedAssignment = (factory: Factory, tickets: ReadonlyArray<numbe
     return { ...(yield* setupDone(factory, manager)), assignment, lead: ThreadId.make("lead-1") };
   });
 
+/** See `logKinds`: a new wake on an existing path fails every test that pins these. */
 export const wakeReasons = (service: Service, managerId: string, mark: number) =>
   logSince(service, managerId, mark).pipe(
     Effect.map((entries) =>
