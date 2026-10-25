@@ -992,6 +992,31 @@ const needsHold = (
   (row.state === "active" ||
     (row.state === "waiting-user" && HOLDABLE_WAITS.has(row.waiting_kind)));
 
+/**
+ * The state a stalled or blocked assignment returns to work in. Unallowed flags it left the hold
+ * with, such as a revoke while it was out, hold it again; they were announced already, so this
+ * wakes no one.
+ */
+const returnToWork = (row: {
+  readonly control_violations_json: string;
+  readonly protected_path_asks_json: string;
+}) =>
+  Effect.all([
+    parse(ControlViolations, row.control_violations_json),
+    parse(ProtectedPathAsks, row.protected_path_asks_json),
+  ]).pipe(
+    Effect.map(([violations, asks]) => {
+      const effective = effectiveViolations(violations, asks);
+      return effective.length === 0
+        ? { state: "active" as const, kind: null, reason: null }
+        : {
+            state: "waiting-user" as const,
+            kind: "control" as const,
+            reason: controlReason(effective),
+          };
+    }),
+  );
+
 /** How the user answered an ask, as the manager and the lead are told it. */
 const answerText = (
   verb: "allowed" | "declined" | "revoked",
@@ -3500,6 +3525,24 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             pullRequest,
           ]),
         );
+        // Flags the assignment left the hold with, such as a revoke while it was blocked, still
+        // hold the claim; the user's merge or close of that pull request lets it through.
+        const unheld = effectiveViolations(
+          yield* parse(ControlViolations, row.control_violations_json),
+          yield* parse(ProtectedPathAsks, row.protected_path_asks_json),
+        ).filter((violation) => {
+          const link = linked.get(pullRequestKey(violation.pullRequest));
+          if (link === undefined) return !isMerge(merged, violation.pullRequest);
+          return !link.merged && link.state !== "closed";
+        });
+        if (unheld.length > 0) {
+          if (!needsHold(row, unheld)) return null;
+          const at = yield* now;
+          yield* sql`UPDATE factory_assignments SET ${enterState("waiting-user", at)},
+              waiting_kind='control',waiting_reason=${controlReason(unheld)},updated_at=${at}
+              WHERE id=${id}`;
+          return { retro: false, row } as const;
+        }
         const gated = new Map<string, ThreadPullRequestKey>();
         for (const pullRequest of [...claim.pullRequests, ...linked.values()])
           gated.set(pullRequestKey(pullRequest), pullRequest);
@@ -3546,7 +3589,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    * the lock, and records which touch the manager's control paths. Paths the user allowed for the
    * assignment do not count. A newly flagged path sends the assignment to the user, records an ask
    * for a path no ask names yet, and tells the lead and the manager unless the user already
-   * declined it; once none remain the assignment returns to work. A failed read leaves that pull
+   * declined it; once none remain the assignment returns to work. An unlinked pull request's flag
+   * stays until the user merges it or allows its files. A failed read leaves that pull
    * request for the next reconcile. True when the assignment's state changed, so the caller stops
    * there.
    */
@@ -3562,15 +3606,30 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     const open = runs.pullRequests.filter(
       (pullRequest) => pullRequest.state === "open" && pullRequest.updatedAt !== null,
     );
-    const openKeys = new Set(open.map(pullRequestKey));
     const checked = yield* parse(ControlChecked, row.control_checked_json);
     const stored = yield* parse(ControlViolations, row.control_violations_json);
+    // A flag ends only with its pull request's merge or close, or a fresh read without protected
+    // paths. A replacement lead that has not linked the pull request, or whose link has not
+    // synced, ends nothing.
+    const latest = new Map(
+      (stored.length === 0
+        ? []
+        : [...withMerge(yield* previousLeadLinks(row.id), merged), ...runs.pullRequests]
+      ).map((link) => [pullRequestKey(link), link]),
+    );
+    const ended = (violation: FactoryControlViolation) => {
+      const link = latest.get(pullRequestKey(violation.pullRequest));
+      return (
+        isMerge(merged, violation.pullRequest) ||
+        (link !== undefined && (link.merged || link.state === "closed"))
+      );
+    };
     const due = open.filter(
       (pullRequest) => checked[pullRequestKey(pullRequest)] !== pullRequest.updatedAt,
     );
     if (
       due.length === 0 &&
-      stored.every((violation) => openKeys.has(pullRequestKey(violation.pullRequest))) &&
+      !stored.some(ended) &&
       !needsHold(
         row,
         effectiveViolations(stored, yield* parse(ProtectedPathAsks, row.protected_path_asks_json)),
@@ -3628,7 +3687,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         const nextChecked = { ...(yield* parse(ControlChecked, current.control_checked_json)) };
         const byKey = new Map(
           before
-            .filter((violation) => openKeys.has(pullRequestKey(violation.pullRequest)))
+            .filter((violation) => !ended(violation))
             .map((violation) => [pullRequestKey(violation.pullRequest), violation]),
         );
         const at = yield* now;
@@ -3733,7 +3792,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     }
   });
 
-  /** Whether the assignment's claim or any of its lead threads links the merged pull request. */
+  /**
+   * Whether the assignment's claim, any of its lead threads or a stored control flag names the
+   * merged pull request.
+   */
   const involvesMerge = Effect.fnUntraced(function* (
     row: AssignmentRow,
     runs: FactoryThreadRuns,
@@ -3743,6 +3805,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     const claim =
       row.claim_json === null ? null : yield* parse(FactoryAssignmentClaim, row.claim_json);
     if (claim?.pullRequests.some((pullRequest) => isMerge(merged, pullRequest))) return true;
+    const stored = yield* parse(ControlViolations, row.control_violations_json);
+    if (stored.some((violation) => isMerge(merged, violation.pullRequest))) return true;
     return (yield* previousLeadLinks(row.id)).some((link) => isMerge(merged, link));
   });
 
@@ -4227,9 +4291,13 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           yield* lock(
             Effect.gen(function* () {
               const at = yield* now;
-              yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},
-                  recovery_used=${attempt},waiting_kind=NULL,waiting_reason=NULL,updated_at=${at}
-                  WHERE id=${row.id}`;
+              const back = yield* returnToWork(
+                (yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
+                    WHERE id=${row.id}`)[0] ?? row,
+              );
+              yield* sql`UPDATE factory_assignments SET ${enterState(back.state, at)},
+                  recovery_used=${attempt},waiting_kind=${back.kind},waiting_reason=${back.reason},
+                  updated_at=${at} WHERE id=${row.id}`;
               yield* writeLog(manager.id, row.id, "recovery", input.brief, {
                 action: input.action,
                 attempt,
@@ -4296,9 +4364,14 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           yield* lock(
             Effect.gen(function* () {
               const at = yield* now;
-              yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},
+              const back = yield* returnToWork(
+                (yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
+                    WHERE id=${row.id}`)[0] ?? row,
+              );
+              yield* sql`UPDATE factory_assignments SET ${enterState(back.state, at)},
                   recovery_used=${attempt},lead_thread_id=${threadId},
-                  waiting_kind=NULL,waiting_reason=NULL,updated_at=${at} WHERE id=${row.id}`;
+                  waiting_kind=${back.kind},waiting_reason=${back.reason},updated_at=${at}
+                  WHERE id=${row.id}`;
               if (row.lead_thread_id !== null)
                 yield* sql`UPDATE factory_members SET ended_at=${at}
                     WHERE thread_id=${row.lead_thread_id} AND ended_at IS NULL`;
@@ -4349,14 +4422,21 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       const open = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM factory_dependencies
           WHERE blocked_assignment_id=${blocked.id} AND state='open'`;
       if ((open[0]?.count ?? 0) > 0) continue;
-      yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},waiting_kind=NULL,
-          waiting_reason=NULL,updated_at=${at} WHERE id=${blocked.id}`;
-      if (blocked.lead_thread_id !== null)
+      const back = yield* returnToWork(blocked);
+      yield* sql`UPDATE factory_assignments SET ${enterState(back.state, at)},
+          waiting_kind=${back.kind},waiting_reason=${back.reason},updated_at=${at}
+          WHERE id=${blocked.id}`;
+      if (blocked.lead_thread_id !== null) {
+        const text = `${dependency.title} is done (${delivering.title}). Confirm it unblocks you and continue.`;
         unblocked.push({
           projectId: blocked.project_id,
           threadId: blocked.lead_thread_id,
-          text: `${dependency.title} is done (${delivering.title}). Confirm it unblocks you and continue.`,
+          text:
+            back.kind === "control"
+              ? `${text} It is still held on protected files. ${back.reason}`
+              : text,
         });
+      }
     }
     return unblocked;
   });
