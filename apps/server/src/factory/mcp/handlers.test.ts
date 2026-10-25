@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  type FactoryAmendAssignmentInput,
   type FactoryAssignment,
   type FactoryClaimCompleteInput,
   type FactoryCommissionInput,
@@ -216,6 +217,12 @@ const recoverInput: FactoryRecoverInput = {
   brief: "Quarantine the flaky fixture first.",
 };
 
+const amendInput: FactoryAmendAssignmentInput = {
+  assignmentId: assignment.id,
+  completionCondition: "One pull request to main, ready for review.",
+  reason: "The user asked for a single pull request.",
+};
+
 const completeInput: FactoryCompleteInput = {
   assignmentId: assignment.id,
   teamVerdict: { fit: "good", reason: "One implementer was enough." },
@@ -389,6 +396,7 @@ type LifecycleCall =
   | { readonly method: "reportDependency"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "askManager"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "recover"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "amendAssignment"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "complete"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "planDelegation"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "delegateTask"; readonly threadId: ThreadId; readonly input: unknown }
@@ -507,6 +515,13 @@ const makeHarness = Effect.gen(function* () {
       recover: (threadId, input) =>
         recordLifecycle({ method: "recover", threadId, input }).pipe(
           Effect.as({ ...assignment, recoveryUsed: 1 }),
+        ),
+      amendAssignment: (threadId, input) =>
+        recordLifecycle({ method: "amendAssignment", threadId, input }).pipe(
+          Effect.as({
+            ...assignment,
+            completionCondition: input.completionCondition ?? assignment.completionCondition,
+          }),
         ),
       complete: (threadId, input) =>
         recordLifecycle({ method: "complete", threadId, input }).pipe(
@@ -976,6 +991,40 @@ describe("factory_recover", () => {
       const harness = yield* makeHarness;
       const failure = yield* harness
         .call("factory_recover", recoverInput, LEAD_THREAD)
+        .pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        reason: "not-found",
+        message: "This thread is not an engineering manager.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
+    }),
+  );
+});
+
+describe("factory_amend_assignment", () => {
+  it.effect("forwards the manager thread and amendment", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_amend_assignment", amendInput);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "amendAssignment", threadId: MANAGER_THREAD, input: amendInput },
+      ]);
+      assert.strictEqual(
+        result.assignment.completionCondition,
+        "One pull request to main, ready for review.",
+      );
+      assert.strictEqual(
+        result.message,
+        `Amended "${assignment.title}". Role briefs rendered from now on use the new text.`,
+      );
+    }),
+  );
+
+  it.effect("refuses a lead calling a manager tool", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness
+        .call("factory_amend_assignment", amendInput, LEAD_THREAD)
         .pipe(Effect.flip);
       assert.deepInclude(failure, {
         reason: "not-found",

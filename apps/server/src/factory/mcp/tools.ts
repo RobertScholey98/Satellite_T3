@@ -1,4 +1,5 @@
 import {
+  FactoryAmendAssignmentInput,
   FactoryAskManagerInput,
   FactoryAssignment,
   FactoryClaimCompleteInput,
@@ -275,6 +276,24 @@ const RecoverTool = Tool.make("factory_recover", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
+const AmendAssignmentTool = Tool.make("factory_amend_assignment", {
+  description:
+    "For an engineering manager. Replace a live assignment's brief, completion condition, or both, when what the team must deliver changes mid-assignment. Role briefs rendered afterwards use the new text, and the lead is told once what changed and why. Refused for an assignment in its retro or ended, and when nothing would change.",
+  parameters: FactoryAmendAssignmentInput,
+  success: AssignmentResult,
+  failure: FactoryToolFailure,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    FactoryService,
+  ],
+})
+  .annotate(Tool.Title, "Amend a factory assignment")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
 const CompleteTool = Tool.make("factory_complete", {
   description:
     'For an engineering manager. End an assignment in its retro once the team retro is done and you have drafted its tickets. Record whether the team was a good or poor fit for the work and why. Pass `teamRetro: "skipped"` only when the lead\'s thread is gone or the user took it over, so no team retro will come.',
@@ -467,6 +486,7 @@ export const FactoryToolkit = Toolkit.make(
   ReportDependencyTool,
   AskManagerTool,
   RecoverTool,
+  AmendAssignmentTool,
   CompleteTool,
   DelegateTool,
   UpdateChecklistTool,
