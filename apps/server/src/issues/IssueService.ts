@@ -486,12 +486,15 @@ export const makeIssueService = Effect.fn("makeIssueService")(function* (
       ),
   );
   const refreshes = yield* makeDrainableWorker(refreshBoard);
+  // Only the queued refresh clears the mark, so once the board is marked its refresh must be
+  // queued, or the board never refreshes again. That holds through a disconnect, which interrupts
+  // the request, and through a failed publish, which comes after the enqueue.
   const requestRefresh = (boardId: string) =>
     Effect.suspend(() => {
       if (syncing.has(boardId)) return Effect.void;
       syncing.add(boardId);
-      return publish(boardId).pipe(Effect.andThen(refreshes.enqueue(boardId)));
-    });
+      return refreshes.enqueue(boardId).pipe(Effect.andThen(publish(boardId)));
+    }).pipe(Effect.uninterruptible);
 
   const requestReplay = Effect.fnUntraced(function* (requestId: string, payload: unknown) {
     const rows = yield* sql<{ payload_hash: string; result_json: string }>`
@@ -1216,31 +1219,39 @@ export const makeIssueService = Effect.fn("makeIssueService")(function* (
         const previous =
           (yield* sql<MoveRow>`SELECT * FROM issue_moves WHERE id=${input.moveId}`)[0];
         if (!previous) return yield* error("not-found", "The board move was not found.");
-        let id = previous.id;
         const attemptActive =
           previous.attempt_id !== null &&
           (yield* sql`SELECT 1 FROM issue_board_attempts WHERE id=${previous.attempt_id} AND active=1`)
             .length > 0;
-        if (previous.status === "failed" && previous.origin === "automatic" && attemptActive)
-          // The attempt still owns the ticket, so its move stays automatic and keeps later
-          // automatic moves unblocked if this try fails too.
-          yield* sql`UPDATE issue_moves SET status='pending',error=NULL,retry_at=NULL WHERE id=${previous.id}`;
-        else if (previous.status === "failed" && previous.origin === "manual")
-          // Retry is the newest manual decision, so it no longer waits on the column seen before.
-          yield* sql`UPDATE issue_moves SET status='pending',error=NULL,retry_at=NULL,expected_json=NULL
-              WHERE id=${previous.id}`;
-        else if (previous.status === "failed" || previous.status === "skipped")
-          // Applying a skipped automatic move, or a failed one whose attempt ended, is a deliberate
-          // manual move: it applies whatever the attempt's state, and the attempt resumes from there.
-          id = yield* enqueueMove({
-            requestKey: `manual:${input.requestId}`,
-            boardId: previous.board_id,
-            issue: yield* parse(IssueRef, previous.issue_json),
-            columnId: previous.column_id,
-            attemptId: previous.attempt_id,
-            origin: "manual",
-          });
-        yield* remember(input.requestId, input, id);
+        // Queueing a new move supersedes the old one first. A disconnect between the two would
+        // leave neither pending, and a replay of the remembered id would apply nothing.
+        const id = yield* transaction(
+          Effect.gen(function* () {
+            let id = previous.id;
+            if (previous.status === "failed" && previous.origin === "automatic" && attemptActive)
+              // The attempt still owns the ticket, so its move stays automatic and keeps later
+              // automatic moves unblocked if this try fails too.
+              yield* sql`UPDATE issue_moves SET status='pending',error=NULL,retry_at=NULL WHERE id=${previous.id}`;
+            else if (previous.status === "failed" && previous.origin === "manual")
+              // Retry is the newest manual decision, so it no longer waits on the column seen before.
+              yield* sql`UPDATE issue_moves SET status='pending',error=NULL,retry_at=NULL,expected_json=NULL
+                  WHERE id=${previous.id}`;
+            else if (previous.status === "failed" || previous.status === "skipped")
+              // Applying a skipped automatic move, or a failed one whose attempt ended, is a
+              // deliberate manual move: it applies whatever the attempt's state, and the attempt
+              // resumes from there.
+              id = yield* enqueueMove({
+                requestKey: `manual:${input.requestId}`,
+                boardId: previous.board_id,
+                issue: yield* parse(IssueRef, previous.issue_json),
+                columnId: previous.column_id,
+                attemptId: previous.attempt_id,
+                origin: "manual",
+              });
+            yield* remember(input.requestId, input, id);
+            return id;
+          }),
+        );
         yield* flushLocked({ id });
         return yield* readMove(id);
       }),
@@ -1291,52 +1302,64 @@ export const makeIssueService = Effect.fn("makeIssueService")(function* (
 
   const startAttempt: IssueServiceShape["startAttempt"] = (input) =>
     protect(
-      Effect.gen(function* () {
-        const row = yield* mutex.withPermits(1)(
-          Effect.gen(function* () {
-            const existing = (yield* sql<AttemptRow>`SELECT * FROM issue_board_attempts
+      // A disconnect interrupts the request. Once the attempt commits as launching its thread must
+      // still launch, or the attempt waits on a thread that never comes until the server restarts.
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const row = yield* mutex.withPermits(1)(
+            Effect.gen(function* () {
+              const existing = (yield* sql<AttemptRow>`SELECT * FROM issue_board_attempts
                 WHERE launch_request_id=${input.requestId}`)[0];
-            if (existing) {
-              yield* requestReplay(input.requestId, input);
-              return existing;
-            }
-            const board = yield* readBoard(input.boardId);
-            if (!board.mapping)
-              return yield* error("invalid", "Map this board's columns before starting tickets.");
-            const cwd = (yield* project(board.projectId)).workspaceRoot;
-            yield* project(input.projectId);
-            const item = yield* freshItem(
-              board.id,
-              cwd,
-              board.locator,
-              canonicalIssueKey(input.issue),
-            );
-            yield* storeItem(board.id, item);
-            if (!item.columnId || !issueReadyColumnIds(board.mapping).includes(item.columnId))
-              return yield* error(
-                "conflict",
-                "Start is available only while this ticket is in a configured Ready for development column.",
+              if (existing) {
+                yield* requestReplay(input.requestId, input);
+                return existing;
+              }
+              const { board, item, threadId } = yield* restore(
+                Effect.gen(function* () {
+                  const board = yield* readBoard(input.boardId);
+                  if (!board.mapping)
+                    return yield* error(
+                      "invalid",
+                      "Map this board's columns before starting tickets.",
+                    );
+                  const cwd = (yield* project(board.projectId)).workspaceRoot;
+                  yield* project(input.projectId);
+                  const item = yield* freshItem(
+                    board.id,
+                    cwd,
+                    board.locator,
+                    canonicalIssueKey(input.issue),
+                  );
+                  yield* storeItem(board.id, item);
+                  if (!item.columnId || !issueReadyColumnIds(board.mapping).includes(item.columnId))
+                    return yield* error(
+                      "conflict",
+                      "Start is available only while this ticket is in a configured Ready for development column.",
+                    );
+                  const threadId = yield* deps.allocateThreadId(input.projectId);
+                  return { board, item, threadId };
+                }),
               );
-            const threadId = yield* deps.allocateThreadId(input.projectId);
-            const id = NodeCrypto.randomUUID();
-            yield* transaction(
-              Effect.gen(function* () {
-                yield* sql`INSERT INTO issue_board_attempts(id,board_id,issue_key,issue_json,project_id,thread_id,status,active,
+              const id = NodeCrypto.randomUUID();
+              yield* transaction(
+                Effect.gen(function* () {
+                  yield* sql`INSERT INTO issue_board_attempts(id,board_id,issue_key,issue_json,project_id,thread_id,status,active,
                     start_column_id,launch_request_id,launch_json,created_at)
                     VALUES(${id},${board.id},${canonicalIssueKey(item.issue.ref)},${json(item.issue.ref)},${input.projectId},
                     ${threadId},'launching',0,${item.columnId},${input.requestId},${encodeLaunch(input)},${yield* now})`;
-                yield* remember(input.requestId, input, id);
-              }),
-            );
-            yield* bumpRevision(board.id);
-            return yield* readAttemptRow(id);
-          }),
-        );
-        if (row.status === "failed" && row.ended_reason === "launch-failed")
-          return yield* error("remote", row.failure ?? "This start failed. Start a new attempt.");
-        if (row.status === "launching") yield* launchAttempt(row, input);
-        return { attempt: yield* readAttempt(row.id), threadId: ThreadId.make(row.thread_id) };
-      }),
+                  yield* remember(input.requestId, input, id);
+                }),
+              );
+              yield* bumpRevision(board.id);
+              return yield* readAttemptRow(id);
+            }),
+          );
+          if (row.status === "failed" && row.ended_reason === "launch-failed")
+            return yield* error("remote", row.failure ?? "This start failed. Start a new attempt.");
+          if (row.status === "launching") yield* launchAttempt(row, input);
+          return { attempt: yield* readAttempt(row.id), threadId: ThreadId.make(row.thread_id) };
+        }),
+      ),
     );
 
   const resumeLaunches: IssueServiceShape["resumeLaunches"] = protect(

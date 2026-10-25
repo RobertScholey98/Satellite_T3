@@ -6,7 +6,9 @@ import {
   FactoryModelRef,
   type FactoryConfigBundle,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
@@ -522,6 +524,46 @@ it.layer(NodeServices.layer)("factory config export and import", (it) => {
       assert.strictEqual(
         yield* fs.readFileString(path.join(root, "factory-backups", "1", "workers", "docs.md")),
         before,
+      );
+    }),
+  );
+
+  it.effect("finishes a replace when the client disconnects after its removes", () =>
+    Effect.gen(function* () {
+      const { store, seed } = yield* withStore;
+      yield* seed;
+      const writing = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let held = false;
+      const holding = FactoryConfigStore.FactoryConfigStore.of({
+        ...store,
+        writeWorker: (definition) => {
+          if (held) return store.writeWorker(definition);
+          held = true;
+          return Deferred.succeed(writing, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.andThen(store.writeWorker(definition)),
+          );
+        },
+      });
+
+      const importing = yield* applyImport(
+        bundleOf(REMOTE),
+        decision({ mode: "replace", poolAdditions: [GROK] }),
+      ).pipe(
+        Effect.provideService(FactoryConfigStore.FactoryConfigStore, holding),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(writing);
+      // What the RPC server does to a disconnected client's requests.
+      importing.interruptUnsafe();
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.await(importing);
+
+      const view = yield* store.read;
+      assert.deepStrictEqual(
+        { ...view, configured: undefined, problems: undefined },
+        { ...REMOTE, configured: undefined, problems: undefined },
       );
     }),
   );

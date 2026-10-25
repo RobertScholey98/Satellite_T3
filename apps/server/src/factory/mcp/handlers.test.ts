@@ -26,11 +26,15 @@ import {
   type FactoryRole,
   type FactoryStatus,
   type FactoryUpdateChecklistInput,
+  MessageId,
   NodeId,
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpDelegateTaskResult,
+  type OrchestratorMcpThreadSendInput,
+  type OrchestratorMcpThreadSendResult,
   ProjectId,
   ProviderInstanceId,
+  RunId,
   SourceControlProviderKind,
   ThreadId,
 } from "@t3tools/contracts";
@@ -232,6 +236,14 @@ const plan: FactoryDelegationPlan = {
   allowedModels: [reviewerModel],
 };
 
+const followUp: OrchestratorMcpThreadSendResult = {
+  threadId: WORKER_THREAD,
+  messageId: MessageId.make("message-1"),
+  runId: RunId.make("run-2"),
+  status: "queued",
+  delivery: "started",
+};
+
 const delegated: OrchestratorMcpDelegateTaskResult = {
   taskId: NodeId.make("task-1"),
   childThreadId: CHILD_THREAD,
@@ -375,10 +387,12 @@ const definitions: FactoryDefinitionsView = {
 type LifecycleCall =
   | { readonly method: "claimComplete"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "reportDependency"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "askManager"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "recover"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "complete"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "planDelegation"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "delegateTask"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "sendToThread"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "recordMember"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "updateChecklist"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "createTeam"; readonly threadId: ThreadId; readonly input: unknown }
@@ -486,6 +500,10 @@ const makeHarness = Effect.gen(function* () {
         recordLifecycle({ method: "reportDependency", threadId, input }).pipe(
           Effect.as(dependency),
         ),
+      askManager: (threadId, input) =>
+        recordLifecycle({ method: "askManager", threadId, input }).pipe(
+          Effect.as({ assignment, managerPaused: false }),
+        ),
       recover: (threadId, input) =>
         recordLifecycle({ method: "recover", threadId, input }).pipe(
           Effect.as({ ...assignment, recoveryUsed: 1 }),
@@ -548,6 +566,12 @@ const makeHarness = Effect.gen(function* () {
           threadId: scope.thread!.threadId,
           input,
         }).pipe(Effect.as(delegated)),
+      sendToThread: (scope, input: OrchestratorMcpThreadSendInput) =>
+        recordLifecycle({
+          method: "sendToThread",
+          threadId: scope.thread!.threadId,
+          input,
+        }).pipe(Effect.as(followUp)),
     }),
     Layer.mock(FactoryConfigStore)({ directory: "factory", read: Effect.succeed(definitions) }),
     McpToolAccessTestkit.liveThreadsLayer,
@@ -902,6 +926,39 @@ describe("factory_report_dependency", () => {
   );
 });
 
+describe("factory_ask_manager", () => {
+  const question = { question: "May this assignment change the shared retry policy?" };
+
+  it.effect("forwards the lead thread and question", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_ask_manager", question, LEAD_THREAD);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "askManager", threadId: LEAD_THREAD, input: question },
+      ]);
+      assert.deepStrictEqual(result.assignment, assignment);
+      assert.strictEqual(
+        result.message,
+        "Sent to the manager. Keep working on anything the question does not block; the answer arrives in this thread.",
+      );
+    }),
+  );
+
+  it.effect("refuses a thread that does not lead an assignment", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness
+        .call("factory_ask_manager", question, OTHER_THREAD)
+        .pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        reason: "not-found",
+        message: "This thread is not a factory lead.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
+    }),
+  );
+});
+
 describe("factory_recover", () => {
   it.effect("forwards the manager thread and diagnosis", () =>
     Effect.gen(function* () {
@@ -1027,6 +1084,54 @@ describe("factory_delegate", () => {
           modelSelection: reviewerModel,
           joined: "created",
         },
+      });
+    }),
+  );
+
+  it.effect("sends a follow-up to the member's own thread and records it again", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Ref.set(harness.delegationPlan, {
+        ...plan,
+        role: "worker",
+        member: "Builder",
+        task: "# Task\n\nAlso add the label.",
+        continueThreadId: WORKER_THREAD,
+      });
+      const input: FactoryDelegateInput = {
+        continueThreadId: WORKER_THREAD,
+        task: "Also add the label.",
+      };
+      const result = yield* harness.call("factory_delegate", input, LEAD_THREAD);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "planDelegation", threadId: LEAD_THREAD, input },
+        {
+          method: "sendToThread",
+          threadId: LEAD_THREAD,
+          input: {
+            threadId: WORKER_THREAD,
+            message: "# Task\n\nAlso add the label.",
+            mode: "queue",
+          },
+        },
+        {
+          method: "recordMember",
+          threadId: LEAD_THREAD,
+          input: {
+            threadId: WORKER_THREAD,
+            role: "worker",
+            memberName: "Builder",
+            modelSelection: reviewerModel,
+            joined: "created",
+          },
+        },
+      ]);
+      assert.deepStrictEqual(result, {
+        childThreadId: WORKER_THREAD,
+        role: "worker",
+        model: reviewerModel,
+        message:
+          "Sent the follow-up to thread-worker (run run-2, started). Its completion does not wake this thread; wait on it with t3_thread_wait.",
       });
     }),
   );

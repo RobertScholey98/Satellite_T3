@@ -107,6 +107,25 @@ describe("IssueService stored copy", () => {
     ),
   );
 
+  it.effect("still refreshes when the client disconnects while asking for a refresh", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const held = yield* test.holdNextStatement("SELECT revision,synced_at,failed_at,failure");
+        const opening = yield* test.openBoard(true).pipe(Effect.forkChild);
+        yield* Deferred.await(held.started);
+        // What the RPC server does to a disconnected client's requests.
+        opening.interruptUnsafe();
+        yield* Deferred.succeed(held.release, undefined);
+        yield* Fiber.await(opening);
+        yield* test.service.drainRefreshes;
+
+        assert.strictEqual(test.calls.reads, 2);
+        assert.deepStrictEqual((yield* test.openBoard()).sync, sync(1, EPOCH));
+      }),
+    ),
+  );
+
   it.effect("keeps the revision when a refresh finds the board unchanged", () =>
     withDatabase(
       Effect.gen(function* () {
@@ -460,6 +479,26 @@ describe("IssueService Start", () => {
     ),
   );
 
+  it.effect("launches a committed start when the client disconnects during its launch", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const held = yield* test.holdNextLaunch;
+        const starting = yield* test.startAttempt(1, "start-request").pipe(Effect.forkChild);
+        yield* Deferred.await(held.started);
+        // What the RPC server does to a disconnected client's requests.
+        starting.interruptUnsafe();
+        yield* Deferred.succeed(held.release, undefined);
+        yield* Fiber.await(starting);
+
+        assert.deepStrictEqual(
+          test.launches.map((launch) => [launch.commandId, launch.threadId]),
+          [["issue-attempt:start-request", "thread-1"]],
+        );
+      }),
+    ),
+  );
+
   it.effect("a failed launch marks the attempt failed and leaves the ticket alone", () =>
     withDatabase(
       Effect.gen(function* () {
@@ -796,6 +835,39 @@ describe("IssueService after the merge and on retried moves", () => {
         yield* test.fail("move", null);
 
         const retried = yield* test.service.retryMove({ requestId: "retry", moveId: failed!.id });
+        assert.deepStrictEqual(
+          [retried.origin, retried.status, test.remoteColumn(1)],
+          ["manual", "applied", "pr"],
+        );
+      }),
+    ),
+  );
+
+  it.effect("a Retry the client disconnected from keeps the failed move to retry again", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const { threadId, attempt } = yield* test.startAttempt(1);
+        yield* test.threadRunning(threadId);
+        yield* test.service.reconcileThread(threadId);
+        yield* test.fail("move", authenticationFailure());
+        yield* test.linkPullRequest(threadId, 7, "open");
+        yield* test.service.reconcileThread(threadId);
+        const failed = yield* test.latestMove(1);
+        yield* test.service.endAttempt({ requestId: "stop", attemptId: attempt.id });
+        yield* test.fail("move", null);
+
+        assert.isDefined(failed);
+        const held = yield* test.holdNextStatement("INSERT INTO issue_moves");
+        const input = { requestId: "retry", moveId: failed.id };
+        const retrying = yield* test.service.retryMove(input).pipe(Effect.forkChild);
+        yield* Deferred.await(held.started);
+        // What the RPC server does to a disconnected client's requests.
+        retrying.interruptUnsafe();
+        yield* Deferred.succeed(held.release, undefined);
+        yield* Fiber.await(retrying);
+
+        const retried = yield* test.service.retryMove(input);
         assert.deepStrictEqual(
           [retried.origin, retried.status, test.remoteColumn(1)],
           ["manual", "applied", "pr"],

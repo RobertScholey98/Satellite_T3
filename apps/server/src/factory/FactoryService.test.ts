@@ -315,6 +315,32 @@ describe("FactoryService managers", () => {
     ),
   );
 
+  it.effect("finishes a committed create when the client disconnects during its launch", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { service, controls, launches } = yield* makeHarness({ config: ENVIRONMENT });
+        const launching = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringLaunch = Deferred.succeed(launching, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const creating = yield* create(service).pipe(Effect.forkChild);
+        yield* Deferred.await(launching);
+        // What the RPC server does to a disconnected client's requests.
+        creating.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(creating);
+
+        const retried = yield* create(service);
+        assert.strictEqual(yield* managerRowCount, 1);
+        assert.deepStrictEqual(
+          launches.map((launch) => launch.threadId),
+          [retried.threadId],
+        );
+      }),
+    ),
+  );
+
   it.effect("creates a second manager in a project that already has one", () =>
     withDatabase(
       Effect.gen(function* () {
@@ -954,6 +980,35 @@ describe("FactoryService primed manager thread", () => {
         const approved = yield* approve;
         assert.deepStrictEqual(yield* Fiber.join(repeat!), approved);
         assert.strictEqual(launches.length, launchesBefore + 1);
+      }),
+    ),
+  );
+
+  it.effect("finishes a committed approval when the client disconnects during its launch", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, controls, boards, settles } = factory;
+        boards.push(board([]));
+        const created = yield* create(service);
+        yield* service.proposeOnboarding(created.threadId!, PROPOSAL);
+        const launching = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringLaunch = Deferred.succeed(launching, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const input = { requestId: "approve-1", managerId: created.id, result: RESULT };
+        const approving = yield* service.approveOnboarding(input).pipe(Effect.forkChild);
+        yield* Deferred.await(launching);
+        // What the RPC server does to a disconnected client's requests.
+        approving.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(approving);
+
+        assert.deepStrictEqual(settles, [created.threadId]);
+        const retried = yield* service.approveOnboarding(input);
+        assert.strictEqual(retried.state, "ready");
+        assert.strictEqual(retried.onboardingThreadId, created.threadId);
       }),
     ),
   );
@@ -1871,6 +1926,11 @@ describe("FactoryService sweep", () => {
 const RETRO_REQUEST =
   "All pull requests for Ticket 1 are merged. Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.";
 
+const CLAIM_WAKE =
+  "The lead of Ticket 1 claims it complete with acme/app#7 (head unknown). Check the evidence with factory_status.";
+const RETRO_WAKE =
+  "All pull requests for Ticket 1 are merged and its lead is writing the team retro. You will be woken for your manager retro once it is done.";
+
 describe("FactoryService completion claims", () => {
   it.effect("starts the retro when every pull request is merged and asks the lead for it", () =>
     withDatabase(
@@ -1889,13 +1949,87 @@ describe("FactoryService completion claims", () => {
           { host: "github.com", repository: "acme/app", number: 7 },
         ]);
         assert.strictEqual(claimed.claim!.evidence, "pnpm test passes; the empty list renders.");
-        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), ["claim", "wake"]);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["retro"]);
+        assert.deepStrictEqual(yield* logKinds(service, manager.id, mark), [
+          "claim",
+          "wake",
+          "wake",
+        ]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["claim", "retro"]);
         assert.deepStrictEqual(
           sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
-          [[lead, RETRO_REQUEST]],
+          [
+            [lead, RETRO_REQUEST],
+            [
+              manager.threadId,
+              `The lead of Ticket 1 claims it complete with acme/app#7 (merged). Check the evidence with factory_status.
+
+${RETRO_WAKE}`,
+            ],
+          ],
         );
         assert.isTrue((yield* service.status(manager.id)).capacityFree);
+      }),
+    ),
+  );
+
+  it.effect("wakes the manager once with the claimed pull requests and their heads", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadRuns, sentMessages, pullRequestHeads } = factory;
+        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false)] }));
+        pullRequestHeads.set(7, "0123456789abcdef0123456789abcdef01234567");
+
+        const claimed = yield* service.claimComplete(lead, {
+          evidence: "Checks pass.",
+          pullRequests: [{ host: "github.com", repository: "acme/app", number: 7 }],
+        });
+        assert.strictEqual(claimed.state, "waiting-user");
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["claim"]);
+        const toManager = () =>
+          sentMessages
+            .slice(sentBefore)
+            .filter((message) => message.threadId === manager.threadId)
+            .map((message) => message.text);
+        assert.deepStrictEqual(toManager(), [
+          "The lead of Ticket 1 claims it complete with acme/app#7 at 0123456789ab. Check the evidence with factory_status.",
+        ]);
+
+        yield* service.sweep;
+        assert.strictEqual(toManager().length, 1);
+      }),
+    ),
+  );
+
+  it.effect("names the pull requests linked to the lead's thread that the claim leaves out", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadRuns, sentMessages, pullRequestHeads } = factory;
+        const { manager, lead, sentBefore } = yield* startedAssignment(factory);
+        threadRuns.set(
+          lead,
+          idleRun({
+            pullRequests: [
+              pullRequest(7, false),
+              { ...pullRequest(9, false), state: "closed" as const },
+            ],
+          }),
+        );
+        pullRequestHeads.set(7, "0123456789abcdef0123456789abcdef01234567");
+
+        const claimed = yield* service.claimComplete(lead, { evidence: "Checks pass." });
+        assert.strictEqual(claimed.waitingReason, "Pull requests await the user's review: #7.");
+        assert.deepStrictEqual(
+          sentMessages
+            .slice(sentBefore)
+            .filter((message) => message.threadId === manager.threadId)
+            .map((message) => message.text),
+          [
+            "The lead of Ticket 1 claims it complete with acme/app#7 at 0123456789ab. Check the evidence with factory_status.",
+          ],
+        );
       }),
     ),
   );
@@ -1918,7 +2052,7 @@ describe("FactoryService completion claims", () => {
         assert.strictEqual(claimed.state, "waiting-user");
         assert.strictEqual(claimed.waitingReason, "Pull requests await the user's review: #7.");
         assert.strictEqual((yield* service.listManagers({}))[0]!.waitingOnYou, 1);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), []);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["claim"]);
 
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "waiting-user");
@@ -1929,10 +2063,13 @@ describe("FactoryService completion claims", () => {
         );
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "retro");
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["retro"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["claim", "retro"]);
         assert.deepStrictEqual(
           sentMessages.slice(sentBefore).map((message) => message.text),
-          [RETRO_REQUEST],
+          [
+            "The lead of Ticket 1 claims it complete with acme/app#7 (head unknown), acme/app#8 (merged). Check the evidence with factory_status.",
+            RETRO_REQUEST,
+          ],
         );
       }),
     ),
@@ -1956,14 +2093,17 @@ describe("FactoryService completion claims", () => {
         // The event names the repository as the host spells it, and comes without a host.
         yield* service.reconcileMerge({ repository: "Acme/App", number: 7 });
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "retro");
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["retro"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["claim", "retro"]);
 
         // The sync catching up later finds the retro already under way.
         threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, true)] }));
         yield* service.reconcileThread(lead);
         assert.deepStrictEqual(
           sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
-          [[lead, RETRO_REQUEST]],
+          [
+            [manager.threadId, CLAIM_WAKE],
+            [lead, RETRO_REQUEST],
+          ],
         );
       }),
     ),
@@ -1973,7 +2113,7 @@ describe("FactoryService completion claims", () => {
     withDatabase(
       Effect.gen(function* () {
         const factory = yield* makeFactory;
-        const { service, threadRuns } = factory;
+        const { service, threadRuns, sentMessages } = factory;
         const { manager, assignment, lead } = yield* startedAssignment(factory);
         threadRuns.set(lead, {
           ...failedRun,
@@ -1988,8 +2128,21 @@ describe("FactoryService completion claims", () => {
         });
         const newLead = leadThreadId!;
         threadRuns.set(newLead, idleRun());
+        const sentBeforeClaim = sentMessages.length;
         const claimed = yield* service.claimComplete(newLead, { evidence: "Checks pass." });
         assert.strictEqual(claimed.waitingReason, "Pull requests await the user's review: #7.");
+        // The wake names the pull request the claim waits on, though only the replaced lead linked it.
+        assert.deepStrictEqual(
+          sentMessages
+            .slice(sentBeforeClaim)
+            .filter((message) => message.threadId === manager.threadId)
+            .map((message) => message.text),
+          [
+            `Assignment Ticket 1 stalled: The lead's latest run failed. Investigate its lead thread, then call factory_recover to rebrief or replace the lead, or recommend to the user.
+
+${CLAIM_WAKE}`,
+          ],
+        );
         // The merge card reads the replaced lead's links too, so #7 is offered to merge.
         assert.deepStrictEqual(
           (yield* workspace(service)).assignments.map((entry) => [
@@ -2054,6 +2207,27 @@ describe("FactoryService completion claims", () => {
             pullRequests: [{ host: "github.com", repository: "acme/app", number: 7 }],
           });
           assert.strictEqual(claimed.state, "retro");
+
+          // Who is claiming, and whether the assignment can still be claimed, are told first.
+          const unlinkedClaim = {
+            evidence: "Checks pass.",
+            pullRequests: [{ host: "github.com", repository: "acme/app", number: 9 }],
+          };
+          const ended = yield* service.claimComplete(lead, unlinkedClaim).pipe(Effect.flip);
+          assert.deepStrictEqual(
+            [ended.reason, ended.message],
+            [
+              "conflict",
+              "Ticket 1 is retro; a completion claim needs it active, blocked or waiting on the user.",
+            ],
+          );
+          const notLead = yield* service
+            .claimComplete(manager.threadId!, unlinkedClaim)
+            .pipe(Effect.flip);
+          assert.deepStrictEqual(
+            [notLead.reason, notLead.message],
+            ["not-found", "This thread is not a factory lead."],
+          );
         }),
       ),
   );
@@ -2341,6 +2515,43 @@ describe("FactoryService completion", () => {
       }),
     ),
   );
+
+  it.effect("finishes a committed cancel when the client disconnects during it", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, controls, interrupts, sentMessages } = factory;
+        const { assignment, lead, sentBefore } = yield* startedAssignment(factory);
+        const interrupting = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringInterrupt = Deferred.succeed(interrupting, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const cancelling = yield* service
+          .cancel({ requestId: "cancel-1", assignmentId: assignment.id, reason: "Descoped" })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(interrupting);
+        // What the RPC server does to a disconnected client's requests.
+        cancelling.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(cancelling);
+
+        assert.deepStrictEqual(
+          interrupts.map((interrupt) => [interrupt.threadId, interrupt.commandId]),
+          [[lead, "factory-cancel:cancel-1"]],
+        );
+        assert.deepStrictEqual(
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
+          [
+            [
+              lead,
+              "The user cancelled Ticket 1: Descoped. Stop the work. Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.",
+            ],
+          ],
+        );
+      }),
+    ),
+  );
 });
 
 describe("FactoryService takeover", () => {
@@ -2443,6 +2654,34 @@ describe("FactoryService project pause", () => {
         threadRuns.set(lead, idleRun({ latestRunStatus: "interrupted" }));
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "active");
+      }),
+    ),
+  );
+
+  it.effect("interrupts the leads of a committed pause when the client disconnects during it", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, controls, interrupts } = factory;
+        const { manager, lead } = yield* startedAssignment(factory);
+        const interrupting = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringInterrupt = Deferred.succeed(interrupting, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const pausing = yield* service
+          .pauseManager({ requestId: "pause-1", managerId: manager.id, scope: "project" })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(interrupting);
+        // What the RPC server does to a disconnected client's requests.
+        pausing.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(pausing);
+
+        assert.deepStrictEqual(
+          interrupts.map((interrupt) => [interrupt.threadId, interrupt.commandId]),
+          [[lead, `factory-pause:pause-1:${lead}`]],
+        );
       }),
     ),
   );
@@ -2641,6 +2880,77 @@ describe("FactoryService findings", () => {
   );
 });
 
+describe("FactoryService lead questions", () => {
+  const QUESTION = "May this assignment change the shared retry policy?";
+  const QUESTION_WAKE = `The lead of Ticket 1 asks: ${QUESTION}\n\nReply in its thread with t3_thread_send (threadId lead-1).`;
+
+  it.effect("sends a lead's question to the manager's thread at once", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, sentMessages } = factory;
+        const { manager, lead, mark, sentBefore } = yield* startedAssignment(factory);
+
+        const asked = yield* service.askManager(lead, { question: QUESTION });
+        assert.isFalse(asked.managerPaused);
+        assert.strictEqual(asked.assignment.state, "active");
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["question"]);
+        assert.deepStrictEqual(
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
+          [[manager.threadId, QUESTION_WAKE]],
+        );
+
+        yield* service.sweep;
+        assert.strictEqual(sentMessages.length - sentBefore, 1);
+      }),
+    ),
+  );
+
+  it.effect("holds a question for a paused manager until it resumes", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, sentMessages } = factory;
+        const { manager, lead } = yield* startedAssignment(factory);
+        yield* service.pauseManager({
+          requestId: "pause-1",
+          managerId: manager.id,
+          scope: "manager",
+        });
+        const sentBefore = sentMessages.length;
+
+        const asked = yield* service.askManager(lead, { question: QUESTION });
+        assert.isTrue(asked.managerPaused);
+        yield* service.sweep;
+        assert.strictEqual(sentMessages.length, sentBefore);
+
+        yield* service.resumeManager({ requestId: "resume-1", managerId: manager.id });
+        yield* service.sweep;
+        assert.deepStrictEqual(
+          sentMessages
+            .slice(sentBefore)
+            .filter((message) => message.threadId === manager.threadId)
+            .map((message) => message.text),
+          [QUESTION_WAKE],
+        );
+      }),
+    ),
+  );
+
+  it.effect("refuses a thread that does not lead an assignment", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { manager } = yield* startedAssignment(factory);
+        const refused = yield* factory.service
+          .askManager(manager.threadId!, { question: QUESTION })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "not-found");
+      }),
+    ),
+  );
+});
+
 describe("FactoryService retro", () => {
   it.effect(
     "wakes the manager for its retro once the team retro is done, and completes after",
@@ -2667,6 +2977,7 @@ describe("FactoryService retro", () => {
           assert.isNotNull(done.retro.teamDoneAt);
           assert.isNull(done.retro.managerDoneAt);
           assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), [
+            "claim",
             "retro",
             "manager-retro",
           ]);
@@ -3221,6 +3532,71 @@ describe("FactoryService applied drafts", () => {
       }),
     ),
   );
+
+  it.effect("finishes applying a team when the client disconnects after its file is written", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, configStore, controls } = factory;
+        const manager = yield* activeManager(factory);
+        const opus = { driver: ProviderDriverKind.make("claudeAgent"), model: "claude-opus-5-5" };
+        yield* configStore.writeSettings({ version: 1, modelPool: [opus], recoveryAllowance: 1 });
+        const team = {
+          id: "trio",
+          name: "Trio",
+          useWhen: "Risky migrations.",
+          workflow: "Implement, review, verify.",
+          mayEditProtectedPaths: false,
+          createdBy: "manager" as const,
+          lead: {
+            id: "default",
+            name: "Default lead",
+            models: { dynamic: true, models: [opus] },
+            instructions: "",
+          },
+          members: [
+            {
+              id: "implementer",
+              name: "Implementer",
+              models: { dynamic: false, models: [opus] },
+              description: "Implement it.",
+              count: 1,
+            },
+          ],
+        };
+        const { draft } = yield* draftChange(factory, manager.threadId!, {
+          kind: "team",
+          before: null,
+          after: team,
+        });
+        const written = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringTeamWrite = Deferred.succeed(written, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+
+        const applying = yield* service
+          .applyDraft({ requestId: "apply-1", draftId: draft.id })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(written);
+        // What the RPC server does to a disconnected client's requests.
+        applying.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(applying);
+
+        assert.deepStrictEqual(
+          (yield* service.listDrafts({})).map((entry) => [entry.id, entry.state]),
+          [[draft.id, "approved"]],
+        );
+        assert.deepStrictEqual(
+          (yield* configStore.read).teams.find((saved) => saved.id === "trio"),
+          team,
+        );
+        const retried = yield* service.applyDraft({ requestId: "apply-1", draftId: draft.id });
+        assert.strictEqual(retried.state, "approved");
+      }),
+    ),
+  );
 });
 
 /** Claims ticket 1 with nothing open, so the assignment goes straight to its retro. */
@@ -3293,6 +3669,7 @@ describe("FactoryService skipped team retro", () => {
 
         yield* service.sweep;
         assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), [
+          "claim",
           "retro",
           "manager-retro",
         ]);

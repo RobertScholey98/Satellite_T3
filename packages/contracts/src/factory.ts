@@ -896,6 +896,12 @@ export const FactoryReportDependencyInput = Schema.Struct({
 });
 export type FactoryReportDependencyInput = typeof FactoryReportDependencyInput.Type;
 
+/** The lead asks its manager something only the manager or the user can answer. */
+export const FactoryAskManagerInput = Schema.Struct({
+  question: TrimmedNonEmptyString.check(Schema.isMaxLength(4000)),
+});
+export type FactoryAskManagerInput = typeof FactoryAskManagerInput.Type;
+
 /** The manager's diagnosis of a stalled assignment: brief the same lead again, or replace it. */
 export const FactoryRecoverInput = Schema.Struct({
   assignmentId: Id,
@@ -954,6 +960,8 @@ export const FactoryDelegateInput = Schema.Struct({
   task: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
   title: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
   modelSelection: Schema.optionalKey(ModelSelection),
+  /** Gives this finished member of your team more work in its own thread, on its own model. */
+  continueThreadId: Schema.optionalKey(ThreadId),
 });
 export type FactoryDelegateInput = typeof FactoryDelegateInput.Type;
 
@@ -965,6 +973,8 @@ export const FactoryDelegationPlan = Schema.Struct({
   task: Schema.String,
   modelSelection: ModelSelection,
   allowedModels: Schema.Array(ModelSelection),
+  /** The member thread that takes `task` as a follow-up; `task` is then the task section only. */
+  continueThreadId: Schema.optionalKey(ThreadId),
 });
 export type FactoryDelegationPlan = typeof FactoryDelegationPlan.Type;
 

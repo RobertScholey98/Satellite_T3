@@ -121,6 +121,20 @@ describe("FactoryService delegation", () => {
           modelSelection: plan.modelSelection,
           joined: "created",
         });
+        const busy = () =>
+          service.planDelegation(lead, { role: "implementer", task: "Fix the next thing." }).pipe(
+            Effect.flip,
+            Effect.map((failure) => failure.message),
+          );
+        // Running, waiting on the user, and recorded before its first run are all still working.
+        for (const runs of [
+          idleRun({ latestRunStatus: "running", runInProgress: true }),
+          idleRun({ pendingRequests: 1 }),
+          idleRun({ latestRunStatus: null }),
+        ]) {
+          factory.threadRuns.set(worker, runs);
+          assert.strictEqual(yield* busy(), "The team allows 1 implementer and all are busy.");
+        }
         factory.threadRuns.set(worker, idleRun());
 
         const next = yield* service.planDelegation(lead, {

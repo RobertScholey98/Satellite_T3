@@ -13,6 +13,10 @@ keep upstream's shape.
 - Satellite contract changes are additive only: new WS methods, new union members, and new optional
   fields. Never rename, remove, or reshape an upstream contract, and never make an upstream optional
   field required.
+- Removing a required field from a schema the server sends, Satellite's own included, breaks every
+  client built before the change: it decodes every response against its own copy of `WsRpcGroup`
+  in [`rpc.ts`](../../packages/contracts/src/rpc.ts) and rejects the whole message. Make the field
+  optional and keep sending it for a release, then remove it.
 - Satellite keeps upstream's `ORCHESTRATION_PROTOCOL_VERSION` in
   [`environment.ts`](../../packages/contracts/src/environment.ts) and follows upstream's bumps. A
   Satellite-only bump would make upstream clients treat the server as incompatible.
@@ -83,6 +87,11 @@ git diff --name-only --no-renames --diff-filter=MD "$(git merge-base HEAD upstre
 ```
 
 Run it before and after a change. Growth outside registration points needs a reason in the PR.
+
+Removing a Satellite feature means reverting its upstream touches as well, using the feature's rows
+in the [upstream sync runbook](../operations/upstream-sync.md#where-satellite-touches-upstream).
+Knip reports unused files and exports but not an optional member left on an upstream interface or
+schema, so a leftover touch passes every check and keeps costing merges.
 
 ## Registration module shape
 

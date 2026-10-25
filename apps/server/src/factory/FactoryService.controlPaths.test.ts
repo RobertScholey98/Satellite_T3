@@ -1,6 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
-import type { FactoryAssignment } from "@t3tools/contracts";
+import type { FactoryAssignment, ThreadId } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -52,6 +54,26 @@ const answer = (
 const askPaths = (assignment: FactoryAssignment) =>
   assignment.protectedPathAsks.map((ask) => [ask.paths, ask.state, ask.source]);
 
+const HELD_REASON = "Pull request #7 changes protected paths: AGENTS.md.";
+
+/** Commissions, finishes and completes the assignment that delivers `dependencyId`. */
+const deliver = (service: Service, managerThreadId: ThreadId, dependencyId: string) =>
+  Effect.gen(function* () {
+    const delivering = yield* service.commission(managerThreadId, {
+      title: "Sync cursor endpoint",
+      brief: "Add the cursor to GET /sync.",
+      completionCondition: "GET /sync returns the cursor.",
+      complexity: "small",
+      dependencyId,
+    });
+    yield* service.claimComplete(delivering.leadThreadId!, { evidence: "Endpoint shipped." });
+    yield* service.retroDone(delivering.leadThreadId!);
+    yield* service.complete(managerThreadId, {
+      assignmentId: delivering.id,
+      teamVerdict: { fit: "good", reason: "Small team, quick turnaround." },
+    });
+  });
+
 describe("FactoryService control paths", () => {
   it.effect("holds a pull request that touches protected paths until a new push clears it", () =>
     withDatabase(
@@ -93,13 +115,18 @@ describe("FactoryService control paths", () => {
         });
         assert.strictEqual(claimed.state, "waiting-user");
         assert.strictEqual(claimed.waitingReason, held.waitingReason);
+        // The claim wakes the manager at once, with the held paths it had not heard about yet.
+        const managerText = `Assignment Ticket 1: ${leadText}
+
+The lead of Ticket 1 claims it complete with acme/app#7 (head unknown). Check the evidence with factory_status.`;
+        assert.strictEqual(sentMessages.at(-1)!.threadId, manager.threadId);
+        assert.strictEqual(sentMessages.at(-1)!.text, managerText);
 
         yield* service.reconcileThread(lead);
         assert.strictEqual(fileReads.length, 1);
 
         yield* service.sweep;
-        assert.strictEqual(sentMessages.at(-1)!.threadId, manager.threadId);
-        assert.strictEqual(sentMessages.at(-1)!.text, `Assignment Ticket 1: ${leadText}`);
+        assert.strictEqual(sentMessages.at(-1)!.text, managerText);
 
         pullRequestFiles.set(7, ["src/list.tsx"]);
         threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-2")] }));
@@ -140,12 +167,16 @@ describe("FactoryService control paths", () => {
         const merged = (yield* service.assignmentForThread(lead))!;
         assert.strictEqual(merged.state, "retro");
         assert.deepStrictEqual(merged.controlViolations, []);
-        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), ["control", "retro"]);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id, mark), [
+          "control",
+          "claim",
+          "retro",
+        ]);
         assert.strictEqual(
           sentMessages.at(-1)!.text,
           "All pull requests for Ticket 1 are merged. Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.",
         );
-        assert.strictEqual(sentMessages.length - sentBefore, 2);
+        assert.strictEqual(sentMessages.length - sentBefore, 3);
       }),
     ),
   );
@@ -551,7 +582,7 @@ describe("FactoryService control paths", () => {
     ),
   );
 
-  it.effect("holds a revoked file again once a blocked assignment returns to work", () =>
+  it.effect("holds a revoked file again as soon as a blocked assignment returns to work", () =>
     withDatabase(
       Effect.gen(function* () {
         const factory = yield* makeTeamFactory;
@@ -571,37 +602,197 @@ describe("FactoryService control paths", () => {
         });
         const revoked = yield* answer(service, assignment, askId, "decline", "revoke-1");
         assert.strictEqual(revoked.state, "blocked");
+        yield* deliver(service, manager.threadId!, dependency.id);
 
-        const delivering = yield* service.commission(manager.threadId!, {
-          title: "Sync cursor endpoint",
-          brief: "Add the cursor to GET /sync.",
-          completionCondition: "GET /sync returns the cursor.",
-          complexity: "small",
-          dependencyId: dependency.id,
-        });
-        yield* service.claimComplete(delivering.leadThreadId!, { evidence: "Endpoint shipped." });
-        yield* service.retroDone(delivering.leadThreadId!);
-        yield* service.complete(manager.threadId!, {
-          assignmentId: delivering.id,
-          teamVerdict: { fit: "good", reason: "Small team, quick turnaround." },
-        });
-        assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "active");
-
-        // The pull request has not changed since its last check, so nothing is due to read.
-        yield* service.reconcileThread(lead);
         const held = (yield* service.assignmentForThread(lead))!;
         assert.strictEqual(held.state, "waiting-user");
-        assert.strictEqual(
-          held.waitingReason,
-          "Pull request #7 changes protected paths: AGENTS.md.",
-        );
+        assert.strictEqual(held.waitingReason, HELD_REASON);
 
         const claimed = yield* service.claimComplete(lead, {
           evidence: "Tests pass.",
           pullRequests: [PR_7],
         });
         assert.strictEqual(claimed.state, "waiting-user");
-        assert.strictEqual(claimed.waitingReason, held.waitingReason);
+        assert.strictEqual(claimed.waitingReason, HELD_REASON);
+
+        // The pull request has not changed since its last check, so nothing is due to read.
+        yield* service.reconcileThread(lead);
+        assert.strictEqual((yield* service.assignmentForThread(lead))!.waitingReason, HELD_REASON);
+      }),
+    ),
+  );
+
+  it.effect("holds a claim made while blocked after a revoke, and holds it once unblocked", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles, sentMessages } = factory;
+        const { manager, assignment, lead } = yield* startedTeam(factory);
+        pullRequestFiles.set(7, ["AGENTS.md"]);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
+        yield* service.reconcileThread(lead);
+        const askId = (yield* service.assignmentForThread(lead))!.protectedPathAsks[0]!.id;
+        yield* answer(service, assignment, askId, "allow", "allow-1");
+        const dependency = yield* service.reportDependency(lead, {
+          title: "Expose the sync cursor",
+          brief: "Add the cursor to GET /sync.",
+          unblockCondition: "GET /sync returns the cursor",
+        });
+        yield* answer(service, assignment, askId, "decline", "revoke-1");
+
+        const claimed = yield* service.claimComplete(lead, {
+          evidence: "Tests pass.",
+          pullRequests: [PR_7],
+        });
+        assert.strictEqual(claimed.state, "blocked");
+        assert.strictEqual(
+          claimed.waitingReason,
+          "Blocked on Expose the sync cursor: GET /sync returns the cursor.",
+        );
+
+        yield* deliver(service, manager.threadId!, dependency.id);
+        const held = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(held.state, "waiting-user");
+        assert.strictEqual(held.waitingReason, HELD_REASON);
+        assert.strictEqual(
+          sentMessages.findLast((message) => message.threadId === lead)!.text,
+          `Expose the sync cursor is done (Sync cursor endpoint). Confirm it unblocks you and continue. It is still held on protected files. ${HELD_REASON}`,
+        );
+      }),
+    ),
+  );
+
+  it.effect("holds a revoked file again when a stalled lead is rebriefed or replaced", () =>
+    Effect.forEach(
+      ["rebrief", "replace"] as const,
+      (action) =>
+        withDatabase(
+          Effect.gen(function* () {
+            const factory = yield* makeTeamFactory;
+            const { service, threadRuns, pullRequestFiles } = factory;
+            const { manager, assignment, lead } = yield* startedTeam(factory);
+            const pullRequests = [pullRequest(7, false, "push-1")];
+            const worktreePath = "/repo/.worktrees/issue-1";
+            pullRequestFiles.set(7, ["AGENTS.md"]);
+            threadRuns.set(lead, idleRun({ pullRequests, worktreePath }));
+            yield* service.reconcileThread(lead);
+            const askId = (yield* service.assignmentForThread(lead))!.protectedPathAsks[0]!.id;
+            yield* answer(service, assignment, askId, "allow", "allow-1");
+
+            threadRuns.set(
+              lead,
+              idleRun({ pullRequests, worktreePath, latestRunStatus: "failed" }),
+            );
+            yield* service.reconcileThread(lead);
+            const revoked = yield* answer(service, assignment, askId, "decline", "revoke-1");
+            assert.strictEqual(revoked.state, "stalled");
+
+            const recovered = yield* service.recover(manager.threadId!, {
+              assignmentId: assignment.id,
+              action,
+              brief: "Retry with the fixture.",
+            });
+            assert.strictEqual(recovered.state, "waiting-user", action);
+            assert.strictEqual(recovered.waitingReason, HELD_REASON, action);
+
+            const current = recovered.leadThreadId!;
+            if (action === "replace") {
+              // A replacement lead has linked nothing yet, which does not end the flag.
+              threadRuns.set(current, idleRun({ worktreePath }));
+              yield* service.reconcileThread(current);
+              const unlinked = (yield* service.assignmentForThread(current))!;
+              assert.strictEqual(unlinked.state, "waiting-user");
+              assert.strictEqual(unlinked.waitingReason, HELD_REASON);
+            }
+            threadRuns.set(current, idleRun({ pullRequests, worktreePath }));
+            yield* service.reconcileThread(current);
+            const linked = (yield* service.assignmentForThread(current))!;
+            assert.strictEqual(linked.state, "waiting-user", action);
+            assert.strictEqual(linked.waitingReason, HELD_REASON, action);
+            const claimed = yield* service.claimComplete(current, {
+              evidence: "Tests pass.",
+              pullRequests: [PR_7],
+            });
+            assert.strictEqual(claimed.state, "waiting-user", action);
+            assert.strictEqual(claimed.waitingReason, HELD_REASON, action);
+          }),
+        ),
+      { discard: true },
+    ),
+  );
+
+  it.effect("holds a revoked file when a replacement lead's link has not synced yet", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles } = factory;
+        const { manager, assignment, lead } = yield* startedTeam(factory);
+        const pullRequests = [pullRequest(7, false, "push-1")];
+        const worktreePath = "/repo/.worktrees/issue-1";
+        pullRequestFiles.set(7, ["AGENTS.md"]);
+        threadRuns.set(lead, idleRun({ pullRequests, worktreePath }));
+        yield* service.reconcileThread(lead);
+        const askId = (yield* service.assignmentForThread(lead))!.protectedPathAsks[0]!.id;
+        yield* answer(service, assignment, askId, "allow", "allow-1");
+        threadRuns.set(lead, idleRun({ pullRequests, worktreePath, latestRunStatus: "failed" }));
+        yield* service.reconcileThread(lead);
+        yield* answer(service, assignment, askId, "decline", "revoke-1");
+        const replacement = (yield* service.recover(manager.threadId!, {
+          assignmentId: assignment.id,
+          action: "replace",
+          brief: "Retry with the fixture.",
+        })).leadThreadId!;
+
+        threadRuns.set(
+          replacement,
+          idleRun({
+            pullRequests: [{ ...pullRequest(7, false, "push-1"), state: null }],
+            worktreePath,
+          }),
+        );
+        yield* service.reconcileThread(replacement);
+        const unsynced = (yield* service.assignmentForThread(replacement))!;
+        assert.strictEqual(unsynced.state, "waiting-user");
+        assert.strictEqual(unsynced.waitingReason, HELD_REASON);
+
+        // The sync brings no new push, so the pull request is not read again.
+        threadRuns.set(replacement, idleRun({ pullRequests, worktreePath }));
+        yield* service.reconcileThread(replacement);
+        assert.strictEqual(
+          (yield* service.assignmentForThread(replacement))!.waitingReason,
+          HELD_REASON,
+        );
+        const claimed = yield* service.claimComplete(replacement, {
+          evidence: "Tests pass.",
+          pullRequests: [PR_7],
+        });
+        assert.strictEqual(claimed.state, "waiting-user");
+        assert.strictEqual(claimed.waitingReason, HELD_REASON);
+      }),
+    ),
+  );
+
+  it.effect("releases the hold on an unlinked pull request when the user merges it", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles } = factory;
+        const { lead } = yield* startedTeam(factory);
+        pullRequestFiles.set(7, ["AGENTS.md"]);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
+        yield* service.reconcileThread(lead);
+
+        // Unlinking does not end the flag.
+        threadRuns.set(lead, idleRun());
+        yield* service.reconcileThread(lead);
+        const unlinked = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(unlinked.state, "waiting-user");
+        assert.strictEqual(unlinked.waitingReason, HELD_REASON);
+
+        yield* service.reconcileMerge({ repository: "acme/app", number: 7 });
+        const merged = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(merged.state, "active");
+        assert.deepStrictEqual(merged.controlViolations, []);
       }),
     ),
   );
@@ -629,6 +820,54 @@ describe("FactoryService control paths", () => {
         assert.strictEqual(settled.state, "waiting-user");
         assert.strictEqual(settled.waitingReason, "Pull requests await the user's review: #7.");
         assert.deepStrictEqual(settled.controlViolations, []);
+      }),
+    ),
+  );
+
+  it.effect("settles a held claim when the client disconnects during the answer", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles, controls, sentMessages } = factory;
+        const { assignment, lead } = yield* startedTeam(factory);
+        pullRequestFiles.set(7, ["AGENTS.md"]);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
+        yield* service.reconcileThread(lead);
+        const claimed = yield* service.claimComplete(lead, {
+          evidence: "Tests pass.",
+          pullRequests: [PR_7],
+        });
+        const sentBefore = sentMessages.length;
+        const sending = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.duringSend = Deferred.succeed(sending, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const answering = yield* answer(
+          service,
+          assignment,
+          claimed.protectedPathAsks[0]!.id,
+          "allow",
+          "allow-1",
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(sending);
+        // What the RPC server does to a disconnected client's requests.
+        answering.interruptUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(answering);
+
+        assert.deepStrictEqual(
+          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
+          [
+            [
+              lead,
+              "The user allowed edits to these protected files for this assignment: AGENTS.md. You may edit them for this assignment only. Tell any running worker who needs them.",
+            ],
+          ],
+        );
+        const settled = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(settled.state, "waiting-user");
+        assert.strictEqual(settled.waitingReason, "Pull requests await the user's review: #7.");
       }),
     ),
   );

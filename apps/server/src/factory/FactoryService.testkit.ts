@@ -264,6 +264,10 @@ interface HarnessControls {
   launchFailures: number;
   /** Runs once inside the next launch, before it succeeds or fails. */
   duringLaunch: Effect.Effect<void, FactoryOperationError> | null;
+  /** Runs once inside the next thread interrupt, before it is recorded. */
+  duringInterrupt: Effect.Effect<void> | null;
+  /** Runs once after the service writes its next team file. */
+  duringTeamWrite: Effect.Effect<void> | null;
   /** What the usage rate cache holds; null when usage tracking has cached none. */
   rateTable: RateTable | null;
   /** The repository's default branch as git reports it; null when it cannot be read. */
@@ -300,6 +304,8 @@ export const makeHarness = (options: HarnessOptions = {}) =>
       ticketFailures: 0,
       launchFailures: options.launchFailures ?? 0,
       duringLaunch: null,
+      duringInterrupt: null,
+      duringTeamWrite: null,
       rateTable: null,
       defaultBranch: "trunk",
       catalog: CATALOG,
@@ -308,6 +314,8 @@ export const makeHarness = (options: HarnessOptions = {}) =>
     /** Changed files by pull request number. */
     const pullRequestFiles = new Map<number, ReadonlyArray<string>>();
     const fileReads: FactoryPullRequestRef[] = [];
+    /** Head SHAs by pull request number; an unset one reads as unknown. */
+    const pullRequestHeads = new Map<number, string>();
     let threads = 0;
     // A real config store in a scratch directory, so definitions round-trip through their files.
     const configStore = yield* FactoryConfigStore.FactoryConfigStore.pipe(
@@ -354,7 +362,19 @@ export const makeHarness = (options: HarnessOptions = {}) =>
             ),
           );
         }),
-      configStore,
+      configStore: {
+        ...configStore,
+        writeTeam: (team) =>
+          configStore.writeTeam(team).pipe(
+            Effect.andThen(
+              Effect.suspend(() => {
+                const during = controls.duringTeamWrite ?? Effect.void;
+                controls.duringTeamWrite = null;
+                return during;
+              }),
+            ),
+          ),
+      },
       readModelCatalog: Effect.sync(() => controls.catalog),
       readRoleSkill: (role, projectRoot) =>
         Effect.sync(() => {
@@ -426,7 +446,12 @@ export const makeHarness = (options: HarnessOptions = {}) =>
             );
           }),
         ),
-      interruptThread: (input) => Effect.sync(() => void interrupts.push(input)),
+      interruptThread: (input) =>
+        Effect.suspend(() => {
+          const during = controls.duringInterrupt ?? Effect.void;
+          controls.duringInterrupt = null;
+          return during;
+        }).pipe(Effect.andThen(Effect.sync(() => void interrupts.push(input)))),
       settleThread: (input) => Effect.sync(() => void settles.push(input.threadId)),
       readDefaultBranch: () => Effect.sync(() => controls.defaultBranch),
       readPullRequestFiles: (input) =>
@@ -439,6 +464,7 @@ export const makeHarness = (options: HarnessOptions = {}) =>
             new FactoryOperationError({ reason: "unavailable", message: "GitHub is down." }),
           );
         }),
+      readPullRequestHead: (input) => Effect.sync(() => pullRequestHeads.get(input.number) ?? null),
       createTicket: (input) =>
         Effect.suspend(() => {
           ticketRequests.push(input);
@@ -467,6 +493,7 @@ export const makeHarness = (options: HarnessOptions = {}) =>
       controls,
       pullRequestFiles,
       fileReads,
+      pullRequestHeads,
       ticketRequests,
     };
   });
