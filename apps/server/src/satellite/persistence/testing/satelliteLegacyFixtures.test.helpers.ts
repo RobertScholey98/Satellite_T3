@@ -320,24 +320,24 @@ const DEV_BUILD_STEPS: ReadonlyArray<Step> = [
   [69, "IssueDeliveryPeers", satellite069],
 ];
 
-const applySteps = (steps: ReadonlyArray<Step>) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    for (const [id, name, ddl] of steps) {
-      yield* ddl;
-      yield* sql`
-        INSERT INTO effect_sql_migrations (migration_id, name, created_at)
-        VALUES (${id}, ${name}, ${LEGACY_CREATED_AT})
-      `;
-    }
-  });
+const applySteps = Effect.fn("satelliteLegacyFixtures.applySteps")(function* (
+  steps: ReadonlyArray<Step>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  for (const [id, name, ddl] of steps) {
+    yield* ddl;
+    yield* sql`
+      INSERT INTO effect_sql_migrations (migration_id, name, created_at)
+      VALUES (${id}, ${name}, ${LEGACY_CREATED_AT})
+    `;
+  }
+});
 
-const tableExists = (name: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ${name}`;
-    return rows.length > 0;
-  });
+const tableExists = Effect.fn("satelliteLegacyFixtures.tableExists")(function* (name: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ${name}`;
+  return rows.length > 0;
+});
 
 const seedThreads = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -380,62 +380,64 @@ const seedThreads = Effect.gen(function* () {
   `;
 });
 
-const seedSatelliteRows = (steps: ReadonlyArray<Step>) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    if (yield* tableExists("issue_boards")) {
-      yield* sql`INSERT INTO issue_boards VALUES ('board-1', ${PROJECT_ID}, 'gh:acme/1', 'Acme board',
-      '{"kind":"github-project","host":"github.com","owner":"acme","ownerKind":"organization","projectNumber":1}',
-      '{"ready":"col-ready","inProgress":"col-prog","inPullRequest":"col-pr","completed":"col-done","moveOnMerge":true}')`;
-      yield* sql`INSERT INTO issue_attempts (id, reservation_id, board_id, issue_key, link_json, launch_order,
-        project_id, thread_id, worktree_path, status, created_at, started_at, source_generation, controlling_pr_key)
-      VALUES ('attempt-1', 'res-1', 'board-1', 'github:github.com/acme/app#7', '{"attemptId":"attempt-1"}', 1,
-        ${PROJECT_ID}, ${THREADS.work}, '/work/satellite/.worktrees/7', 'started',
-        '2026-10-01T00:00:00.000Z', '2026-10-01T00:01:00.000Z', 0, NULL)`;
-      yield* sql`INSERT INTO issue_active_attempts VALUES ('github:github.com/acme/app#7', 'attempt-1', 1)`;
-    }
-    if (yield* tableExists("issue_board_snapshots")) {
-      yield* sql`INSERT INTO issue_board_snapshots VALUES ('board-1', 3, 'hash', '{"columns":[]}',
-      '2026-10-01T00:00:00.000Z', NULL, NULL)`;
-    }
-    if (yield* tableExists("managed_documents")) {
-      yield* sql`INSERT INTO managed_documents VALUES ('doc-1', ${THREADS.work}, 'Doc', 'markdown', 'rev-1', 1,
-      'open', '2026-10-01T00:00:00.000Z')`;
-      yield* sql`INSERT INTO document_revisions (id, document_id, number, format, content_hash, created_at,
-        definition_json, snapshot_path, answers_json, answer_version)
-      VALUES ('rev-1', 'doc-1', 1, 'markdown', 'h', '2026-10-01T00:00:00.000Z', '{}', '/x', '{}', 0)`;
-      yield* sql`INSERT INTO document_history VALUES ('h-1', 'doc-1', 'rev-1', 'created', 'user',
-      '2026-10-01T00:00:00.000Z', '', NULL, NULL)`;
-    }
-    if (yield* tableExists("open_worktrees")) {
-      yield* sql`INSERT INTO open_worktrees VALUES ('wt-1', '/work/satellite/.git', '/work/satellite')`;
-      yield* sql`INSERT INTO open_work_folders VALUES ('f-1', 'wt-1', '/work/satellite/docs', '2026-10-01')`;
-      yield* sql`INSERT INTO open_work_documents (id, worktree_id, title, source, observed_at, favorite)
-      VALUES ('owd-1', 'wt-1', 'Favourite', 'file', '2026-10-01', 1)`;
-    }
-    if (yield* tableExists("projection_idea_notebooks")) {
-      yield* sql`INSERT INTO projection_idea_notebooks VALUES (${THREADS.idea}, 1, 'open', '2026-10-01', 'x',
-      'idle', NULL, '{}')`;
-    }
-    // 058 and the early Ideas build allow purpose 'idea'; 060 adds 'revdoc'.
-    if (steps.some(([, name]) => name === "IdeaNotebooks")) {
-      yield* sql`UPDATE projection_threads SET purpose = 'idea'
-      WHERE ${sql.in("thread_id", [THREADS.idea, THREADS.archivedIdea])}`;
-    }
-    if (steps.some(([, name]) => name === "RevdocTesting")) {
-      yield* sql`UPDATE projection_threads SET purpose = 'revdoc'
-      WHERE ${sql.in("thread_id", [THREADS.revdoc, THREADS.deletedRevdoc])}`;
-    }
-  });
+const seedSatelliteRows = Effect.fn("satelliteLegacyFixtures.seedSatelliteRows")(function* (
+  steps: ReadonlyArray<Step>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (yield* tableExists("issue_boards")) {
+    yield* sql`INSERT INTO issue_boards VALUES ('board-1', ${PROJECT_ID}, 'gh:acme/1', 'Acme board',
+    '{"kind":"github-project","host":"github.com","owner":"acme","ownerKind":"organization","projectNumber":1}',
+    '{"ready":"col-ready","inProgress":"col-prog","inPullRequest":"col-pr","completed":"col-done","moveOnMerge":true}')`;
+    yield* sql`INSERT INTO issue_attempts (id, reservation_id, board_id, issue_key, link_json, launch_order,
+      project_id, thread_id, worktree_path, status, created_at, started_at, source_generation, controlling_pr_key)
+    VALUES ('attempt-1', 'res-1', 'board-1', 'github:github.com/acme/app#7', '{"attemptId":"attempt-1"}', 1,
+      ${PROJECT_ID}, ${THREADS.work}, '/work/satellite/.worktrees/7', 'started',
+      '2026-10-01T00:00:00.000Z', '2026-10-01T00:01:00.000Z', 0, NULL)`;
+    yield* sql`INSERT INTO issue_active_attempts VALUES ('github:github.com/acme/app#7', 'attempt-1', 1)`;
+  }
+  if (yield* tableExists("issue_board_snapshots")) {
+    yield* sql`INSERT INTO issue_board_snapshots VALUES ('board-1', 3, 'hash', '{"columns":[]}',
+    '2026-10-01T00:00:00.000Z', NULL, NULL)`;
+  }
+  if (yield* tableExists("managed_documents")) {
+    yield* sql`INSERT INTO managed_documents VALUES ('doc-1', ${THREADS.work}, 'Doc', 'markdown', 'rev-1', 1,
+    'open', '2026-10-01T00:00:00.000Z')`;
+    yield* sql`INSERT INTO document_revisions (id, document_id, number, format, content_hash, created_at,
+      definition_json, snapshot_path, answers_json, answer_version)
+    VALUES ('rev-1', 'doc-1', 1, 'markdown', 'h', '2026-10-01T00:00:00.000Z', '{}', '/x', '{}', 0)`;
+    yield* sql`INSERT INTO document_history VALUES ('h-1', 'doc-1', 'rev-1', 'created', 'user',
+    '2026-10-01T00:00:00.000Z', '', NULL, NULL)`;
+  }
+  if (yield* tableExists("open_worktrees")) {
+    yield* sql`INSERT INTO open_worktrees VALUES ('wt-1', '/work/satellite/.git', '/work/satellite')`;
+    yield* sql`INSERT INTO open_work_folders VALUES ('f-1', 'wt-1', '/work/satellite/docs', '2026-10-01')`;
+    yield* sql`INSERT INTO open_work_documents (id, worktree_id, title, source, observed_at, favorite)
+    VALUES ('owd-1', 'wt-1', 'Favourite', 'file', '2026-10-01', 1)`;
+  }
+  if (yield* tableExists("projection_idea_notebooks")) {
+    yield* sql`INSERT INTO projection_idea_notebooks VALUES (${THREADS.idea}, 1, 'open', '2026-10-01', 'x',
+    'idle', NULL, '{}')`;
+  }
+  // 058 and the early Ideas build allow purpose 'idea'; 060 adds 'revdoc'.
+  if (steps.some(([, name]) => name === "IdeaNotebooks")) {
+    yield* sql`UPDATE projection_threads SET purpose = 'idea'
+    WHERE ${sql.in("thread_id", [THREADS.idea, THREADS.archivedIdea])}`;
+  }
+  if (steps.some(([, name]) => name === "RevdocTesting")) {
+    yield* sql`UPDATE projection_threads SET purpose = 'revdoc'
+    WHERE ${sql.in("thread_id", [THREADS.revdoc, THREADS.deletedRevdoc])}`;
+  }
+});
 
 /** A 1.x database: upstream migrations 1 to 54, then the Satellite rows `ledger` names. */
-export const seedSatelliteV1 = (ledger: SatelliteV1Ledger) =>
-  Effect.gen(function* () {
-    yield* runMigrations({ toMigrationInclusive: 54 });
-    yield* seedThreads;
-    yield* applySteps(V1_STEPS[ledger]);
-    yield* seedSatelliteRows(V1_STEPS[ledger]);
-  });
+export const seedSatelliteV1 = Effect.fn("satelliteLegacyFixtures.seedSatelliteV1")(function* (
+  ledger: SatelliteV1Ledger,
+) {
+  yield* runMigrations({ toMigrationInclusive: 54 });
+  yield* seedThreads;
+  yield* applySteps(V1_STEPS[ledger]);
+  yield* seedSatelliteRows(V1_STEPS[ledger]);
+});
 
 const importV1Threads = Effect.gen(function* () {
   const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
@@ -500,18 +502,19 @@ export const seedSatelliteDevBuild = Effect.gen(function* () {
     VALUES ('p-1', 'doc-1', 'rev-1', ${THREADS.work}, 'wt-1', 'Doc', '2026-10-10')`;
 });
 
-export const readLedger = (table: "effect_sql_migrations" | "satellite_migrations") =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    if (!(yield* tableExists(table))) return undefined;
-    const rows = yield* sql<{ readonly migration_id: number; readonly name: string }>`
-      SELECT migration_id, name FROM ${sql(table)} ORDER BY migration_id
-    `;
-    const ledger: ReadonlyArray<readonly [number, string]> = rows.map(
-      (row) => [row.migration_id, row.name] as const,
-    );
-    return ledger;
-  });
+export const readLedger = Effect.fn("satelliteLegacyFixtures.readLedger")(function* (
+  table: "effect_sql_migrations" | "satellite_migrations",
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (!(yield* tableExists(table))) return undefined;
+  const rows = yield* sql<{ readonly migration_id: number; readonly name: string }>`
+    SELECT migration_id, name FROM ${sql(table)} ORDER BY migration_id
+  `;
+  const ledger: ReadonlyArray<readonly [number, string]> = rows.map(
+    (row) => [row.migration_id, row.name] as const,
+  );
+  return ledger;
+});
 
 export const listTables = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -521,40 +524,43 @@ export const listTables = Effect.gen(function* () {
   return rows.map((row) => row.name);
 });
 
-export const listColumns = (table: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql<{
-      readonly name: string;
-    }>`SELECT name FROM pragma_table_info(${table})`;
-    return rows.map((row) => row.name);
-  });
+export const listColumns = Effect.fn("satelliteLegacyFixtures.listColumns")(function* (
+  table: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    readonly name: string;
+  }>`SELECT name FROM pragma_table_info(${table})`;
+  return rows.map((row) => row.name);
+});
 
-export const indexExists = (name: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ${name}`;
-    return rows.length > 0;
-  });
+export const indexExists = Effect.fn("satelliteLegacyFixtures.indexExists")(function* (
+  name: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ${name}`;
+  return rows.length > 0;
+});
 
-export const dumpTables = (tables: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const dump: Record<string, ReadonlyArray<unknown>> = {};
-    for (const table of tables) {
-      if (!(yield* tableExists(table))) continue;
-      // Naming the columns keeps a cached statement from hiding a column added since. Some
-      // upstream tables are WITHOUT ROWID, so rows are ordered by content.
-      const columns = yield* listColumns(table);
-      const select = columns.map((column) => `"${column}"`).join(", ");
-      const rows = yield* sql.unsafe(`SELECT ${select} FROM "${table}"`);
-      dump[table] = rows
-        .map((row) => JSON.stringify(row))
-        .toSorted()
-        .map((row) => JSON.parse(row) as unknown);
-    }
-    return dump;
-  });
+export const dumpTables = Effect.fn("satelliteLegacyFixtures.dumpTables")(function* (
+  tables: ReadonlyArray<string>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const dump: Record<string, ReadonlyArray<unknown>> = {};
+  for (const table of tables) {
+    if (!(yield* tableExists(table))) continue;
+    // Naming the columns keeps a cached statement from hiding a column added since. Some
+    // upstream tables are WITHOUT ROWID, so rows are ordered by content.
+    const columns = yield* listColumns(table);
+    const select = columns.map((column) => `"${column}"`).join(", ");
+    const rows = yield* sql.unsafe(`SELECT ${select} FROM "${table}"`);
+    dump[table] = rows
+      .map((row) => JSON.stringify(row))
+      .toSorted()
+      .map((row) => JSON.parse(row) as unknown);
+  }
+  return dump;
+});
 
 export const dumpDatabase = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -643,7 +649,7 @@ export const layerSatelliteRuntime = (baseDir: string) => {
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
-        getInstance: () => Effect.succeed(undefined),
+        getInstance: Effect.fn("satelliteLegacyFixtures.getInstance")(() => Effect.undefined),
         listInstances: Effect.succeed([]),
         listUnavailable: Effect.succeed([]),
         streamChanges: Stream.empty,

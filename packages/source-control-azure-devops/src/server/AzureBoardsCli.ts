@@ -144,7 +144,7 @@ export const make = Effect.gen(function* () {
 
   return AzureBoardsCli.of({
     invoke,
-    listProjects: (input) =>
+    listProjects: Effect.fn("AzureBoardsCli.listProjects")((input) =>
       run(input.cwd, input.organization, [
         "devops",
         "project",
@@ -154,7 +154,8 @@ export const make = Effect.gen(function* () {
         "--skip",
         String(input.skip),
       ]),
-    listTeams: (input) =>
+    ),
+    listTeams: Effect.fn("AzureBoardsCli.listTeams")((input) =>
       run(input.cwd, input.organization, [
         "devops",
         "team",
@@ -166,9 +167,10 @@ export const make = Effect.gen(function* () {
         "--skip",
         String(input.skip),
       ]),
+    ),
     // Runs `az` directly so a rejection keeps its stderr: the rule that refused the move is the
     // one thing the person needs to see, and it never heals on a retry.
-    updateWorkItem: (input) => {
+    updateWorkItem: Effect.fn("AzureBoardsCli.updateWorkItem")((input) => {
       const args = [
         "boards",
         "work-item",
@@ -223,7 +225,7 @@ export const make = Effect.gen(function* () {
             );
           }),
         );
-    },
+    }),
   });
 });
 

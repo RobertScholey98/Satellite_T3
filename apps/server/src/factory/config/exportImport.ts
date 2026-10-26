@@ -572,7 +572,9 @@ export const layer = Layer.effect(
       preview: Effect.fn("FactoryConfigTransfer.preview")(function* (bundle) {
         return previewImport(yield* store.read, bundle);
       }),
-      apply: (bundle, decision) => applyImport(bundle, decision).pipe(Effect.provide(services)),
+      apply: Effect.fn("FactoryConfigTransfer.apply")((bundle, decision) =>
+        applyImport(bundle, decision).pipe(Effect.provide(services)),
+      ),
     });
   }),
 );
