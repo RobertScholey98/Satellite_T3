@@ -85,7 +85,7 @@ const PROJECT: OrchestrationProjectShell = {
       remoteName: "origin",
       remoteUrl: "https://github.com/acme/app.git",
     },
-    provider: "github",
+    provider: GITHUB,
     owner: "acme",
     name: "app",
   },

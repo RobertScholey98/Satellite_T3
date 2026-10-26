@@ -766,7 +766,7 @@ const FORK_IDENTITY = {
     remoteName: "origin",
     remoteUrl: "https://github.com/RobertScholey98/Satellite_T3.git",
   },
-  provider: "github",
+  provider: SourceControlProviderKind.make("github"),
   displayName: "robertscholey98/satellite_t3",
 };
 
@@ -780,7 +780,7 @@ function forkProject(id: string, workspaceRoot: string): OrchestrationProjectShe
         remoteName: "upstream",
         remoteUrl: "https://github.com/pingdotgg/t3code.git",
       },
-      provider: "github",
+      provider: SourceControlProviderKind.make("github"),
       displayName: "pingdotgg/t3code",
       origin: {
         canonicalKey: FORK_IDENTITY.canonicalKey,
@@ -797,7 +797,7 @@ function makeForkService(input: {
 }) {
   return makeService({
     projects: input.projects,
-    providers: [fakeProvider(SourceControlProviderKind.make("github"), input.provider)],
+    providers: [fakePullRequestProvider(SourceControlProviderKind.make("github"), input.provider)],
     resolveRepositoryIdentity: (_cwd, options) =>
       Effect.succeed(
         options?.remoteName === "origin"

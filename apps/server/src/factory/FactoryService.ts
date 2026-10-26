@@ -116,10 +116,6 @@ import {
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
 import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
-import {
-  normalizeThreadPullRequestKey,
-  threadPullRequestsOf,
-} from "@t3tools/shared/threadPullRequests";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -143,6 +139,10 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import {
+  normalizeThreadPullRequestKey,
+  threadPullRequestsOf,
+} from "../sourceControl/threadPullRequests.ts";
 import { parseRateTable, priceUsage, type RateTable } from "../usage/usagePricing.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { applyDefinitionChange, type DefinitionChange } from "./config/applyDefinitionChange.ts";

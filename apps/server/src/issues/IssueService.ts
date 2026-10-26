@@ -61,12 +61,12 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {
   controllingPullRequestOf,
   deriveStage,

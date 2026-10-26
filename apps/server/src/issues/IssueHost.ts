@@ -13,14 +13,12 @@ import type {
   IssueHostScope,
 } from "@t3tools/source-control-core/server/IssueHostAdapter";
 import * as GitHubIssueHost from "@t3tools/source-control-github/server/GitHubIssueHost";
-import {
-  detectSourceControlProviderFromRemoteUrl,
-  sourceControlRepositorySelector,
-} from "@t3tools/shared/sourceControl";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+
+import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 
 /** Persisted as `issue_key` in every issue table; changing the format orphans stored rows. */
 export const canonicalIssueKey = (ref: IssueRef) =>
@@ -51,13 +49,13 @@ export const repositoryIssueScope = Effect.fnUntraced(function* (
   const repository =
     identity?.provider === "azure-devops"
       ? identity.displayName?.split("/_git/")[0]
-      : sourceControlRepositorySelector(identity);
+      : sourceControlDefinitions.repositorySelector(identity);
   if (!identity || !repository || !identity.provider)
     return yield* unavailable("This project has no supported repository host.");
   const kind = yield* decodeHostKind(identity.provider).pipe(
     Effect.mapError(() => unavailable("This repository host does not support issues.")),
   );
-  const detected = detectSourceControlProviderFromRemoteUrl(identity.locator.remoteUrl);
+  const detected = sourceControlDefinitions.recognizeRemote(identity.locator.remoteUrl);
   const host =
     kind === "azure-devops" ? "dev.azure.com" : detected ? new URL(detected.baseUrl).host : "";
   if (!host) return yield* unavailable("This project's repository host is unknown.");
