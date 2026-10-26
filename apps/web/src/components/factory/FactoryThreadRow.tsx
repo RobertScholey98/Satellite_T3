@@ -30,6 +30,7 @@ import {
   factoryErrorMessage,
   unwrapFactoryResult,
 } from "./factoryState";
+import { factoryManagerRunningLabel } from "./FactoryPageStats";
 import { useFactoryLeadActions } from "./FactoryThreadActions";
 import {
   describePickupDecision,
@@ -75,7 +76,7 @@ export function FactoryThreadRow(props: {
           <FactoryRowLayout
             icon={<UsersRoundIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
             title={`${factoryMemberLabel(place.member)} for ${place.assignment?.title ?? place.manager.name}`}
-            detail={null}
+            details={[]}
             menu={null}
           />
         )}
@@ -87,7 +88,7 @@ export function FactoryThreadRow(props: {
 function FactoryRowLayout(props: {
   readonly icon: ReactNode;
   readonly title: string;
-  readonly detail: string | null;
+  readonly details: ReadonlyArray<string>;
   readonly menu: ReactNode;
 }) {
   return (
@@ -103,13 +104,19 @@ function FactoryRowLayout(props: {
           <span className="block truncate text-sm font-medium text-foreground/80">
             {props.title}
           </span>
-          {props.detail === null ? null : (
-            <p className="truncate text-2xs text-muted-foreground">{props.detail}</p>
-          )}
+          {props.details.map((detail) => (
+            <p key={detail} className="truncate text-2xs text-muted-foreground">
+              {detail}
+            </p>
+          ))}
         </TooltipTrigger>
         <TooltipPopup side="left">
           <p className="font-medium">{props.title}</p>
-          {props.detail === null ? null : <p className="text-muted-foreground">{props.detail}</p>}
+          {props.details.map((detail) => (
+            <p key={detail} className="text-muted-foreground">
+              {detail}
+            </p>
+          ))}
         </TooltipPopup>
       </Tooltip>
       {props.menu}
@@ -155,7 +162,7 @@ function FactoryLeadRow(props: {
       <FactoryRowLayout
         icon={<FactoryIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
         title={title}
-        detail="Can't merge or edit control files"
+        details={["Can't merge or edit control files"]}
         menu={
           live ? (
             <RowMenu label="Factory lead actions">
@@ -277,7 +284,6 @@ function FactoryManagerRow(props: {
   };
 
   const paused = manager.state === "manager-paused" || manager.state === "project-paused";
-  const capText = cap === null ? "" : ` of ${cap.cap}`;
   const retireBlocked = active > 0;
   const retireItem = (
     <MenuItem
@@ -292,16 +298,19 @@ function FactoryManagerRow(props: {
   return (
     <FactoryRowLayout
       icon={<UserCogIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
-      title={`${FACTORY_MANAGER_STATE_LABEL[manager.state]} · ${running}${capText} running`}
-      detail={
-        manager.state === "onboarding"
-          ? hasProposal
-            ? "Onboarding proposal ready for review"
-            : "Waiting for its onboarding proposal"
+      title={FACTORY_MANAGER_STATE_LABEL[manager.state]}
+      details={[
+        factoryManagerRunningLabel(running, cap?.cap),
+        ...(manager.state === "onboarding"
+          ? [
+              hasProposal
+                ? "Onboarding proposal ready for review"
+                : "Waiting for its onboarding proposal",
+            ]
           : pickup?.key === logKey
-            ? pickup.text
-            : null
-      }
+            ? [pickup.text]
+            : []),
+      ]}
       menu={
         <RowMenu label="Engineering manager actions">
           <MenuItem
