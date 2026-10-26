@@ -162,7 +162,7 @@ apps/web/src/components/settings/settingsSearch.ts  # hand-edited
 apps/web/src/components/sidebar/updateEverythingRun.tsx
 apps/web/src/connection/platform.ts  # hand-edited
 apps/web/src/desktopAppActivation.ts
-apps/web/src/lib/bootError.ts
+apps/web/src/lib/bootError.ts  # hand-edited
 apps/web/src/routes/_chat.index.tsx
 apps/web/src/routes/_chat.pull-requests.tsx  # hand-edited
 apps/web/src/routes/_chat.tsx
