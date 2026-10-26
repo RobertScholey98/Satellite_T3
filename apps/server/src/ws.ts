@@ -98,7 +98,6 @@ import {
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
   WS_METHODS,
-  RpcScopeAuthorization,
   WsCoreRpcGroup,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -566,8 +565,7 @@ const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
 // `any`, so the handlers are registered as two disjoint, smaller groups.
 
 // SatelliteWsRpc serves the Satellite RPCs, so only upstream's core group is split here.
-const ServerCoreWsRpcGroup =
-  WsCoreRpcGroup.middleware(RpcScopeAuthorization).middleware(RpcInstrumentation);
+const ServerCoreWsRpcGroup = WsCoreRpcGroup.middleware(RpcInstrumentation);
 type ServerWsRpc = RpcGroup.Rpcs<typeof ServerCoreWsRpcGroup>;
 const SPLIT_WS_RPC_PREFIXES = ["server", "pullRequests", "provider", "orchestration"] as const;
 type SplitWsRpc = Extract<
