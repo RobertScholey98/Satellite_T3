@@ -33,7 +33,7 @@ export function summarizeFactoryModelList(
       : list.models
           .map((ref) => resolveFactoryModelRef(ref, options)?.label ?? factoryModelRefKey(ref))
           .join(", ");
-  return list.dynamic ? `${models} · picked per task` : models;
+  return list.dynamic ? `${models} · model chosen per task` : models;
 }
 
 export function factoryModelRefFromOption(option: FactoryModelOption): FactoryModelRef {

@@ -104,3 +104,14 @@ export function factoryStatsSinceDay(days: number | null, now: number): string |
   if (days === null) return undefined;
   return new Date(now - days * 86_400_000).toISOString().slice(0, 10);
 }
+
+/**
+ * A manager's live assignments against its cap. Work only starts under the cap, but a cap lowered
+ * under running work leaves the count above it, which "6 of 2 running" would garble.
+ */
+export function factoryManagerRunningLabel(running: number, cap: number | undefined): string {
+  if (cap === undefined) return `${running} running`;
+  return running > cap
+    ? `${running} running, over its cap of ${cap}`
+    : `${running} of ${cap} running`;
+}

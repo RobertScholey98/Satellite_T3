@@ -2,6 +2,7 @@ import { type FactoryAssignmentStats, type FactoryTeamStats, ProjectId } from "@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  factoryManagerRunningLabel,
   factoryRoleTokenSegments,
   factoryStatsSinceDay,
   factoryTeamRows,
@@ -99,5 +100,14 @@ describe("factory stats formatting", () => {
     expect(formatFactoryCost(null)).toBe("Unpriced");
     expect(factoryStatsSinceDay(7, Date.parse("2026-10-22T01:00:00Z"))).toBe("2026-10-15");
     expect(factoryStatsSinceDay(null, 0)).toBeUndefined();
+  });
+});
+
+describe("factoryManagerRunningLabel", () => {
+  it("counts running work against the cap, and says when the count is over it", () => {
+    expect(factoryManagerRunningLabel(0, 3)).toBe("0 of 3 running");
+    expect(factoryManagerRunningLabel(2, 2)).toBe("2 of 2 running");
+    expect(factoryManagerRunningLabel(6, 2)).toBe("6 running, over its cap of 2");
+    expect(factoryManagerRunningLabel(4, undefined)).toBe("4 running");
   });
 });
