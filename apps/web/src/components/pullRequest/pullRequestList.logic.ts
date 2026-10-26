@@ -558,12 +558,7 @@ export function mergePullRequestLists(
             },
       );
     }
-    for (const entry of answer.entries) {
-      const key = `${entry.host} ${entry.repository.toLowerCase()} ${entry.number}`;
-      if (listed.has(key)) continue;
-      listed.add(key);
-      entries.push({ ...entry, environmentId });
-    }
+    entries.push(...answer.entries.map((entry) => ({ ...entry, environmentId })));
     errors.push(...answer.errors.map((error) => ({ ...error, environmentId })));
     truncated ||= answer.truncated;
     if (answer.truncated) truncatedEnvironments.push(environmentId);
@@ -574,7 +569,14 @@ export function mergePullRequestLists(
   return {
     viewers,
     providers: [...providers.values()],
-    entries: entries.toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    entries: entries
+      .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .filter((entry) => {
+        const key = `${entry.host} ${entry.repository.toLowerCase()} ${entry.number}`;
+        if (listed.has(key)) return false;
+        listed.add(key);
+        return true;
+      }),
     errors,
     truncated,
     nextCursors,
