@@ -24,11 +24,9 @@ const decodeControlPaths = Schema.decodeUnknownOption(
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 /**
- * Satellite 103. Onboarding becomes a proposal the user approves into a per-manager result.
- * Managers past onboarding get a result from what they already had: their approved control
- * paths, and the pickup guidance and cap their project used, with pickup off so nothing starts
- * that the user has not pointed at a column. Managers still onboarding re-propose.
- * `control_paths_json` and `onboarding_notes` stay in place but are no longer read.
+ * Satellite 103. Managers past onboarding get a result from their approved control paths and
+ * their project's pickup guidance and cap, with pickup off so nothing starts unasked. Managers
+ * still onboarding re-propose. `control_paths_json` and `onboarding_notes` stay but are unread.
  */
 export const FactoryOnboardingResultV1 = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

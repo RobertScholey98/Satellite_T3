@@ -60,6 +60,7 @@ function useObstacleReport(
   sharedWithDetails: boolean,
 ) {
   const reportedRef = useRef(false);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Report this card's measured obstacle to the chat canvas after each commit, withdrawing it when it clears.
   useLayoutEffect(() => {
     if (!report) return;
     if (obstacle) {
@@ -70,6 +71,7 @@ function useObstacleReport(
       reportedRef.current = false;
     }
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Withdraw this card's canvas obstacle when the report target changes or the card unmounts.
   useLayoutEffect(
     () => () => {
       if (reportedRef.current) report?.(null);
@@ -81,6 +83,7 @@ function useObstacleReport(
 /** An element's rendered size, kept current; zero while it is absent. */
 function useMeasured(element: HTMLElement | null, dimension: "offsetHeight" | "offsetWidth") {
   const [size, setSize] = useState(0);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Measure the element and observe its resizes until it changes or unmounts.
   useLayoutEffect(() => {
     const measure = () => setSize(element?.[dimension] ?? 0);
     measure();
@@ -156,6 +159,7 @@ export function FactoryWorkspacePanel(props: {
   const detailsInline = details?.inline != null;
   // The chat view renders the details card, so the cards below it follow its measured height.
   const measuringDetails = column !== null && detailsOpen && detailsInline;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Find the inline details card in the DOM and observe its height while the column lays out around it.
   useLayoutEffect(() => {
     const details = measuringDetails
       ? (anchor

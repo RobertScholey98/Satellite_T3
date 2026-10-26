@@ -276,11 +276,9 @@ const primingFolds = new WeakMap<
 >();
 
 /**
- * Folds a primed manager thread's first exchange into one entry: the priming message the server
- * sent from the approved onboarding result, the work of that turn, and the manager's first reply.
- * The priming is found by id, never by position or text: history is windowed, so the first loaded
- * message may be a real request. Without the priming in the window, nothing folds. The same input
- * returns the same array.
+ * Folds a primed manager thread's priming message, that turn's work, and the first reply into one
+ * entry. The priming is found by id, never by position or text: history is windowed, so the first
+ * loaded message may be a real request. Without the priming in the window, nothing folds.
  */
 export function collapseFactoryPriming(
   entries: ReadonlyArray<TimelineEntry>,

@@ -1590,7 +1590,7 @@ const capTicketText = (detail: IssueDetail): IssueDetail => {
   return { ...detail, body, comments: kept };
 };
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const hosts = yield* IssueHost;
   const projects = yield* ProjectStore.ProjectStoreV2;

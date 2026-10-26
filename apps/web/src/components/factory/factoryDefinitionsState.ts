@@ -58,6 +58,7 @@ export function useFactoryDefinitions(environmentId: EnvironmentId) {
   });
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch the factory definitions, dropping a reply that arrives after the environment changes or unmounts.
   useEffect(() => {
     let current = true;
     void getDefinitions({ environmentId, input: {} }).then((result) => {

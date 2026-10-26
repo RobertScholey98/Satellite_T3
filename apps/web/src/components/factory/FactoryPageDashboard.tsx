@@ -349,6 +349,7 @@ function FactoryTeamsStats({
   const [error, setError] = useState<{ readonly key: string; readonly message: string } | null>(
     null,
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch stats for the chosen filters, dropping a reply that arrives after they change or unmount.
   useEffect(() => {
     let current = true;
     const days = PERIODS.find((option) => option.value === period)?.days ?? null;

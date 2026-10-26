@@ -89,7 +89,7 @@ const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const pairs = (values: Readonly<Record<string, string>>) =>
   Object.entries(values).map(([key, value]) => `${key}=${value}`);
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const azure = yield* AzureDevOpsCli.AzureDevOpsCli;
   const fs = yield* FileSystem.FileSystem;

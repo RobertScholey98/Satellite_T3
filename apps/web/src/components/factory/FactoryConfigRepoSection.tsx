@@ -77,6 +77,7 @@ export function FactoryConfigRepoSection({
   const [choiceError, setChoiceError] = useState<string | null>(null);
   const [pushMessage, setPushMessage] = useState<string | null>(null);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch the config repo status, dropping a reply that arrives after the environment changes or unmounts.
   useEffect(() => {
     let current = true;
     void getStatus({ environmentId, input: {} }).then((result) => {

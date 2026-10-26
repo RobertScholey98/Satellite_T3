@@ -1,9 +1,7 @@
 /**
- * Satellite's identity. Every surface that names the app, locates its data, or fetches a release
- * reads it from here. Files that cannot import code (manifests, HTML, launcher scripts) carry
- * these values as literals, and `scripts/lib/product-identity-consumers.test.ts` fails when they
- * drift. Upstream's names for T3 Connect, the `t3` CLI, URL schemes, the package scope, and
- * environment variables stay upstream's and are not listed here.
+ * Satellite's identity. Files that cannot import code carry these values as literals, and
+ * `scripts/lib/product-identity-consumers.test.ts` fails when they drift. Upstream's names for
+ * T3 Connect, the `t3` CLI, URL schemes, the package scope, and env variables stay upstream's.
  */
 
 export const PRODUCT_NAME = "Satellite";

@@ -51,6 +51,7 @@ export function ThreadTicketChip({ threadRef }: { readonly threadRef: ScopedThre
     });
   };
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Load the thread's attempts and reload them, debounced, when the window regains focus.
   useEffect(() => {
     load();
     if (!enabled) return;
@@ -81,6 +82,7 @@ export function ThreadTicketChip({ threadRef }: { readonly threadRef: ScopedThre
         }
       : null,
   )?.revision;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Reload the thread's attempts when the server reports a new board revision.
   useEffect(() => {
     if (boardRevision !== undefined) load();
   }, [boardRevision, load]);

@@ -61,6 +61,7 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
   // leaves the card, or offers Merge again if the host still reports it open.
   const [mergedFrom, setMergedFrom] = useState<string | null>(null);
   const merging = mergedFrom !== null && mergedFrom === row.syncedAt;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Release the merging hold after MERGE_HOLD_MS when no sync replaces the snapshot first.
   useEffect(() => {
     if (!merging) return;
     const timeout = setTimeout(() => setMergedFrom(null), MERGE_HOLD_MS);

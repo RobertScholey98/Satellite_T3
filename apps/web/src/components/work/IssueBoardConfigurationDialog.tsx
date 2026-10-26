@@ -169,6 +169,7 @@ export function IssueBoardConfigurationDialog({
       setDiscoveryError(null);
     }
   }
+  // oxlint-disable-next-line t3code/react-effect-budget -- Discover the project's unmapped boards for a new configuration, dropping a reply that arrives after the inputs change or unmount.
   useEffect(() => {
     if (initial) return;
     let current = true;

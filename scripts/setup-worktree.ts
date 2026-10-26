@@ -81,12 +81,9 @@ if (installer.tool !== "vp") {
   process.stderr.write(`vp is not on PATH; installing with: ${installer.command}\n`);
 }
 
-// `shell` resolves the command through PATH, including Windows command shims.
-// Setup has no one answering install prompts. Pass pnpm's confirmation flag
-// and leave stdin closed so other prompts fail instead of hanging.
-// Install exactly the locked dependencies so setup never rewrites the lockfile.
-// A stale lockfile must fail setup rather than silently resolving a new one.
-// Output is piped, not inherited, so a failure can keep its tail in the marker.
+// Use the shell for Windows command shims. Unattended installs need pnpm's confirmation
+// flag and closed stdin so other prompts fail. A stale lockfile must fail, not be rewritten.
+// Pipe output so the failure marker can keep its tail.
 const install = NodeChildProcess.spawn(installer.command, {
   cwd: worktree,
   shell: true,

@@ -56,6 +56,7 @@ export function FactoryPage() {
     setSeenHash(hash);
     if (isConfigurationAnchor(hash)) setTab("configuration");
   }
+  // oxlint-disable-next-line t3code/react-effect-budget -- Persist the shown tab to local storage, including the tab a configuration anchor opens.
   useEffect(() => writeFactoryPageTab(tab), [tab]);
 
   const { environments: allEnvironments } = useEnvironments();

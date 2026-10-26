@@ -63,6 +63,7 @@ export function WorkTabs({
   readonly compact?: boolean;
   readonly syncing?: boolean;
 }) {
+  // oxlint-disable-next-line t3code/react-effect-budget -- Persist the shown work tab to local storage so the next visit opens it.
   useEffect(() => rememberWorkTab(current), [current]);
   return (
     <div className="flex min-w-0 items-center gap-3">

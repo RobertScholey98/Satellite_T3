@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ComponentPropsWithoutRef } from "react";
+import { useEffectEvent, useLayoutEffect, useRef, type ComponentPropsWithoutRef } from "react";
 import {
   satelliteLoaderExitFrame,
   satelliteLoaderLoopFrame,
@@ -42,12 +42,9 @@ export function SatelliteLoader({
   const phase = useRef(0);
   const active = useRef(false);
   const currentFrame = useRef<SatelliteLoaderFrame>(satelliteLoaderStill);
-  const completed = useRef(onExitComplete);
+  const completed = useEffectEvent(() => onExitComplete?.());
 
-  useLayoutEffect(() => {
-    completed.current = onExitComplete;
-  }, [onExitComplete]);
-
+  // oxlint-disable-next-line t3code/react-effect-budget -- Drive the loader's SVG frames with requestAnimationFrame, pausing off screen through an IntersectionObserver and following the reduced-motion query.
   useLayoutEffect(() => {
     const root = svg.current;
     const parts = group.current;
@@ -93,7 +90,7 @@ export function SatelliteLoader({
       parts!.setAttribute("opacity", "0");
       root!.setAttribute("aria-hidden", "true");
       root!.setAttribute("data-state", "idle");
-      completed.current?.();
+      completed();
     }
     function tick(time: number) {
       request = undefined;

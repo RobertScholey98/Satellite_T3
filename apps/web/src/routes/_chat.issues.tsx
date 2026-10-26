@@ -26,6 +26,7 @@ function IssuesRouteView() {
     const resolved = resolveIssuesSearch(search, readIssuesNavigation());
     return canonical(resolved) === canonical(search) ? null : resolved;
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Replace the URL with the remembered issues selection the route arrived without.
   useEffect(() => {
     if (arrival) void navigate({ search: arrival, replace: true });
   }, [arrival, navigate]);

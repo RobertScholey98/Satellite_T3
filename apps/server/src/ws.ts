@@ -564,6 +564,7 @@ const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
 // the group, so its type cost grows with handlers × RPCs. Near 200 methods that
 // crosses TypeScript's instantiation limit and the layer's requirements degrade to
 // `any`, so the handlers are registered as two disjoint, smaller groups.
+
 // SatelliteWsRpc serves the Satellite RPCs, so only upstream's core group is split here.
 const ServerCoreWsRpcGroup =
   WsCoreRpcGroup.middleware(RpcScopeAuthorization).middleware(RpcInstrumentation);
