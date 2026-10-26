@@ -113,6 +113,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
 import { FactoryWorkspaceWaitingCount } from "../factory/FactoryWorkspaceWaitingCount";
+import { useFactoryManagerWaitingCount } from "../factory/factoryWorkspaceState";
 
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,
 // status and auth on every provider; leaving those out keeps each
@@ -649,6 +650,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   });
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const terminalProcessCount = runningTerminalIds.length;
+  const factoryWaitingCount = useFactoryManagerWaitingCount(thread.environmentId, thread.id);
   const hasUnsentDraft = useThreadHasUnsentDraft(threadRef) && !props.isRouteThread;
   const handleDiscardDraftClick = (event: ReactMouseEvent) => {
     event.preventDefault();
@@ -1143,10 +1145,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             ) : null}
             {/* Shelf rows are one line; the New design gives the title the room a PR number takes. */}
             {prBadge ? <span className="contents redesign:hidden">{prBadge}</span> : null}
-            <FactoryWorkspaceWaitingCount
-              environmentId={thread.environmentId}
-              threadId={thread.id}
-            />
+            <FactoryWorkspaceWaitingCount count={factoryWaitingCount} />
             {sortable?.isDragging ? (
               dragDestination
             ) : (
@@ -1265,7 +1264,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     prBadge === null &&
     diff === null &&
     !isRemote &&
-    runningTerminalIds.length === 0;
+    runningTerminalIds.length === 0 &&
+    factoryWaitingCount === 0;
 
   return (
     <li
@@ -1508,10 +1508,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               )}
               {terminalStatusIcon}
               {prBadge}
-              <FactoryWorkspaceWaitingCount
-                environmentId={thread.environmentId}
-                threadId={thread.id}
-              />
+              <FactoryWorkspaceWaitingCount count={factoryWaitingCount} />
               {diff ? (
                 <span className="shrink-0 font-mono">
                   <span className="text-diff-addition-foreground">
