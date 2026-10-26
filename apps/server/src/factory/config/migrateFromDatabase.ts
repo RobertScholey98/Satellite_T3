@@ -339,11 +339,9 @@ const unloadableDefinition = (definitions: FactoryDefinitions): FactoryConfigPro
 };
 
 /**
- * Writes the factory config files from the database once, while `factory.yaml` is missing and
- * there is something to carry over. Every definition is checked before the first write, and
- * `factory.yaml` is written last, so a run that fails or stops part way runs again at the next
- * start. The database rows stay as the rollback copy, and the role files stay for the live briefs
- * that still read them.
+ * Writes the factory config files from the database while `factory.yaml` is missing. Every
+ * definition is checked before the first write and `factory.yaml` is written last, so a partial
+ * run reruns at the next start. The rows stay as the rollback copy; role files stay for live briefs.
  */
 export const migrateFactoryConfigFromDatabase = Effect.fn("FactoryConfigMigration.run")(
   function* () {

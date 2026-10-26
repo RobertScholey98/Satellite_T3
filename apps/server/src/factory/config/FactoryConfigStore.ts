@@ -139,8 +139,8 @@ const make = Effect.fn("FactoryConfigStore.make")(function* (directory: string) 
   ): Effect.Effect<Result.Result<A, FactoryConfigProblem>> =>
     effect.pipe(
       Effect.map((value) => Result.succeed(value)),
-      Effect.catch(() =>
-        Effect.succeed(Result.fail({ path: relativePath, message: "Could not be read." })),
+      Effect.orElseSucceed(() =>
+        Result.fail({ path: relativePath, message: "Could not be read." }),
       ),
     );
 
@@ -366,7 +366,9 @@ const make = Effect.fn("FactoryConfigStore.make")(function* (directory: string) 
     writeTeam,
     remove,
     migrationFailure: Ref.get(migrationFailure),
-    recordMigrationFailure: (message) => Ref.set(migrationFailure, message),
+    recordMigrationFailure: Effect.fn("FactoryConfigStore.recordMigrationFailure")((message) =>
+      Ref.set(migrationFailure, message),
+    ),
   });
 });
 

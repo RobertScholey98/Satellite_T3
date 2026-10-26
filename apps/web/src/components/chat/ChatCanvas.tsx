@@ -3,6 +3,7 @@ import { ChatCanvasContext } from "./ChatCanvasContext";
 import { resolveChatCanvasLayout, type ChatCanvasPreview } from "./chatCanvasLayout";
 import type { PreviewMiniPlayerObstacles } from "../preview/previewMiniPlayerLayout";
 import { observeResize } from "../../lib/observeResize";
+import { useClientSettings } from "~/hooks/useSettings";
 
 export function ChatCanvas({
   composerOverlayElement,
@@ -103,6 +104,7 @@ export function ChatCanvas({
     if (timelineElement) observed.push(timelineElement);
     return observeResize(observed, measure);
   }, [composerOverlayElement, timelineElement, detailsCardTopInset]);
+  const redesign = useClientSettings((s) => s.redesignEnabled);
   const container = { width: measurements.width, height: measurements.height };
   const findBar =
     detailsCardTopInset > 0
@@ -122,6 +124,7 @@ export function ChatCanvas({
       detailsCard,
       leftCard,
       findBar,
+      centerBesideDetails: redesign,
     }),
     previewKey: preview?.key ?? null,
     reportPreview,

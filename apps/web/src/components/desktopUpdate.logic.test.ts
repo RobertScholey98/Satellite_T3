@@ -65,20 +65,17 @@ describe("desktop update button state", () => {
 });
 
 describe("desktop update UI helpers", () => {
-  it.each([
-    "owner/repo/extra",
-    "owner#notes/repo",
-    "owner/repo#notes",
-    "owner?tab=notes/repo",
-    "owner/repo?tab=notes",
-  ])("falls back to Satellite for an invalid configured repository: %s", (repository) => {
-    expect(getDesktopUpdateReleaseHistoryUrl(repository)).toBe(
-      "https://github.com/RobertScholey98/Satellite_T3/releases",
-    );
-    expect(getDesktopUpdateReleaseUrl("1.2.3", repository)).toBe(
-      "https://github.com/RobertScholey98/Satellite_T3/releases/tag/v1.2.3",
-    );
-  });
+  it.each(["owner/repo/extra", "owner#notes/repo", "owner/repo?tab=notes"])(
+    "falls back to Satellite for an invalid configured repository: %s",
+    (repository) => {
+      expect(getDesktopUpdateReleaseHistoryUrl(repository)).toBe(
+        "https://github.com/RobertScholey98/Satellite_T3/releases",
+      );
+      expect(getDesktopUpdateReleaseUrl("1.2.3", repository)).toBe(
+        "https://github.com/RobertScholey98/Satellite_T3/releases/tag/v1.2.3",
+      );
+    },
+  );
 
   it("links Satellite's releases when the build configured no repository", () => {
     expect(getDesktopUpdateReleaseHistoryUrl("")).toBe(

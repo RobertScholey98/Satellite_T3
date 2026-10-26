@@ -457,6 +457,7 @@ export function IssuesBoard({
     setLastBoardsRequest(boardsRequest);
     if (boardsRequest !== null) setBoardsError(null);
   }
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch connected boards when the request key changes, dropping a reply that arrives after it changes or unmounts.
   useEffect(() => {
     if (!environmentId || !boardsRequest) return;
     let current = true;
@@ -529,6 +530,7 @@ export function IssuesBoard({
 
   // Written once the selection is settled, so a cold start never overwrites the remembered one.
   const boardsKnown = boards !== null;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Persist the settled board selection to local storage for the next visit.
   useEffect(() => {
     if (!environmentId || !boardsKnown) return;
     if (search.environmentId && search.environmentId !== environmentId) return;
@@ -571,6 +573,7 @@ export function IssuesBoard({
       if (current === generation.current && message) setViewError({ key, message });
     }
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Open the selected board from the server once its selection is known and connected.
   useEffect(() => {
     if (viewKey && environmentId && projectId && boardId && connected) void openView(false);
   }, [boardId, connected, environmentId, openView, projectId, viewKey]);
@@ -592,6 +595,7 @@ export function IssuesBoard({
       if (revision > view.sync.revision) void openView(false);
     },
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Follow the server's sync revision: reload a newer board, or drop one the server removed.
   useEffect(() => {
     followServerSync(serverSyncRevision, viewKey);
   }, [followServerSync, serverSyncRevision, viewKey]);
@@ -599,6 +603,7 @@ export function IssuesBoard({
 
   const hasView = view !== null;
   const lastFocusRefresh = useRef(0);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Refresh the board, debounced and rate-limited, when the window regains focus or visibility.
   useEffect(() => {
     // Switching boards cancels a pending focus refresh; the new board loads on its own.
     if (!hasView || !connected || !viewKey) return;
@@ -625,6 +630,7 @@ export function IssuesBoard({
   }, [connected, hasView, openView, viewKey]);
 
   const refreshBoard = () => void openView(true);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Register this board with the module-level refresh registry while it is shown.
   useEffect(
     () => (hasView && connected ? registerOpenIssueBoard(refreshBoard) : undefined),
     [connected, hasView, refreshBoard],
@@ -674,6 +680,7 @@ export function IssuesBoard({
     updatePreferences({ query: "", issueState: "all", issueHost: "all" });
     navigate({ boardId: boardId ?? undefined, ticket: undefined }, true);
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Navigate to a fallback board when the remembered one is gone from the server's list.
   useEffect(() => {
     if (requestedBoardMissing) fallBack();
   }, [fallBack, requestedBoardMissing]);
@@ -711,6 +718,7 @@ export function IssuesBoard({
     setListPending(false);
   });
   const listLoaded = listedIssues !== null;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Load the repository's issues the first time list mode shows them.
   useEffect(() => {
     if (mode === "list" && !listLoaded && scopeKey && connected) void loadIssues(null);
   }, [connected, listLoaded, loadIssues, mode, scopeKey]);
@@ -739,6 +747,7 @@ export function IssuesBoard({
     return listed ? { issue: listed, itemId: listed.ref.id, columnId: null, version: null } : null;
   })();
   // A remembered ticket that left the board is dropped once the fresh copy shows it gone.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Drop a remembered ticket from the URL once the fresh board shows it is gone.
   useEffect(() => {
     if (search.ticket && mode === "board" && viewFresh && !selectedItem) {
       navigate({ ticket: undefined }, true);
@@ -762,6 +771,7 @@ export function IssuesBoard({
     setConfiguring("new");
     navigate({ connect: undefined }, true);
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Open board configuration requested by a connect link, then clear the link from the URL.
   useEffect(() => {
     if (search.connect && environmentId && projectId && connected) connectFromLink();
   }, [connectFromLink, connected, environmentId, projectId, search.connect]);

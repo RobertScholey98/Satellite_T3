@@ -87,6 +87,7 @@ function ManagerSettings(props: {
   const [error, setError] = useState<string | null>(null);
   // A refusal lands above Save at the bottom of a column that may scroll; show both.
   const actions = useRef<HTMLDivElement>(null);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Scroll once the refusal has rendered, so the new message and Save are both in view.
   useEffect(() => {
     if (error !== null) actions.current?.scrollIntoView({ block: "nearest" });
   }, [error]);
@@ -448,6 +449,7 @@ function useReadyBoards(
   const listBoards = useAtomCommand(issuesEnvironment.listBoards, { reportFailure: false });
   const openBoard = useAtomCommand(issuesEnvironment.openBoard, { reportFailure: false });
   const [boards, setBoards] = useState<ReadonlyArray<ReadyBoard> | null>(null);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch connected boards and their ready columns while editing pickup, dropping replies that arrive after the inputs change or unmount.
   useEffect(() => {
     if (!wanted) return;
     let current = true;

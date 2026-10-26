@@ -1,9 +1,14 @@
+import * as AzureDevOpsCli from "@t3tools/source-control-azure-devops/server/AzureDevOpsCli";
+import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as Factory from "../factory/Factory.ts";
 import * as Issues from "../issues/Issues.ts";
 import { drainLegacyThreadArchivesAfterStartup } from "./persistence/drainLegacyThreadArchives.ts";
+
+// Upstream's forge drivers build these privately, so issue and ticket hosts share their own copy.
+const forgeServices = Layer.merge(GitHubRest.layerWithDependencies, AzureDevOpsCli.layer);
 
 /**
  * Satellite's server-lifetime services, reactors and startup steps. Provided once in server.ts,
@@ -22,7 +27,7 @@ export const layer = Layer.mergeAll(
     ),
   ),
   Factory.layer,
-).pipe(Layer.provideMerge(Issues.layer));
+).pipe(Layer.provideMerge(Issues.layer), Layer.provide(forgeServices));
 
 /**
  * Satellite's services with test stand-ins for their dependencies, for tests that build Satellite

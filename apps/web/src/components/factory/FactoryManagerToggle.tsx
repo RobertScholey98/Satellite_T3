@@ -26,6 +26,7 @@ export function FactoryManagerToggle(props: {
   const on = useFactoryManagerDraft(props.draftId);
   const disabled = !canCreate;
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Clear the shared manager-draft flag when this connection loses create permission, so the headline and send path read it off too.
   useEffect(() => {
     if (on && disabled) setFactoryManagerDraft(props.draftId, false);
   }, [on, disabled, props.draftId]);
@@ -76,6 +77,7 @@ export function useFactoryManagerModelDisabledReason(input: {
   const poolKey = `${input.environmentId}\n${input.projectId ?? ""}`;
   const projectId = input.projectId;
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch the project's model pool while the toggle is on, dropping a reply that arrives after the project changes or unmounts.
   useEffect(() => {
     if (!on || projectId === null) return;
     let current = true;

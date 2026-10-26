@@ -93,6 +93,7 @@ export function FactoryOnboardingCard(props: {
   const [swapHost, setSwapHost] = useState<HTMLElement | null | undefined>(undefined);
   const [approveError, setApproveError] = useState<string | null>(null);
   // A list reused by the next thread must not keep this thread's transform.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Cancel the transcript slide animation on unmount so a reused list does not keep its transform.
   useEffect(() => () => slide.current?.cancel(), []);
 
   const undoSwap = () => {
@@ -397,7 +398,8 @@ function OnboardingProposalForm(props: {
                   }
                 >
                   {rule.options.map((option, index) => (
-                    <Label key={`${index}:${option}`}>
+                    // oxlint-disable-next-line react/no-array-index-key -- An option's index is its radio value, and options never reorder.
+                    <Label key={index}>
                       <Radio value={String(index)} />
                       {index === rule.recommended ? `${option} (recommended)` : option}
                     </Label>
@@ -424,7 +426,8 @@ function OnboardingProposalForm(props: {
 
       <Section title="Protected paths">
         {form.controlPaths.map((entry, index) => (
-          <div key={`${index}:${entry.path}`} className="space-y-0.5">
+          // oxlint-disable-next-line react/no-array-index-key -- A proposal may repeat a path, and paths only append or toggle in place.
+          <div key={index} className="space-y-0.5">
             <Label>
               <Checkbox
                 checked={entry.kept}
@@ -472,7 +475,8 @@ function OnboardingProposalForm(props: {
         <Section title="Findings">
           <ul className="space-y-1.5">
             {proposal.findings.map((finding, index) => (
-              <li key={`${index}:${finding}`} className="flex items-start gap-2">
+              // oxlint-disable-next-line react/no-array-index-key -- Findings are a read-only list that may repeat a line and never reorders.
+              <li key={index} className="flex items-start gap-2">
                 <span className="min-w-0 flex-1">{finding}</span>
                 {send ? (
                   <Button

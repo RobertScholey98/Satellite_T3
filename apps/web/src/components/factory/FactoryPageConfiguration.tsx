@@ -62,6 +62,7 @@ export function FactoryPageConfiguration({
 
   const [view, setView] = useState<FactoryConfigView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch the environment's factory config, dropping a reply that arrives after the environment changes or unmounts.
   useEffect(() => {
     let current = true;
     void getConfig({ environmentId, input: {} }).then((result) => {
@@ -75,6 +76,7 @@ export function FactoryPageConfiguration({
   }, [environmentId, getConfig]);
 
   const [hasBoard, setHasBoard] = useState(true);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch whether the environment has a connected board, dropping a reply that arrives after the environment changes or unmounts.
   useEffect(() => {
     let current = true;
     void listBoards({ environmentId, input: { connectedOnly: true } }).then((result) => {

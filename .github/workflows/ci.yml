@@ -17,6 +17,9 @@ concurrency:
 
 jobs:
   lint:
+    permissions:
+      contents: read
+      id-token: write
     name: Lint
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -47,6 +50,8 @@ jobs:
 
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
+        with:
+          task-cache-read-token: ${{ secrets.T3_TASK_CACHE_READ_TOKEN }}
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -67,6 +72,9 @@ jobs:
         run: vp check
 
   build:
+    permissions:
+      contents: read
+      id-token: write
     name: Build and Typecheck
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -87,6 +95,8 @@ jobs:
 
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
+        with:
+          task-cache-read-token: ${{ secrets.T3_TASK_CACHE_READ_TOKEN }}
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -103,6 +113,9 @@ jobs:
   # Every package except `t3` (apps/server) and the web app, which run below. Mobile runs
   # although Satellite does not ship it, to catch contract changes that break it.
   test:
+    permissions:
+      contents: read
+      id-token: write
     name: Test
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -125,6 +138,8 @@ jobs:
 
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
+        with:
+          task-cache-read-token: ${{ secrets.T3_TASK_CACHE_READ_TOKEN }}
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -134,6 +149,9 @@ jobs:
 
   # Web browser tests are timing-sensitive, so they get a runner of their own.
   test_web:
+    permissions:
+      contents: read
+      id-token: write
     name: Test Web
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -149,6 +167,8 @@ jobs:
 
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
+        with:
+          task-cache-read-token: ${{ secrets.T3_TASK_CACHE_READ_TOKEN }}
 
       # The browser project runs React tests in headless Chromium. Same cache key as
       # test_server, so both jobs share one downloaded browser.
@@ -182,6 +202,9 @@ jobs:
   # shards spread them over runners. apps/server/src/testUtils/weightedShardSequencer.ts
   # splits files by recorded duration.
   test_server:
+    permissions:
+      contents: read
+      id-token: write
     name: Test Server ${{ matrix.shard }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -205,6 +228,8 @@ jobs:
 
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
+        with:
+          task-cache-read-token: ${{ secrets.T3_TASK_CACHE_READ_TOKEN }}
 
       - name: Resolve Playwright version
         id: playwright_version

@@ -217,6 +217,7 @@ function FactoryManagerRow(props: {
   // Pickups start assignments and move the manager's state; this key reloads the log on either.
   const logKey = `${environmentId}\n${manager.id}\n${manager.state}\n${props.assignments.length}`;
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch the latest pickup decision when the log key changes, dropping a reply that arrives after it changes or unmounts.
   useEffect(() => {
     let current = true;
     void listLog({ environmentId, input: { managerId: manager.id, limit: 100 } }).then((result) => {

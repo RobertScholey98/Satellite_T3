@@ -1,10 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - a few git calls with no services to provide.
 /**
- * Lists the upstream-owned files a git range touches, for the upstream file list a PR body needs.
- * A path counts as upstream when it exists in the last upstream commit the head has merged, so
- * files Satellite added are left out. `--first-parent` keeps only the branch's own commits and
- * leaves out files that arrived through a merged branch.
- *
+ * Lists the upstream-owned files a git range touches: paths in the last upstream commit the head
+ * merged. `--first-parent` leaves out files that arrived through a merged branch.
  *   node scripts/upstream-files.ts <base>..<head> [--first-parent] [--upstream <ref>]
  */
 import * as NodeChildProcess from "node:child_process";

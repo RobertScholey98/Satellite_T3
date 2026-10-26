@@ -85,7 +85,7 @@ const PROJECT: OrchestrationProjectShell = {
       remoteName: "origin",
       remoteUrl: "https://github.com/acme/app.git",
     },
-    provider: "github",
+    provider: GITHUB,
     owner: "acme",
     name: "app",
   },
@@ -143,6 +143,7 @@ export const makeIssueHarness = Effect.fn("makeIssueHarness")(function* (
   const realSql = yield* SqlClient.SqlClient;
   // Statements run synchronously, so a test can stop a request between two of them only here.
   const sql = new Proxy(realSql, {
+    // @effect-diagnostics-next-line effectFnOpportunity:off -- the trap must return the statement itself, which has methods beyond Effect.
     apply: (target, thisArg, args: unknown[]) => {
       const statement: Effect.Effect<unknown, SqlError> = Reflect.apply(target, thisArg, args);
       const held = heldStatement;

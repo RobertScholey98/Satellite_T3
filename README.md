@@ -54,7 +54,7 @@ for executable paths, separate accounts, and provider updates.
 
 ## Build and run from source
 
-Use **Node 24** (`^24.22.1`) and **pnpm 11.10.0**, as pinned in `package.json`.
+Use **Node 26** (`26.12.1`) and **pnpm 12.14.0**, as pinned in `package.json`.
 
 ```powershell
 git clone https://github.com/RobertScholey98/Satellite_T3.git SatelliteT3

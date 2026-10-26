@@ -27,6 +27,7 @@ function menu(overrides: Partial<Parameters<typeof PullRequestFiltersMenu>[0]>) 
     involvementOptions: [{ value: "all", label: "All", Icon: CircleIcon }],
     onInvolvement: () => undefined,
     filters: {},
+    optionScope: [],
     onFilters: () => undefined,
     host: undefined,
     hostOptions: [],

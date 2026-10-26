@@ -116,10 +116,6 @@ import {
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
 import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
-import {
-  normalizeThreadPullRequestKey,
-  threadPullRequestsOf,
-} from "@t3tools/shared/threadPullRequests";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -143,6 +139,10 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import {
+  normalizeThreadPullRequestKey,
+  threadPullRequestsOf,
+} from "../sourceControl/threadPullRequests.ts";
 import { parseRateTable, priceUsage, type RateTable } from "../usage/usagePricing.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { applyDefinitionChange, type DefinitionChange } from "./config/applyDefinitionChange.ts";
@@ -1831,18 +1831,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   });
 
   /**
-   * Places a delegation plan holds until the lead records the worker it launched, as expiry times
-   * by assignment and place. Planning and launching are separate calls, so without a hold two
-   * concurrent delegations could both see the last place free. They live in memory because the
-   * server is one process and planning already runs under its lock; pending rows in
-   * `factory_members` would leak into the feed, stats and sub-agent lookups. A hold lapses, so a
-   * launch that failed never keeps the place for good.
-   *
-   * A place counts work running at once, not delegations: a member whose task finished frees its
-   * place without ending its row, so its stats and feed stay. A follow-up to a finished member
-   * goes through delegation too, with `continueThreadId`. A plain `t3_thread_send` to its thread
-   * is never refused, so the lead skill forbids it; such a follow-up still counts against the
-   * place while it runs.
+   * Expiry times of places a delegation plan holds until the lead records its launch, so two
+   * concurrent delegations cannot both take the last place. In memory: planning runs under the
+   * lock, and pending `factory_members` rows would leak into the feed, stats and sub-agent lookups.
+   * A place counts running work; a finished member frees it but keeps its row.
    */
   const heldPlaces = new Map<string, ReadonlyArray<number>>();
   const PLACE_HOLD_MS = 5 * 60_000;
@@ -3681,14 +3673,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   });
 
   /**
-   * Reads the files of each open pull request whose snapshot changed since its last check, outside
-   * the lock, and records which touch the manager's control paths. Paths the user allowed for the
-   * assignment do not count. A newly flagged path sends the assignment to the user, records an ask
-   * for a path no ask names yet, and tells the lead and the manager unless the user already
-   * declined it; once none remain the assignment returns to work. An unlinked pull request's flag
-   * stays until the user merges it or allows its files. A failed read leaves that pull
-   * request for the next reconcile. True when the assignment's state changed, so the caller stops
-   * there.
+   * Outside the lock, flags open pull requests whose changed files touch control paths the user
+   * has not allowed. A new flag sends the assignment to the user until none remain. An unlinked
+   * PR's flag stays until merged or allowed; a failed read waits for the next reconcile. True when
+   * the assignment's state changed, so the caller stops there.
    */
   const checkControlPaths = Effect.fnUntraced(function* (
     row: LeadAssignmentRow & { readonly manager_result_json: string | null },
@@ -3907,12 +3895,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   });
 
   /**
-   * Asks the lead to rebase an open pull request once when it starts conflicting with its base.
-   * A sync that shows it mergeable again ends that conflict, so a later one is asked about anew.
-   * `unknown` ends nothing: hosts report it while they recompute after any push or base move, so
-   * it says nothing about whether the conflict was resolved. The ask waits while the manager is
-   * paused, the user has the lead, or the lead waits on the user. It is recorded after the send is
-   * attempted: a failed send is only logged, so that ask is lost rather than retried.
+   * Asks the lead once per conflict to rebase. Only a mergeable sync ends a conflict: hosts report
+   * `unknown` while they recompute. The ask waits while the manager is paused or the lead is with
+   * the user, and is recorded after the send attempt, so a failed send is lost, not retried.
    */
   const askToRebase = Effect.fnUntraced(function* (
     row: LeadAssignmentRow & { readonly manager_state: string },
@@ -6156,7 +6141,7 @@ const RUNS_IN_PROGRESS = new Set<OrchestrationV2RunStatus>([
   "waiting",
 ]);
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const projects = yield* ProjectStore.ProjectStoreV2;
   const issues = yield* IssueService;

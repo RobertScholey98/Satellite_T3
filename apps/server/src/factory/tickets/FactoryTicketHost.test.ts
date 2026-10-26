@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   ProjectId,
+  SourceControlProviderKind,
   type IssueBoardLocator,
   type IssueBoardSummary,
   type RepositoryIdentity,
@@ -58,7 +59,7 @@ const identity: RepositoryIdentity = {
     remoteName: "origin",
     remoteUrl: "https://github.com/acme/web.git",
   },
-  provider: "github",
+  provider: SourceControlProviderKind.make("github"),
   displayName: "acme/web",
   owner: "acme",
   name: "web",

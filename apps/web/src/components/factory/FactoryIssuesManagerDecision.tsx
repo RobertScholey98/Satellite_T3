@@ -74,6 +74,7 @@ function ManagerDecision({
   } | null>(null);
   const key = `${managerId}\n${host}\n${repository}\n${number}`;
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch the manager's log for this ticket's decision while connected, dropping a reply that arrives after the ticket changes or unmounts.
   useEffect(() => {
     if (!connected) return;
     let current = true;

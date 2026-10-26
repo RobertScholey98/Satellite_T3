@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 
 import { requestConfirmDialog } from "~/confirmDialog";
 import { pullRequestEnvironment } from "~/state/pullRequests";
@@ -60,6 +61,7 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
   // leaves the card, or offers Merge again if the host still reports it open.
   const [mergedFrom, setMergedFrom] = useState<string | null>(null);
   const merging = mergedFrom !== null && mergedFrom === row.syncedAt;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Release the merging hold after MERGE_HOLD_MS when no sync replaces the snapshot first.
   useEffect(() => {
     if (!merging) return;
     const timeout = setTimeout(() => setMergedFrom(null), MERGE_HOLD_MS);
@@ -74,6 +76,9 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
       repository: row.repository,
       number: row.number,
     },
+    terminology: (
+      sourceControlClients.findByPublicHost(row.host) ?? sourceControlClients.get(undefined)
+    ).changeRequest,
     onSuccess: () => setMergedFrom(row.syncedAt),
     resolveMergeMethod: (detail) => {
       const allowed = detail.capabilities.mergeMethods.filter(

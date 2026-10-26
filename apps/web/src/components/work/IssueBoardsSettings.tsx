@@ -82,6 +82,7 @@ function BoardConnectionRow({
       setError(issueErrorMessage(failure));
     }
   };
+  // oxlint-disable-next-line t3code/react-effect-budget -- Open the board from the server once its environment connects.
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect -- open sets state only after the request answers.
     if (connected) void open(false);
@@ -179,6 +180,7 @@ export function IssueBoardsSettings() {
     setLastListRequest(listRequest);
     if (listRequest !== null) setError(null);
   }
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch connected boards when the list request changes, dropping a reply that arrives after it changes or unmounts.
   useEffect(() => {
     if (!environmentId || !connected) return;
     let current = true;

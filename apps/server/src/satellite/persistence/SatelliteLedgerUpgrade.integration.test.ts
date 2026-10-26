@@ -370,7 +370,7 @@ describe("Satellite ledger upgrade", () => {
 
         assert.strictEqual(yield* sha256(v1Path), v1Hash);
         assert.deepStrictEqual(first.upstreamLedger, migrationManifest);
-        assert.deepStrictEqual(first.upstreamLedger?.at(-1), [67, "WebhookDedupe"]);
+        assert.deepStrictEqual(first.upstreamLedger?.at(-1), [69, "ThreadMessageSearch"]);
         for (const table of DROPPED_V1_PROJECTIONS) assert.notInclude(first.tables, table);
         assert.deepStrictEqual(first.satelliteLedger, [
           ...(upgrade.legacyRows === "source" ? source.satellite : upgrade.legacyRows),

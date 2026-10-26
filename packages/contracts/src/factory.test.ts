@@ -9,6 +9,8 @@ import {
 } from "./factory.ts";
 
 const decodeAssignment = Schema.decodeUnknownSync(FactoryAssignment);
+const decodeConfig = Schema.decodeSync(FactoryConfig);
+const decodeOverride = Schema.decodeSync(FactoryConfigOverride);
 
 /** An assignment as a server from before protected-path asks sends it. */
 const OLDER_ASSIGNMENT = {
@@ -69,8 +71,8 @@ describe("FactoryAssignment", () => {
 
 describe("resolveFactoryConfig", () => {
   it("keeps the environment's cap over a stored project cap", () => {
-    const environment = Schema.decodeSync(FactoryConfig)({ concurrencyCap: 4 });
-    const override = Schema.decodeUnknownSync(FactoryConfigOverride)({
+    const environment = decodeConfig({ concurrencyCap: 4 });
+    const override = decodeOverride({
       concurrencyCap: 1,
       recoveryAllowance: 5,
     });

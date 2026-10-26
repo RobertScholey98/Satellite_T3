@@ -46,7 +46,21 @@ Each fork module or feature below names the upstream files it touches; keep both
    [`productIdentity.ts`](../../packages/contracts/src/productIdentity.ts) again.
    `scripts/lib/product-identity-consumers.test.ts` fails when a static file drifts from it or a
    source defaults to upstream's releases.
-7. Resolve the remaining conflicts by hand. These are real behavior changes.
+   After the merge, set the list's `# upstream-base:` line to the merged upstream commit;
+   `--verify` rebrands that commit's copy of each listed file.
+7. Resolve the remaining conflicts by hand, hunk by hunk. These are real behavior changes.
+   `git checkout --theirs <file>` takes the whole file, including hunks git had already merged
+   cleanly, so use it only where Satellite's change to the file is the rebrand alone.
+8. Keep the merge commit to conflict resolutions, and make every other change in a follow-up
+   commit. Upstream files that merged cleanly can still break Satellite, so before pushing:
+   - Typecheck the packages Satellite changes. Upstream refactors move helpers Satellite imports.
+   - Lint the files Satellite adds or changes, since upstream's new lint rules and Effect
+     diagnostics apply to Satellite code too:
+     `git diff --name-only --diff-filter=AM upstream/main HEAD | grep -E '\.(c|m)?[jt]sx?$' | xargs vp lint`.
+   - Delete new upstream workflows that Satellite does not run. Their runner labels fail
+     actionlint in Satellite's CI.
+   - Expect new upstream tests to hard-code `pingdotgg/t3code` or `~/.t3`. Point them at
+     `productIdentity.ts`.
 
 Report the footprint before and after a sync. It counts the upstream files Satellite modifies or
 deletes relative to the upstream merge base:

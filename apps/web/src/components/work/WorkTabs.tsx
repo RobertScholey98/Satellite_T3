@@ -11,7 +11,7 @@ import { readIssuesNavigation } from "./issuesNavigation";
 const WORK_TABS = [
   {
     id: "pull-requests",
-    label: "Pull Requests",
+    label: "Pull requests",
     icon: PullRequestGlyph.pullRequest,
     link: () => linkOptions({ to: "/pull-requests", search: readPullRequestListPreferences() }),
   },
@@ -63,6 +63,7 @@ export function WorkTabs({
   readonly compact?: boolean;
   readonly syncing?: boolean;
 }) {
+  // oxlint-disable-next-line t3code/react-effect-budget -- Persist the shown work tab to local storage so the next visit opens it.
   useEffect(() => rememberWorkTab(current), [current]);
   return (
     <div className="flex min-w-0 items-center gap-3">

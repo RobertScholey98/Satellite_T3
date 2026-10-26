@@ -1,11 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - a plain text rewrite with no services to provide.
 /**
- * Rewrites upstream's product name to Satellite's in every file `rebrand-files.txt` lists. After an
- * upstream sync, take upstream's side of a rebrand-only conflict and rerun this. With `--check` it
- * writes nothing, lists the files it would change, and exits 1 when there are any. With `--verify`
- * it checks that every listed file not marked hand-edited is exactly the script's output on the
- * upstream commit the list names (formatter rewraps aside), and lists the ones that are not.
- *
+ * Rewrites upstream's product name to Satellite's in every file `rebrand-files.txt` lists.
+ * `--check` lists the files it would change and exits 1. `--verify` lists unmarked files that
+ * differ from the script's output on the list's upstream commit.
  *   node scripts/rebrand.ts [--check | --verify]
  */
 import * as NodeChildProcess from "node:child_process";

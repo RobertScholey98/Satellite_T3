@@ -41,6 +41,9 @@ const UPSTREAM_REPOSITORY_ALLOWLIST = [
   // The upstream release URLs here are read only by apps/mobile; the ones Satellite fetches from
   // are checked by "builds CLI release URLs from Satellite's repository" below.
   "packages/shared/src/cliRelease.ts",
+  // Upstream's private CI task cache, which these guards turn off outside upstream's repository.
+  ".github/actions/setup-ci-deps/action.yml",
+  "infra/task-cache/",
   // Upstream's relay deployment, which Satellite does not run.
   "infra/relay/",
   // Only upstream's own builds report a telemetry channel; these say so and test the repository.

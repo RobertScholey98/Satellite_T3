@@ -96,6 +96,7 @@ export function IssueDetailDialog({
   const resumeAttempt = useAtomCommand(issuesEnvironment.resumeAttempt, { reportFailure: false });
 
   const projectId = view?.board.projectId ?? project?.id;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch the issue's detail while connected, dropping a reply that arrives after the issue changes or unmounts.
   useEffect(() => {
     if (!connected || !projectId) return;
     let current = true;
@@ -127,6 +128,7 @@ export function IssueDetailDialog({
       current = false;
     };
   };
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fetch the issue's attempts, dropping a reply that arrives after the issue changes or unmounts.
   useEffect(() => loadAttempts(), [loadAttempts]);
 
   const attempts =

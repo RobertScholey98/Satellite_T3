@@ -166,13 +166,7 @@ const boardItem = (ref: IssueRef, title: string, itemId: string): IssueBoardItem
   version: null,
 });
 
-/**
- * Requires the GitHub REST transport and request policy, an HTTP client, the Azure DevOps CLI with
- * what `AzureBoardsCli` reads, and the repository identity resolver for a checkout's GitHub
- * repository.
- *
- * @public Service construction is part of the canonical Effect module API.
- */
+/** @public */
 export const make = Effect.gen(function* () {
   const github = yield* GitHubRest.GitHubRest;
   const policy = yield* GitHubRequestPolicy.GitHubRequestPolicy;
