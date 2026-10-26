@@ -5,8 +5,10 @@ to keep a terminal open.
 
 ## Manage the service
 
-Install the `t3` CLI first ([Install T3 Code](./install.md#command-line)), then
-run these commands on the machine that will host T3 Code:
+Install the `t3` CLI first ([Install T3 Code](./install.md#command-line)). On a
+headless Linux x64 host, that means the release's Linux archive; `t3 service
+install` reuses the version it unpacked. Then run these commands on the machine
+that will host T3 Code:
 
 | Task                            | Command                |
 | ------------------------------- | ---------------------- |
@@ -29,11 +31,9 @@ to pick up the new version. Wait for any remote update already in progress
 before updating; to match a remote client's version, follow
 [Updating T3 Code](./updating.md).
 
-Pass an exact version (`t3 update 0.0.42`) to pin one, `--channel nightly` to
-switch trains, or `--allow-downgrade` to move backwards. `preview` is a
-maintainers' test train: its builds can be broken and are never offered as
-updates, so the installer and `t3 update` ask for confirmation before
-installing one.
+Pass an exact version (`t3 update 2.4.0-rc.1`) to pin one, or
+`--allow-downgrade` to move backwards. Satellite's alpha, beta, and rc releases
+are on the same channel as its stable releases, so `t3 update` can offer one.
 
 `t3 uninstall` removes the background service, the `t3` launcher, and the
 downloaded versions after showing you the list and asking once. Your projects,

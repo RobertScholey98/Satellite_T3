@@ -5,7 +5,9 @@
 Satellite publishes desktop builds to this fork's
 [GitHub Releases](https://github.com/RobertScholey98/Satellite_T3/releases) from
 [`.github/workflows/release.yml`](../../.github/workflows/release.yml): a Windows x64
-installer that updates itself, and macOS Apple Silicon and Intel builds installed by hand.
+installer that updates itself, macOS Apple Silicon and Intel builds installed by hand, and a
+Linux x64 `t3` CLI archive. The desktop app's SSH environments download that archive onto the
+remote host, and headless Linux servers install from it.
 The workflow runs on GitHub-hosted runners and needs no secrets beyond the built-in token.
 
 ## Publish a release
@@ -30,7 +32,8 @@ The workflow runs on GitHub-hosted runners and needs no secrets beyond the built
 To test the pipeline, tick **Dry run**, or run
 `gh workflow run release.yml --ref <branch> -f version=2.0.0-alpha.1 -f dry_run=true`. A dry
 run builds and checks every asset, uploads them with `SHA256SUMS` as the `release-assets` run
-artifact, and creates no tag or release. It also needs passing CI on the branch's commit.
+artifact (the Linux archive included), and creates no tag or release. It also needs passing CI
+on the branch's commit.
 
 A failed run can be rerun with the same version from the same commit. A version whose tag
 already names a different commit fails in **Resolve release**; pick a new version.
@@ -62,6 +65,15 @@ already names a different commit fails in **Resolve release**; pick a new versio
    runner of the target's architecture (`windows-2025`, `macos-15`, `macos-15-intel`). They package
    the bundle with `scripts/build-desktop-artifact.ts`, unsigned, with no CLI archive and no WSL
    runtime.
+   **Desktop Linux x64** calls the same workflow on `ubuntu-24.04` with `cli_archive: true`. It
+   builds the `t3` single executable and packs it with `scripts/build-cli-archive.ts`.
+   `scripts/smoke-cli-archive.ts` unpacks the archive, checks it holds `t3` and
+   `client/index.html`, runs `t3 --version` with an empty `PATH` and expects the release
+   version, then starts `t3 serve` on loopback against a scratch home and requires a 200 from `/`
+   within 30 seconds. The runner image already has the `libatomic1` the executable links, so the
+   smoke test cannot catch a host that lacks it. The shared workflow then packages a Linux AppImage and `.deb` too. Publishing
+   leaves them out, but a failure there still fails the job and blocks the whole release; avoiding
+   that would need a change to `release-desktop.yml`.
 4. **Verify macOS** extracts each ZIP, checks it holds one app with a valid signature and no update
    configuration, runs the packaged server's `--help`, and verifies the DMG.
 5. **Publish GitHub Release** fails on a missing asset or any macOS update manifest, writes
@@ -74,7 +86,13 @@ already names a different commit fails in **Resolve release**; pick a new versio
 | `latest.yml`                              | Windows update feed              |
 | `SatelliteT3-<version>-arm64.dmg`, `.zip` | macOS Apple Silicon              |
 | `SatelliteT3-<version>-x64.dmg`, `.zip`   | macOS Intel                      |
+| `t3-<version>-linux-x64.tar.gz`           | Linux x64 CLI and server         |
 | `SHA256SUMS`                              | Checksums of every asset above   |
+
+The desktop app's SSH launcher downloads exactly `v<version>/t3-<version>-linux-x64.tar.gz` and
+`v<version>/SHA256SUMS` from this repository's releases, where `<version>` is the desktop app's
+own version, and `scripts/install.sh` fetches the same names. A release without the archive, or
+with it renamed, breaks SSH environments for desktop builds of that version.
 
 ## Update feed
 
@@ -138,10 +156,11 @@ Windows or Linux stage installs, or a pinned version that is missing from the re
 
 ## What the workflow does not do
 
-No code signing or notarization, no Linux or Windows arm64 builds, no CLI archives, npm package,
-AUR package, hosted web app, marketing site, or announcements, and no nightly or preview channels.
-Windows builds do not bundle a WSL runtime, so the WSL backend reports that the build lacks WSL
-support. Upstream's
+No code signing or notarization, no Linux desktop app, no Linux arm64 or Windows arm64 builds,
+no CLI archives besides Linux x64, npm package, AUR package, hosted web app, marketing site, or
+announcements, and no nightly or preview channels. Windows builds do not bundle a WSL runtime, so
+the WSL backend reports that the build lacks WSL support; embedding the Linux x64 archive with
+`wsl_runtime` is a possible follow-up. Upstream's
 [release runbook](https://github.com/pingdotgg/t3code/blob/e58a4857130a93cc58b45dd6ebee14cf08df04ec/docs/operations/release.md)
 covers those, including the Windows payload checks the build script still enforces.
 
@@ -150,5 +169,5 @@ covers those, including the Windows payload checks the build script still enforc
 `release-desktop.yml` is upstream's file. Satellite adds only the `wsl_runtime` input, which
 defaults to upstream's behaviour. CI lints every workflow with actionlint, which also checks the
 inputs `release.yml` passes to `release-desktop.yml`, so an upstream change to those inputs fails
-a pull request instead of a release. When upstream adds a required input, add it to the three
+a pull request instead of a release. When upstream adds a required input, add it to the four
 desktop jobs.

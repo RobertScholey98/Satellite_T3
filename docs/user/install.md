@@ -10,9 +10,81 @@ launch T3 Code and configure providers afterwards.
 
 ## Command line
 
-Satellite ships desktop installers only. It publishes no `t3` command-line
-archives, so `t3 update` and the upstream install scripts do not apply to it.
-To run a Satellite server without the desktop app, build it from source in
+On a Linux x64 machine, such as a headless server, install the `t3` command
+from Satellite's releases. It needs no Node.js. The installer downloads
+`t3-<version>-linux-x64.tar.gz`, checks it against the release's `SHA256SUMS`,
+unpacks it into `~/.t3/runtime/versions/<version>`, and links `t3` into
+`~/.local/bin`.
+
+`t3` needs `libatomic1`, which minimal and container images of Ubuntu leave
+out. Install it, and curl if it is missing, first; as root, leave out `sudo`:
+
+```bash
+sudo apt update && sudo apt install -y libatomic1 curl
+```
+
+Without it, `t3` fails with `libatomic.so.1: cannot open shared object file`,
+and the desktop app's SSH environments report that the executable does not run
+on the host.
+
+The archive ships from the first release after 2.3.0; 2.3.0 and earlier have
+none. Choose a release on
+[Satellite's releases](https://github.com/RobertScholey98/Satellite_T3/releases)
+whose assets list `t3-<version>-linux-x64.tar.gz`, and put its version, without
+the leading `v`, in place of `<version>` below:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/RobertScholey98/Satellite_T3/main/scripts/install.sh | T3CODE_VERSION=<version> sh
+```
+
+Once a stable release includes the archive, you can leave out
+`T3CODE_VERSION` to install the newest stable release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/RobertScholey98/Satellite_T3/main/scripts/install.sh | sh
+```
+
+If the installer says `~/.local/bin`
+is not on your `PATH`, log in again or run
+`export PATH="$HOME/.local/bin:$PATH"`.
+
+To install by hand instead, set `version` to the release you chose. The block
+runs in a subshell and stops at the first failed step, such as a checksum
+mismatch:
+
+```bash
+version=<version>
+(
+  set -e
+  base="https://github.com/RobertScholey98/Satellite_T3/releases/download/v$version"
+  dir="$HOME/.t3/runtime/versions/$version"
+  cd "$(mktemp -d)"
+  curl -fLO "$base/t3-$version-linux-x64.tar.gz"
+  curl -fLO "$base/SHA256SUMS"
+  sha256sum -c SHA256SUMS --ignore-missing
+  mkdir -p "$dir" ~/.local/bin
+  tar -xzf "t3-$version-linux-x64.tar.gz" -C "$dir" --strip-components=1
+  "$dir/t3" --version
+  echo "$version" > "$dir/.install-complete"
+  ln -sfn "$dir/t3" ~/.local/bin/t3
+)
+```
+
+Check it with `t3 --version`, then run `t3 serve`, or `t3 service install` to
+keep it running in the background ([Running in the background](./background-service.md)).
+Your data lives under `~/.t3`.
+
+`t3 update` installs the newest release on your current version's channel.
+Satellite's alpha, beta, and rc releases count as stable, so it can move a
+stable install onto a newer prerelease; run `t3 update <version>` to install an
+exact version instead.
+
+The desktop app's SSH environments install this same archive on the remote
+host for you, so you do not need these steps there.
+
+There is no archive for macOS, Windows, or Linux arm64; on Windows, use the
+[desktop app](#desktop-app). To run a Satellite server without the desktop app
+on macOS or Linux arm64, build it from source in
 [this fork's repository](https://github.com/RobertScholey98/Satellite_T3) with
 Node.js 24 ([Install vp](../../README.md#install-vp)):
 
@@ -36,8 +108,10 @@ Download Satellite from
 | macOS Apple Silicon | `SatelliteT3-<version>-arm64.dmg` |
 | macOS Intel         | `SatelliteT3-<version>-x64.dmg`   |
 
-There is no Linux build. Each release lists checksums in `SHA256SUMS`; to check
-a download, run `shasum -a 256 -c SHA256SUMS --ignore-missing` in its folder.
+There is no Linux desktop app; on Linux x64, install the
+[command line](#command-line) instead. Each release lists checksums in
+`SHA256SUMS`; to check a download, run
+`shasum -a 256 -c SHA256SUMS --ignore-missing` in its folder.
 
 The builds are not code signed, so the first launch needs one extra step:
 
