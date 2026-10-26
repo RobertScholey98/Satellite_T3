@@ -5,7 +5,7 @@
 # reads, rebrand:keep markers, other Satellite changes). After taking upstream's side of one,
 # rerun the script and re-apply Satellite's other hunks for that file.
 # The merge-forward that changes upstream's side updates this line; --verify reads it.
-# upstream-base: 5c3721e20aa3c19d7ab414c40734752f9c053c90
+# upstream-base: 8e1bb0376ce8859d954776c65fae67fd15341a74
 .github/triage/PLAYBOOK.md  # hand-edited
 apps/desktop/gnome-extension/captureFeedback.js
 apps/desktop/gnome-extension/captureService.js
@@ -55,6 +55,7 @@ apps/server/src/cli/config.test.ts
 apps/server/src/cli/config.ts
 apps/server/src/cli/connect.ts
 apps/server/src/cli/doctor.ts  # hand-edited
+apps/server/src/cli/managedChatGptToken.ts
 apps/server/src/cli/pair.test.ts
 apps/server/src/cli/pair.ts
 apps/server/src/cli/server.ts
@@ -87,6 +88,7 @@ apps/server/src/mcp/toolkits/pullRequests/tools.ts
 apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts  # hand-edited
 apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts
 apps/server/src/orchestration-v2/ContextHandoffService.ts
+apps/server/src/orchestration-v2/Orchestrator.ts
 apps/server/src/orchestration-v2/PullRequestWatchReactor.ts
 apps/server/src/orchestration-v2/RestartContinuation.test.ts
 apps/server/src/orchestration-v2/RestartContinuation.ts
@@ -158,6 +160,7 @@ apps/web/src/components/settings/scopedSettings.test.ts
 apps/web/src/components/settings/scopedSettings.ts
 apps/web/src/components/settings/settingsSearch.ts  # hand-edited
 apps/web/src/components/sidebar/updateEverythingRun.tsx
+apps/web/src/connection/platform.ts  # hand-edited
 apps/web/src/desktopAppActivation.ts
 apps/web/src/lib/bootError.ts
 apps/web/src/routes/_chat.index.tsx
@@ -216,6 +219,8 @@ packages/shared/src/otelEnvironment.test.ts
 packages/shared/src/otelEnvironment.ts
 packages/shared/src/promptLinks.ts
 packages/shared/src/relayClient.ts
+packages/shared/src/usageLimits.ts
+packages/source-control-forgejo/src/server/ForgejoPullRequestProvider.ts
 packages/source-control-gitcafe/src/server/GitCafePullRequestProvider.ts
 packages/source-control-github/src/server/githubStackRebase.ts
 packages/ssh/src/auth.ts
