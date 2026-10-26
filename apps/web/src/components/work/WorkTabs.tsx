@@ -11,7 +11,7 @@ import { readIssuesNavigation } from "./issuesNavigation";
 const WORK_TABS = [
   {
     id: "pull-requests",
-    label: "Pull Requests",
+    label: "Pull requests",
     icon: PullRequestGlyph.pullRequest,
     link: () => linkOptions({ to: "/pull-requests", search: readPullRequestListPreferences() }),
   },

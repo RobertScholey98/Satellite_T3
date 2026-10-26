@@ -5,7 +5,6 @@ import { ChevronDownIcon, FactoryIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { isElectron } from "~/env";
-import { useEscapeToGoBack } from "~/hooks/useNavigateBack";
 import {
   useEnvironmentProviders,
   useEnvironments,
@@ -47,7 +46,6 @@ const isConfigurationAnchor = (hash: string) =>
 
 /** The engineering factory: how it is doing, and every setting it runs on. */
 export function FactoryPage() {
-  useEscapeToGoBack();
   const hash = useLocation({ select: (location) => location.hash });
   // A settings search result links to a Configuration row by its anchor.
   const [tab, setTab] = useState<FactoryPageTab>(() =>

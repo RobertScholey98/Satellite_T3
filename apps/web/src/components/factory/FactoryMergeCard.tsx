@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 
 import { requestConfirmDialog } from "~/confirmDialog";
 import { pullRequestEnvironment } from "~/state/pullRequests";
@@ -74,6 +75,9 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
       repository: row.repository,
       number: row.number,
     },
+    terminology: (
+      sourceControlClients.findByPublicHost(row.host) ?? sourceControlClients.get(undefined)
+    ).changeRequest,
     onSuccess: () => setMergedFrom(row.syncedAt),
     resolveMergeMethod: (detail) => {
       const allowed = detail.capabilities.mergeMethods.filter(

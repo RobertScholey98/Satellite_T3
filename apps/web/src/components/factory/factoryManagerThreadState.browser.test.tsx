@@ -131,7 +131,6 @@ it("shows a primed manager thread's conversation with its priming collapsed", as
       emptyPlaceholderInset={0}
       liveFollowEnabled
       onIsAtEndChange={() => {}}
-      onManualNavigation={() => {}}
     />,
     { container },
   );
