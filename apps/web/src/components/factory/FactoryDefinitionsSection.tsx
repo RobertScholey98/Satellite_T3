@@ -309,7 +309,7 @@ function DefinitionForm({
                 onChange={(event) => setDraft({ ...draft, name: event.target.value })}
               />
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <Label>Models</Label>
               <FactoryModelListEditor
                 label="Models"
@@ -343,7 +343,7 @@ function DefinitionForm({
           </fieldset>
         </form>
       </DialogPanel>
-      <DialogFooter variant="bare">
+      <DialogFooter>
         <Button type="button" variant="outline" onClick={onClose}>
           Cancel
         </Button>

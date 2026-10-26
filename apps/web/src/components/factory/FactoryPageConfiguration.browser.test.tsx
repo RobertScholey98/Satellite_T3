@@ -102,10 +102,10 @@ it("saves the edited concurrency cap to the environment config", async () => {
   );
   const cap = screen.getByRole("textbox", { name: "Concurrent assignments" });
   await expect.element(cap).toHaveValue("2");
-  await expect.element(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  await expect.element(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
 
   await userEvent.click(screen.getByRole("button", { name: "Increase Concurrent assignments" }));
-  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
 
   expect(state.updateConfig).toHaveBeenCalledExactlyOnceWith({
     environmentId,
@@ -141,7 +141,7 @@ it("saves the instance a driver runs on, and First available removes the prefere
 
   await userEvent.click(screen.getByRole("combobox", { name: "Claude runs on" }));
   await userEvent.click(screen.getByRole("option", { name: "Claude (work)" }));
-  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
   expect(state.updateConfig).toHaveBeenLastCalledWith({
     environmentId,
     input: {
@@ -152,7 +152,7 @@ it("saves the instance a driver runs on, and First available removes the prefere
 
   await userEvent.click(screen.getByRole("combobox", { name: "Claude runs on" }));
   await userEvent.click(screen.getByRole("option", { name: "First available" }));
-  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
   expect(state.updateConfig).toHaveBeenLastCalledWith({
     environmentId,
     input: { scope: "environment", config: { ...saved, instancePreferences: {} } },

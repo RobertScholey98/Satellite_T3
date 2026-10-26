@@ -80,12 +80,12 @@ export function FactoryPoolSection({
       headerAction={
         <div className="flex items-center gap-2">
           {draft !== null ? (
-            <Button size="xs" variant="ghost" disabled={saving} onClick={() => setDraft(null)}>
+            <Button size="sm" variant="ghost" disabled={saving} onClick={() => setDraft(null)}>
               Discard
             </Button>
           ) : null}
-          <Button size="xs" disabled={disabled || draft === null} onClick={() => void save()}>
-            {saving ? "Saving…" : "Save"}
+          <Button size="sm" disabled={disabled || draft === null} onClick={() => void save()}>
+            {saving ? "Saving…" : "Save section"}
           </Button>
         </div>
       }
@@ -106,7 +106,7 @@ export function FactoryPoolSection({
           }
           control={
             empty ? (
-              <Button size="xs" disabled={!canEdit || saving} onClick={() => void startStarter()}>
+              <Button size="sm" disabled={!canEdit || saving} onClick={() => void startStarter()}>
                 Use starter set
               </Button>
             ) : undefined
@@ -124,7 +124,7 @@ export function FactoryPoolSection({
                 <MenuTrigger
                   aria-label="Add a model to the pool"
                   disabled={disabled || addable.length === 0}
-                  render={<Button size="xs" variant="outline" />}
+                  render={<Button size="sm" variant="outline" />}
                 >
                   <PlusIcon />
                   Add model
@@ -143,42 +143,42 @@ export function FactoryPoolSection({
                 </MenuPopup>
               </Menu>
             }
-          >
-            <ul className="flex max-w-2xl flex-col gap-1 pb-3.5">
-              {settings.modelPool.length === 0 ? (
-                <li className="text-sm text-muted-foreground">
-                  The pool is empty, so no factory work can start.
-                </li>
-              ) : (
-                describeFactoryModelRefs(settings.modelPool, modelOptions, null).map(
-                  (entry, index) => (
-                    <li
-                      key={factoryModelRefKey(entry.ref)}
-                      className="flex items-center gap-1.5 text-sm"
-                    >
-                      <span className="min-w-0 flex-1 truncate">{entry.label}</span>
-                      {entry.flags.map((flag) => (
-                        <Badge key={flag} size="sm" variant="warning">
-                          {FACTORY_MODEL_REF_FLAG_LABELS[flag]}
-                        </Badge>
-                      ))}
-                      <Button
-                        size="icon-xs"
-                        variant="ghost-muted"
-                        aria-label={`Remove ${entry.label} from the pool`}
-                        disabled={disabled}
-                        onClick={() =>
-                          setPool(settings.modelPool.filter((_, other) => other !== index))
-                        }
-                      >
-                        <XIcon />
-                      </Button>
-                    </li>
-                  ),
-                )
-              )}
-            </ul>
-          </SettingsRow>
+          />
+          {settings.modelPool.length === 0 ? (
+            <SettingsRow
+              title="The pool is empty"
+              description="No factory work can start until the pool has a model."
+            />
+          ) : (
+            describeFactoryModelRefs(settings.modelPool, modelOptions, null).map((entry, index) => (
+              <SettingsRow
+                key={factoryModelRefKey(entry.ref)}
+                title={
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 truncate">{entry.label}</span>
+                    {entry.flags.map((flag) => (
+                      <Badge key={flag} size="sm" variant="warning">
+                        {FACTORY_MODEL_REF_FLAG_LABELS[flag]}
+                      </Badge>
+                    ))}
+                  </span>
+                }
+                control={
+                  <Button
+                    size="icon-sm"
+                    variant="ghost-muted"
+                    aria-label={`Remove ${entry.label} from the pool`}
+                    disabled={disabled}
+                    onClick={() =>
+                      setPool(settings.modelPool.filter((_, other) => other !== index))
+                    }
+                  >
+                    <XIcon />
+                  </Button>
+                }
+              />
+            ))
+          )}
           <SettingsRow
             title="Recovery allowance"
             description="How many times a stuck assignment is diagnosed and replanned before it waits on you."

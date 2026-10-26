@@ -292,9 +292,9 @@ function TeamForm({
                 <Menu>
                   <MenuTrigger
                     disabled={busy || view.leads.length === 0}
-                    render={<Button size="xs" variant="outline" />}
+                    render={<Button size="sm" variant="outline" />}
                   >
-                    {team.lead === null ? "Choose lead" : "Replace with a copy of…"}
+                    {team.lead === null ? "Choose lead" : "Use another lead…"}
                   </MenuTrigger>
                   <MenuPopup align="end">
                     {view.leads.map((lead) => (
@@ -312,28 +312,40 @@ function TeamForm({
                     : "Choose a lead to copy into this team."}
                 </p>
               ) : (
-                <div className="space-y-2 rounded-md border p-3">
-                  <Input
-                    aria-label="Lead name"
-                    maxLength={80}
-                    value={team.lead.name}
-                    onChange={(event) => setLead({ name: event.target.value })}
-                  />
-                  <FactoryModelListEditor
-                    label="Lead models"
-                    value={team.lead.models}
-                    pool={pool}
-                    modelOptions={modelOptions}
-                    disabled={busy}
-                    onChange={(models) => setLead({ models })}
-                  />
-                  <Textarea
-                    aria-label="Lead added instructions"
-                    rows={3}
-                    placeholder="Added after the fixed lead protocol, which you can't remove"
-                    value={team.lead.instructions}
-                    onChange={(event) => setLead({ instructions: event.target.value })}
-                  />
+                <div className="space-y-4 rounded-lg border p-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`${formId}-lead-name`}>Lead name</Label>
+                    <Input
+                      id={`${formId}-lead-name`}
+                      maxLength={80}
+                      value={team.lead.name}
+                      onChange={(event) => setLead({ name: event.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Lead models</Label>
+                    <FactoryModelListEditor
+                      label="Lead models"
+                      value={team.lead.models}
+                      pool={pool}
+                      modelOptions={modelOptions}
+                      disabled={busy}
+                      onChange={(models) => setLead({ models })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`${formId}-lead-instructions`}>Added instructions</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Added after the fixed lead protocol, which you can't remove
+                    </p>
+                    <Textarea
+                      id={`${formId}-lead-instructions`}
+                      aria-label="Lead added instructions"
+                      rows={3}
+                      value={team.lead.instructions}
+                      onChange={(event) => setLead({ instructions: event.target.value })}
+                    />
+                  </div>
                 </div>
               )}
             </div>
@@ -344,7 +356,7 @@ function TeamForm({
                 <Menu>
                   <MenuTrigger
                     disabled={busy || view.workers.length === 0}
-                    render={<Button size="xs" variant="outline" />}
+                    render={<Button size="sm" variant="outline" />}
                   >
                     <PlusIcon />
                     Add member
@@ -379,7 +391,7 @@ function TeamForm({
               {members.map(({ key, member }, index) => {
                 const n = index + 1;
                 return (
-                  <div key={key} className="space-y-2 rounded-md border p-3">
+                  <div key={key} className="space-y-2 rounded-lg border p-3">
                     <div className="flex items-center gap-2">
                       <div className="min-w-0 flex-1">
                         <Input
@@ -433,7 +445,7 @@ function TeamForm({
           </fieldset>
         </form>
       </DialogPanel>
-      <DialogFooter variant="bare">
+      <DialogFooter>
         <Button type="button" variant="outline" onClick={onClose}>
           Cancel
         </Button>

@@ -203,43 +203,45 @@ export function FactoryConfigShareSection({
           </Button>
         }
       >
-        <RadioGroup
-          aria-label="What to export"
-          value={scope}
-          onValueChange={(value) => setScope(value === "teams" ? "teams" : "all")}
-        >
-          <label className="flex items-center gap-2 text-sm">
-            <Radio value="all" />
-            The whole config
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <Radio value="teams" disabled={teams.length === 0} />
-            Selected teams, with the workers and leads they were built from
-          </label>
-        </RadioGroup>
-        {definitions.view === null && definitions.loadError !== null ? (
-          <p className="text-sm text-destructive">
-            The teams could not be read: {definitions.loadError}
-          </p>
-        ) : null}
-        {scope === "teams" ? (
-          <div className="space-y-1.5 pl-6">
-            {teams.map((team) => (
-              <label key={team.id} className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={teamIds.has(team.id)}
-                  onCheckedChange={(checked) => {
-                    const next = new Set(teamIds);
-                    if (checked) next.add(team.id);
-                    else next.delete(team.id);
-                    setTeamIds(next);
-                  }}
-                />
-                {team.name}
-              </label>
-            ))}
-          </div>
-        ) : null}
+        <div className="flex flex-col gap-2 pt-3 pb-2.5">
+          <RadioGroup
+            aria-label="What to export"
+            value={scope}
+            onValueChange={(value) => setScope(value === "teams" ? "teams" : "all")}
+          >
+            <label className="flex items-center gap-2 text-sm">
+              <Radio value="all" />
+              The whole config
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <Radio value="teams" disabled={teams.length === 0} />
+              Selected teams, with the workers and leads they were built from
+            </label>
+          </RadioGroup>
+          {definitions.view === null && definitions.loadError !== null ? (
+            <p className="text-sm text-destructive">
+              The teams could not be read: {definitions.loadError}
+            </p>
+          ) : null}
+          {scope === "teams" ? (
+            <div className="space-y-1.5 pl-6">
+              {teams.map((team) => (
+                <label key={team.id} className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={teamIds.has(team.id)}
+                    onCheckedChange={(checked) => {
+                      const next = new Set(teamIds);
+                      if (checked) next.add(team.id);
+                      else next.delete(team.id);
+                      setTeamIds(next);
+                    }}
+                  />
+                  {team.name}
+                </label>
+              ))}
+            </div>
+          ) : null}
+        </div>
       </SettingsRow>
       <SettingsRow
         title="Import"

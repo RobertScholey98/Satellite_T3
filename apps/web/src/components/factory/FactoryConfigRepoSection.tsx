@@ -198,7 +198,7 @@ export function FactoryConfigRepoSection({
             >
               <Input
                 aria-label="Repo URL"
-                placeholder="git@github.com:you/factory-config.git"
+                placeholder="git@github.com:you/repo.git"
                 value={url}
                 disabled={disabled}
                 onChange={(event) => setUrl(event.target.value)}

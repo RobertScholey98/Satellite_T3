@@ -129,7 +129,10 @@ export function FactoryPageConfiguration({
     <>
       <div className="flex flex-col gap-2 px-3 sm:px-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-base text-muted-foreground">Settings for {environmentLabel}</p>
+          <p className="text-xs text-muted-foreground">
+            Pickup and Behaviour save to {environmentLabel}. Each section below them saves to the
+            factory config on its own.
+          </p>
           <div className="flex items-center gap-2">
             {draft !== null ? (
               <Button size="sm" variant="ghost" disabled={saving} onClick={() => setDraft(null)}>
@@ -137,7 +140,7 @@ export function FactoryPageConfiguration({
               </Button>
             ) : null}
             <Button size="sm" disabled={disabled || draft === null} onClick={() => void save()}>
-              {saving ? "Saving…" : "Save"}
+              {saving ? "Saving…" : "Save settings"}
             </Button>
           </div>
         </div>

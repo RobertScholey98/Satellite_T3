@@ -63,9 +63,12 @@ export function FactoryModelListEditor({
       {entries.length === 0 ? (
         <p className="text-sm text-muted-foreground">Any model in the pool</p>
       ) : (
-        <ol className="flex flex-col gap-1">
+        <ol className="flex flex-col divide-y divide-border/50 rounded-lg border">
           {entries.map((entry, index) => (
-            <li key={factoryModelRefKey(entry.ref)} className="flex items-center gap-1.5 text-sm">
+            <li
+              key={factoryModelRefKey(entry.ref)}
+              className="flex items-center gap-1.5 py-1 ps-3 pe-1 text-sm"
+            >
               <span className="min-w-0 flex-1 truncate">{entry.label}</span>
               {entry.flags.map((flag) => (
                 <Badge key={flag} size="sm" variant="warning">
@@ -108,7 +111,7 @@ export function FactoryModelListEditor({
           <MenuTrigger
             aria-label={`Add a model to ${label}`}
             disabled={disabled || addable.length === 0}
-            render={<Button size="xs" variant="outline" />}
+            render={<Button size="sm" variant="outline" />}
           >
             <PlusIcon />
             Add model
