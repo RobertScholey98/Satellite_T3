@@ -1,9 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, FactoryProtectedPathAsk } from "@t3tools/contracts";
+import { ShieldAlertIcon, ShieldCheckIcon, ShieldXIcon } from "lucide-react";
 import { useState } from "react";
 
 import { randomUUID } from "~/lib/utils";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { THREAD_DETAILS_PANEL_ICON_CLASS } from "../chat/threadDetailsPanelStyles";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { factoryEnvironment, factoryErrorMessage, unwrapFactoryResult } from "./factoryState";
@@ -62,62 +64,71 @@ export function FactoryProtectedPathAsks(props: {
   const files = (ask: FactoryProtectedPathAsk) => ask.paths.join(", ");
 
   return (
-    <ul
-      aria-label="Protected files"
-      className="m-0 flex list-none flex-col gap-2 border-t border-border/60 px-3.5 py-2.5"
-    >
+    <ul aria-label="Protected files" className="m-0 flex list-none flex-col">
       {props.asks
         .toSorted((left, right) => STATE_ORDER[left.state] - STATE_ORDER[right.state])
-        .map((ask) => (
-          <li key={ask.id} className="flex flex-col gap-1.5">
-            {ask.state === "open" ? (
-              <>
-                <p className="text-xs text-foreground/80">
-                  Wants to edit protected files:{" "}
-                  <span className="font-medium break-all">{files(ask)}</span>
+        .map((ask) =>
+          ask.state === "open" ? (
+            <li key={ask.id} className="flex gap-2.5 px-2.5 py-1.5">
+              <ShieldAlertIcon
+                aria-hidden
+                className={`${THREAD_DETAILS_PANEL_ICON_CLASS} mt-px text-warning`}
+              />
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <p className="text-sm font-medium text-foreground/80">
+                  Wants to edit protected files
                 </p>
+                <p className="text-xs break-words text-foreground/80">{files(ask)}</p>
                 {ask.reason === "" ? null : (
-                  <p className="text-2xs text-muted-foreground">{ask.reason}</p>
+                  <p className="text-xs text-muted-foreground">{ask.reason}</p>
                 )}
-              </>
-            ) : (
-              <p
-                className={
-                  ask.state === "allowed"
-                    ? "text-xs text-foreground/80"
-                    : "text-2xs text-muted-foreground"
-                }
-              >
-                {ask.state === "allowed" ? "Allowed for this assignment" : "Declined"}:{" "}
-                <span className="break-all">{files(ask)}</span>
+                <div className="flex gap-1.5 pt-1">
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    disabled={disabled}
+                    aria-label={`Allow ${files(ask)}`}
+                    onClick={() => void answer(ask, "allow")}
+                  >
+                    Allow
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    disabled={disabled}
+                    aria-label={`Decline ${files(ask)}`}
+                    onClick={() => void answer(ask, "decline")}
+                  >
+                    Decline
+                  </Button>
+                </div>
+              </div>
+            </li>
+          ) : (
+            <li key={ask.id} className="flex items-center gap-2.5 px-2.5 py-1">
+              {ask.state === "allowed" ? (
+                <ShieldCheckIcon
+                  aria-hidden
+                  className={`${THREAD_DETAILS_PANEL_ICON_CLASS} text-success`}
+                />
+              ) : (
+                <ShieldXIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+              )}
+              <p className="min-w-0 flex-1 text-xs break-words text-muted-foreground">
+                {ask.state === "allowed" ? "Allowed" : "Declined"}: {files(ask)}
               </p>
-            )}
-            <div className="flex gap-1.5">
-              {ask.state === "allowed" ? null : (
-                <Button
-                  variant="outline"
-                  size="xs"
-                  disabled={disabled}
-                  aria-label={`Allow ${files(ask)}`}
-                  onClick={() => void answer(ask, "allow")}
-                >
-                  Allow
-                </Button>
-              )}
-              {ask.state === "declined" ? null : (
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  disabled={disabled}
-                  aria-label={`${ask.state === "allowed" ? "Revoke" : "Decline"} ${files(ask)}`}
-                  onClick={() => void answer(ask, "decline")}
-                >
-                  {ask.state === "allowed" ? "Revoke" : "Decline"}
-                </Button>
-              )}
-            </div>
-          </li>
-        ))}
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={disabled}
+                aria-label={`${ask.state === "allowed" ? "Revoke" : "Allow"} ${files(ask)}`}
+                onClick={() => void answer(ask, ask.state === "allowed" ? "decline" : "allow")}
+              >
+                {ask.state === "allowed" ? "Revoke" : "Allow"}
+              </Button>
+            </li>
+          ),
+        )}
     </ul>
   );
 }

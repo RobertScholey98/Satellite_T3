@@ -28,7 +28,10 @@ import { resolveFactoryDetailsCardPlacement } from "./factoryDetailsCardPlacemen
 import { FactoryProtectedPathAsks } from "./FactoryProtectedPathAsks";
 import { useFactoryWorkspaceFeed, useFactoryWorkspacePlace } from "./factoryWorkspaceState";
 import {
+  FACTORY_ASSIGNMENT_STATE_LABEL,
   factoryMemberLabel,
+  factoryStackRoom,
+  factoryTeamRowText,
   factoryThreadKind,
   resolveFactoryThreadStack,
   resolveFactoryWorkspaceView,
@@ -178,7 +181,12 @@ export function FactoryWorkspacePanel(props: {
   const belowTop = detailsTop + (detailsHeight > 0 ? detailsHeight + GAP : 0);
   // The cards below scroll within what is left of the canvas, so the measured height below, and
   // with it the reported obstacle, is the column's visible bottom.
-  const belowRoom = Math.max(0, (canvas?.container.height ?? 0) - belowTop - GAP);
+  const belowRoom = factoryStackRoom({
+    room: Math.max(0, (canvas?.container.height ?? 0) - belowTop - GAP),
+    teamsBelow: column?.edge === "right" && placement !== null && (view?.teams.length ?? 0) > 0,
+    minimum: MIN_COLUMN_HEIGHT,
+    gap: GAP,
+  });
   const stackBottom =
     column === null
       ? null
@@ -322,27 +330,36 @@ function TeamCard(props: {
 }) {
   const { assignment, threads } = props.team;
   return (
-    <section aria-label={assignment.title} className={FACTORY_CARD_CLASS}>
-      <h3 className="line-clamp-2 px-3.5 pt-3 pb-1 text-2xs font-medium text-muted-foreground select-none">
-        {assignment.title}
-      </h3>
-      <ul className="m-0 flex list-none flex-col px-2 pb-2">
-        {threads.map((thread) => (
-          <TeamThreadRow
-            key={thread.threadId}
-            environmentId={props.environmentId}
-            threadId={thread.threadId}
-            label={factoryMemberLabel(thread)}
-            current={thread.threadId === props.threadId}
-            onOpen={() => props.onOpen(thread.threadId)}
-          />
-        ))}
-      </ul>
+    <section aria-label={assignment.title} className={`${FACTORY_CARD_CLASS} p-2`}>
+      <div className="px-2.5 py-1.5 select-none">
+        <h3 className="line-clamp-2 text-sm font-semibold">{assignment.title}</h3>
+        <p className="text-xs text-muted-foreground">
+          {FACTORY_ASSIGNMENT_STATE_LABEL[assignment.state]} ·{" "}
+          {threads.length === 0
+            ? "No threads yet"
+            : `${threads.length} ${threads.length === 1 ? "thread" : "threads"}`}
+        </p>
+      </div>
+      {/* Asks wait on the user, so they come before the threads that raised them. */}
       <FactoryProtectedPathAsks
         environmentId={props.environmentId}
         assignmentId={assignment.id}
         asks={assignment.protectedPathAsks ?? []}
       />
+      {threads.length === 0 ? null : (
+        <ul className="m-0 flex list-none flex-col">
+          {threads.map((thread) => (
+            <TeamThreadRow
+              key={thread.threadId}
+              environmentId={props.environmentId}
+              threadId={thread.threadId}
+              label={factoryMemberLabel(thread)}
+              current={thread.threadId === props.threadId}
+              onOpen={() => props.onOpen(thread.threadId)}
+            />
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
@@ -356,7 +373,7 @@ function TeamThreadRow(props: {
 }) {
   const shell = useThreadShell(scopeThreadRef(props.environmentId, props.threadId));
   const status = shell ? resolveThreadStatusPill({ thread: shell }) : null;
-  const title = shell?.title ?? "Thread";
+  const text = factoryTeamRowText(shell?.title, props.label);
   return (
     <li className={props.current ? CURRENT_ROW_CLASS : undefined}>
       <ThreadDetailsControl
@@ -364,12 +381,18 @@ function TeamThreadRow(props: {
         aria-current={props.current ? "page" : undefined}
         onClick={props.onOpen}
       >
-        {/* Held open so an idle thread's title keeps the same left edge as a working one's. */}
-        <span className="flex size-3.5 shrink-0 items-center justify-center">
-          {status ? <ThreadStatusLabel status={status} compact /> : null}
+        {/* Idle threads get a quiet dot, so every row starts on the same column. */}
+        <span className="flex size-4 shrink-0 items-center justify-center">
+          {status ? (
+            <ThreadStatusLabel status={status} compact />
+          ) : (
+            <span aria-hidden className="size-[7px] rounded-full bg-muted-foreground/35" />
+          )}
         </span>
-        <span className="min-w-0 flex-1 truncate">{title}</span>
-        <span className="shrink-0 text-2xs text-muted-foreground">{props.label}</span>
+        <span className="min-w-0 flex-1 truncate">{text.title}</span>
+        {text.label === null ? null : (
+          <span className="shrink-0 text-xs font-normal text-muted-foreground">{text.label}</span>
+        )}
       </ThreadDetailsControl>
     </li>
   );

@@ -66,7 +66,7 @@ export function FactoryManagerReady(props: {
           Start picking up
         </Button>
       ) : result.pickup.enabled ? null : (
-        <p>Let's get started</p>
+        <p className="text-muted-foreground">Let's get started</p>
       )}
       {error === null ? null : (
         <p role="alert" className="text-xs text-destructive">

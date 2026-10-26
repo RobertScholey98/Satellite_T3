@@ -55,6 +55,25 @@ export const factoryMemberLabel = (member: {
   readonly memberName?: string;
 }) => member.memberName ?? FACTORY_ROLE_LABEL[member.role];
 
+// The server titles lead threads "Factory: <ticket>"; inside a team card the prefix says nothing.
+const LEAD_THREAD_TITLE_PREFIX = "Factory: ";
+
+/**
+ * A team card row: the thread's title, with its member label beside it. A thread this client has
+ * not loaded has no title, so its member label stands in and is not repeated.
+ */
+export function factoryTeamRowText(
+  threadTitle: string | undefined,
+  memberLabel: string,
+): { readonly title: string; readonly label: string | null } {
+  const title = threadTitle?.startsWith(LEAD_THREAD_TITLE_PREFIX)
+    ? threadTitle.slice(LEAD_THREAD_TITLE_PREFIX.length)
+    : threadTitle;
+  return title === undefined || title.trim() === ""
+    ? { title: memberLabel, label: null }
+    : { title, label: memberLabel };
+}
+
 export const isLiveAssignment = (assignment: Pick<FactoryWorkspaceAssignment, "state">) =>
   assignment.state !== "completed" && assignment.state !== "cancelled";
 
@@ -371,4 +390,18 @@ function foldPriming(
     },
     ...rest,
   ];
+}
+
+/**
+ * How tall the cards under the details card may grow before they scroll. With team cards below
+ * them, they leave the team column its minimum, unless that would squeeze them under it too.
+ */
+export function factoryStackRoom(input: {
+  readonly room: number;
+  readonly teamsBelow: boolean;
+  readonly minimum: number;
+  readonly gap: number;
+}): number {
+  const shared = input.room - input.minimum - input.gap;
+  return input.teamsBelow && shared >= input.minimum ? shared : input.room;
 }

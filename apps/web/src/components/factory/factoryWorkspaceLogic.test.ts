@@ -15,6 +15,8 @@ import {
   collapseFactoryPriming,
   factoryHiddenMembers,
   factoryMemberThreadKeys,
+  factoryStackRoom,
+  factoryTeamRowText,
   factoryThreadKind,
   factoryWorkspacePlace,
   resolveFactoryThreadStack,
@@ -363,5 +365,32 @@ describe("collapseFactoryPriming", () => {
   it("folds nothing when the priming is outside the loaded window", () => {
     const windowed = [message("ask", "user", "What is on the board?"), work("read")];
     expect(collapseFactoryPriming(windowed, primingId)).toBe(windowed);
+  });
+});
+
+describe("factoryTeamRowText", () => {
+  it("drops the lead thread's Factory prefix and keeps the member label beside it", () => {
+    expect(factoryTeamRowText("Factory: fix(web): sidebar rows", "Lead")).toEqual({
+      title: "fix(web): sidebar rows",
+      label: "Lead",
+    });
+  });
+
+  it("names a thread this client has not loaded by its member label, once", () => {
+    expect(factoryTeamRowText(undefined, "Implementer")).toEqual({
+      title: "Implementer",
+      label: null,
+    });
+  });
+});
+
+describe("factoryStackRoom", () => {
+  it("leaves the team column its minimum below the cards", () => {
+    expect(factoryStackRoom({ room: 480, teamsBelow: true, minimum: 220, gap: 12 })).toBe(248);
+  });
+
+  it("gives the cards the whole column when the teams would squeeze them too", () => {
+    expect(factoryStackRoom({ room: 400, teamsBelow: true, minimum: 220, gap: 12 })).toBe(400);
+    expect(factoryStackRoom({ room: 480, teamsBelow: false, minimum: 220, gap: 12 })).toBe(480);
   });
 });

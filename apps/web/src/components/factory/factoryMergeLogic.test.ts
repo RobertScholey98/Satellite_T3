@@ -10,6 +10,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   factoryMergeConfirmText,
   factoryMergeHeldPaths,
+  factoryMergeRowDetail,
+  factoryMergeRowNote,
   resolveFactoryMergeRows,
   type FactoryLeadThreadLinks,
 } from "./factoryMergeLogic";
@@ -236,5 +238,18 @@ describe("resolveFactoryMergeRows", () => {
       ].join("\n"),
     );
     expect(factoryMergeConfirmText(clean!)).toBeNull();
+    expect(factoryMergeRowNote(row!)).toBe("Waiting on you · 2 protected paths");
+    expect(factoryMergeRowNote({ ...row!, awaitingAnswer: [] })).toBe("Held · 2 protected paths");
+    expect(factoryMergeRowNote(clean!)).toBeNull();
+  });
+
+  it("puts the number and merge state on the row's second line", () => {
+    const [ready, failing] = resolveFactoryMergeRows(
+      [assignment("a")],
+      "manager-1",
+      leads({ "a-lead": [link(1), link(2, { checksState: "failing" })] }),
+    );
+    expect(factoryMergeRowDetail(ready!)).toBe("#1 · Ready to merge");
+    expect(factoryMergeRowDetail(failing!)).toBe("#2 · Checks failing");
   });
 });
