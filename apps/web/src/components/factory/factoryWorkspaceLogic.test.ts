@@ -19,6 +19,7 @@ import {
   resolveFactoryThreadStack,
   resolveFactoryDetailsCardSide,
   resolveFactoryWorkspaceView,
+  unloadedFactoryMemberCount,
 } from "./factoryWorkspaceLogic";
 import { FACTORY_THREAD_STACK } from "./FactoryThreadStack";
 
@@ -106,6 +107,46 @@ describe("factoryMemberThreadKeys", () => {
       }),
     );
     expect([...keys]).toEqual([key("paused-team")]);
+  });
+});
+
+describe("unloadedFactoryMemberCount", () => {
+  const teams = feed({
+    managers: [manager("manager-1", "active")],
+    members: [
+      member("lead", { role: "lead" }),
+      member("implementer"),
+      member("reviewer", { role: "reviewer" }),
+      member("ended", { endedAt: "2026-10-01T00:00:00.000Z" }),
+    ],
+  });
+  const allProjects = [{ environmentId, projectIds: null }];
+
+  it("counts the team threads the shell left out, which the Settled shelf would never list", () => {
+    expect(
+      unloadedFactoryMemberCount({
+        feeds: teams,
+        scopes: allProjects,
+        heldThreadKeys: new Set([key("lead")]),
+        omitsOlderSettled: () => true,
+      }),
+    ).toBe(2);
+  });
+
+  it("counts nothing outside the scope or where the shell left nothing out", () => {
+    const counted = (input: Partial<Parameters<typeof unloadedFactoryMemberCount>[0]>) =>
+      unloadedFactoryMemberCount({
+        feeds: teams,
+        scopes: allProjects,
+        heldThreadKeys: new Set(),
+        omitsOlderSettled: () => true,
+        ...input,
+      });
+    expect(counted({ scopes: [{ environmentId, projectIds: [ProjectId.make("other")] }] })).toBe(0);
+    expect(counted({ omitsOlderSettled: () => false })).toBe(0);
+    expect(counted({ scopes: [{ environmentId, projectIds: [ProjectId.make("project")] }] })).toBe(
+      3,
+    );
   });
 });
 
