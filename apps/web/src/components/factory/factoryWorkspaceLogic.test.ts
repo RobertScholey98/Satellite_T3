@@ -13,6 +13,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { TimelineEntry } from "~/session-logic";
 import {
   collapseFactoryPriming,
+  factoryHiddenMembers,
   factoryMemberThreadKeys,
   factoryThreadKind,
   factoryWorkspacePlace,
@@ -125,7 +126,7 @@ describe("unloadedFactoryMemberCount", () => {
   it("counts the team threads the shell left out, which the Settled shelf would never list", () => {
     expect(
       unloadedFactoryMemberCount({
-        feeds: teams,
+        members: factoryHiddenMembers(teams),
         scopes: allProjects,
         heldThreadKeys: new Set([key("lead")]),
         omitsOlderSettled: () => true,
@@ -136,7 +137,7 @@ describe("unloadedFactoryMemberCount", () => {
   it("counts nothing outside the scope or where the shell left nothing out", () => {
     const counted = (input: Partial<Parameters<typeof unloadedFactoryMemberCount>[0]>) =>
       unloadedFactoryMemberCount({
-        feeds: teams,
+        members: factoryHiddenMembers(teams),
         scopes: allProjects,
         heldThreadKeys: new Set(),
         omitsOlderSettled: () => true,

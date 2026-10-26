@@ -1,4 +1,5 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
 import type {
   EnvironmentId,
   FactoryAssignmentState,
@@ -9,6 +10,7 @@ import type {
   FactoryWorkspaceFeed,
   FactoryWorkspaceManager,
   MessageId,
+  ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
 import type { TimelineEntry } from "~/session-logic";
@@ -68,17 +70,61 @@ export function factoryMemberThreadKeys(
   feeds: ReadonlyMap<EnvironmentId, FactoryWorkspaceFeed>,
 ): Set<string> {
   const keys = new Set<string>();
+  for (const { key } of factoryHiddenMembers(feeds)) keys.add(key);
+  return keys;
+}
+
+export interface FactoryHiddenMember {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly key: string;
+}
+
+/** The threads `factoryMemberThreadKeys` hides, each with its manager's project. */
+export function factoryHiddenMembers(
+  feeds: ReadonlyMap<EnvironmentId, FactoryWorkspaceFeed>,
+): Array<FactoryHiddenMember> {
+  const hidden: Array<FactoryHiddenMember> = [];
   for (const [environmentId, feed] of feeds) {
-    const liveManagers = new Set(
-      feed.managers.filter((manager) => manager.state !== "retired").map((manager) => manager.id),
+    const liveManagers = new Map(
+      feed.managers
+        .filter((manager) => manager.state !== "retired")
+        .map((manager) => [manager.id, manager] as const),
     );
     for (const member of feed.members) {
       if (member.role === "manager" || member.endedAt !== null) continue;
-      if (!liveManagers.has(member.managerId)) continue;
-      keys.add(scopedThreadKey(scopeThreadRef(environmentId, member.threadId)));
+      const manager = liveManagers.get(member.managerId);
+      if (manager === undefined) continue;
+      hidden.push({
+        environmentId,
+        projectId: manager.projectId,
+        key: scopedThreadKey(scopeThreadRef(environmentId, member.threadId)),
+      });
     }
   }
-  return keys;
+  return hidden;
+}
+
+/**
+ * Team threads the server counts as older settled but the sidebar never lists, to take off the
+ * Settled shelf's count. The shell holds every thread but the older settled ones, so a hidden
+ * member's thread the client does not hold is one of those.
+ */
+export function unloadedFactoryMemberCount(input: {
+  readonly members: ReadonlyArray<FactoryHiddenMember>;
+  readonly scopes: ReadonlyArray<OlderSettledScope>;
+  readonly heldThreadKeys: ReadonlySet<string>;
+  readonly omitsOlderSettled: (environmentId: EnvironmentId) => boolean;
+}): number {
+  let count = 0;
+  for (const member of input.members) {
+    if (input.heldThreadKeys.has(member.key)) continue;
+    const scope = input.scopes.find((each) => each.environmentId === member.environmentId);
+    if (scope === undefined || !input.omitsOlderSettled(member.environmentId)) continue;
+    if (scope.projectIds !== null && !scope.projectIds.includes(member.projectId)) continue;
+    count += 1;
+  }
+  return count;
 }
 
 export type FactoryThreadPlace =
