@@ -86,7 +86,7 @@ There is no archive for macOS, Windows, or Linux arm64; on Windows, use the
 [desktop app](#desktop-app). To run a Satellite server without the desktop app
 on macOS or Linux arm64, build it from source in
 [this fork's repository](https://github.com/RobertScholey98/Satellite_T3) with
-Node.js 24 ([Install vp](../../README.md#install-vp)):
+`vp`, which provides the Node version it needs ([Install vp](../../README.md#install-vp)):
 
 ```bash
 git clone https://github.com/RobertScholey98/Satellite_T3

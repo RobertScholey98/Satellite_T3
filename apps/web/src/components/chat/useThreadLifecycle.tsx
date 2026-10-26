@@ -22,8 +22,14 @@ import {
   ProviderInteractionMode,
   RuntimeMode,
 } from "@t3tools/contracts";
-import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
-import { useAcknowledgeThreadWoke } from "../../hooks/useThreadActions";
+import {
+  effectiveSnoozed,
+  snoozeWakeLabel,
+  threadWokeAt,
+} from "@t3tools/client-runtime/state/thread-settled";
+import { useAcknowledgeThreadWoke, useThreadActions } from "../../hooks/useThreadActions";
+import { settleAndAdvance } from "../../settleAndAdvance";
+import type { ChatShortcutCommands } from "./useChatShortcuts";
 import { resolveThreadLastVisitedAt } from "../Sidebar.logic";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { type SetStateAction, useEffect, useRef, useState } from "react";
@@ -46,7 +52,7 @@ import { vcsEnvironment } from "../../state/vcs";
 import { useChildThreadInputs, readThreadShell, waitForThreadShell } from "../../state/entities";
 import { environmentShell } from "../../state/shell";
 import { ThreadStatusLine } from "./ThreadStatusLine";
-import { formatRelativeTimeLabel, formatRelativeTimeUntilLabel } from "../../timestampFormat";
+import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -148,6 +154,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   } = input;
   const navigate = useNavigate();
   const router = useRouter();
+  const { settleThread, pinThread, confirmAndUnpinThread } = useThreadActions();
   const canWriteSourceControl = useEnvironmentScope(environmentId, AuthSourceControlWriteScope);
   const switchGitRef = useAtomCommand(vcsEnvironment.switchRef, { reportFailure: false });
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
@@ -172,6 +179,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     now: new Date().toISOString(),
   }));
   if (snoozeClockState.shell !== activeThreadShell) {
+    // oxlint-disable-next-line react/purity -- Reseeds the snooze clock only in the render-phase adjustment that runs when the shell changes.
     setSnoozeClockState({ shell: activeThreadShell, now: new Date().toISOString() });
   }
   const snoozeClock = snoozeClockState.now;
@@ -415,8 +423,11 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     const threadRef = scopeThreadRef(environmentId, threadId);
     const isEnvironmentLive = () =>
       appAtomRegistry.get(environmentShell.stateValueAtom(environmentId)).status === "live";
+    // The shell can leave idle subagent children out, so absence is not deletion there: the
+    // route decides from the thread's own detail.
+    const shellOmitsChildren = serverConfig?.shellThreadFamilies === true;
     // A just-launched child can reach this timeline before its shell syncs.
-    if (isEnvironmentLive() && readThreadShell(threadRef) === null) {
+    if (!shellOmitsChildren && isEnvironmentLive() && readThreadShell(threadRef) === null) {
       const location = router.latestLocation;
       await waitForThreadShell(threadRef, RELATED_THREAD_SHELL_WAIT_MS);
       if (
@@ -428,7 +439,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       }
     }
     const shell = readThreadShell(threadRef);
-    if (shell === null ? isEnvironmentLive() : shell.deletedAt != null) {
+    if (shell === null ? !shellOmitsChildren && isEnvironmentLive() : shell.deletedAt != null) {
       toastManager.add({ type: "info", title: "This thread is no longer available" });
       return;
     }
@@ -532,10 +543,14 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   // The relative times read the clock; nowMinute re-renders them on the minute.
   const snoozedUntil = activeThreadShell?.snoozedUntil ?? null;
   const settledAt = activeThreadShell?.settledAt ?? null;
+  // Same rounding as the sidebar's snoozed shelf, so both read the same hour.
+  const snoozeWake = snoozedUntil
+    ? snoozeWakeLabel(snoozedUntil, { now: `${nowMinute}:00.000Z` })
+    : null;
   const threadStatusLine = activeThreadSnoozed ? (
     <ThreadStatusLine
       icon={<AlarmClockIcon />}
-      label={snoozedUntil ? `Snoozed, ${formatRelativeTimeUntilLabel(snoozedUntil)}` : "Snoozed"}
+      label={snoozeWake && snoozeWake !== "now" ? `Snoozed, ${snoozeWake} left` : "Snoozed"}
       clockMinute={nowMinute}
       actionLabel={isUnsnoozing ? "Waking..." : "Wake now"}
       actionDisabled={!canOperateThread || isUnsnoozing}
@@ -558,25 +573,56 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       onAction={acknowledgeActiveThreadWokeStable}
     />
   ) : null;
+  const toastThreadActionFailure =
+    (title: string) => (result: AtomCommandResult<unknown, unknown>) => {
+      if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title,
+          description: error instanceof Error ? error.message : "An error occurred.",
+        }),
+      );
+    };
+  const shortcuts = {
+    "thread.settle": () => {
+      if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
+      if (!activeThreadShell || !activeThreadRef || !supportsSettlement) return;
+      if (activeThreadSettled) {
+        void handleUnsettleActiveThread();
+        return;
+      }
+      if (settleAndAdvance(activeThreadRef)) return;
+      void settleThread(activeThreadRef).then(toastThreadActionFailure("Failed to settle thread"));
+    },
+    "thread.pin": () => {
+      if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
+      if (!activeThreadShell || !activeThreadRef || !supportsPinning) return;
+      void (
+        activeThreadPinned ? confirmAndUnpinThread(activeThreadRef) : pinThread(activeThreadRef)
+      ).then(
+        toastThreadActionFailure(
+          activeThreadPinned ? "Failed to unpin thread" : "Failed to pin thread",
+        ),
+      );
+    },
+  } satisfies ChatShortcutCommands;
   return {
+    shortcuts,
     acknowledgeActiveThreadWoke,
     activeBranchMismatchKey,
-    activeThreadPinned,
-    activeThreadSettled,
     backgroundWorkBanner,
     childInputBanner,
     goalBanner,
     handleSwitchCheckoutToThread,
     handleSwitchCheckoutToThreadStable,
-    handleUnsettleActiveThreadStable,
     isRestoringThreadBranch,
     onOpenRelatedThread,
     onOpenRelatedThreadStable,
     sendStandaloneCommand,
     setBranchMismatchDismissTick,
     showBranchMismatchBanner,
-    supportsPinning,
-    supportsSettlement,
     threadStatusLine,
   };
 }

@@ -137,9 +137,7 @@ if (
   );
 }
 
-// Env files live as real files in the main checkout; worktrees only get
-// symlinks to them. Only a symlink is ever replaced, so a real env file is
-// never deleted, including when this runs in the main checkout itself.
+// Worktrees link main-checkout env files; replace only symlinks so real files always survive.
 for (const file of ENV_FILES) {
   const source = NodePath.join(projectRoot, file);
   const sourceStat = NodeFS.lstatSync(source, { throwIfNoEntry: false });

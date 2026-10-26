@@ -1,5 +1,4 @@
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import type { Dispatch } from "react";
 import type { ThreadPreviewState } from "../../previewStateStore";
 import { formatFilePathForClipboard } from "@t3tools/client-runtime/media-actions";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
@@ -7,7 +6,7 @@ import { resolveExplicitDiffOpenOnActivate } from "../ChatView.logic";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { type ScopedThreadRef, type RunId } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { type SetStateAction, useEffect } from "react";
+import { useEffect } from "react";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -22,6 +21,7 @@ import {
 import { setActivePreviewTab } from "../../previewStateStore";
 import { BrowserSettingsReadError } from "../../browser/openFileInPreview";
 import { addBrowserSurface } from "../preview/addBrowserSurface";
+import { focusActivePanelTerminal, focusTerminal } from "../../lib/terminalFocus";
 import { subscribePreviewAction } from "../preview/previewActionBus";
 import { browserMiniPlayerSource, usePreviewMiniPlayerStore } from "../../previewMiniPlayerStore";
 import type { threadPullRequestPanelTarget } from "../pullRequest/pullRequestDetail.logic";
@@ -30,6 +30,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { openDeviceSetupDialog } from "./ChatOverlayHosts";
 import { previewEnvironment } from "../../state/preview";
 import { useAtomCommand } from "../../state/use-atom-command";
+import type { ChatShortcutCommands } from "./useChatShortcuts";
 interface RightPanelActionsInput {
   readonly activeThreadRef: ScopedThreadRef | null;
   readonly activeProject: EnvironmentProject | null;
@@ -52,8 +53,8 @@ interface RightPanelActionsInput {
   readonly gitCwd: string | null;
   readonly activeProjectCwd: string | null;
   readonly explicitDiffOpenRef: { current: ScopedThreadRef | null };
-  readonly setTerminalFocusRequestId: Dispatch<SetStateAction<number>>;
   readonly onDiffPanelOpen: (() => void) | undefined;
+  readonly closeRightPanelSurface: (surface: RightPanelSurface) => void;
 }
 
 /**
@@ -62,6 +63,7 @@ interface RightPanelActionsInput {
  */
 export function useRightPanelActions(input: RightPanelActionsInput) {
   const {
+    closeRightPanelSurface,
     activeThreadRef,
     activeProject,
     activeRightPanelSurface,
@@ -83,7 +85,6 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
     gitCwd,
     activeProjectCwd,
     explicitDiffOpenRef,
-    setTerminalFocusRequestId,
     onDiffPanelOpen,
   } = input;
 
@@ -199,7 +200,7 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
       setActivePreviewTab(activeThreadRef, surface.resourceId);
     }
     if (surface.kind === "terminal") {
-      setTerminalFocusRequestId((value) => value + 1);
+      focusTerminal(activeThreadRef, surface.activeTerminalId);
     }
     if (surface.kind === "diff" && !diffOpen) {
       onDiffPanelOpen?.();
@@ -213,6 +214,7 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
       return;
     }
     useRightPanelStore.getState().toggleVisibility(activeThreadRef);
+    focusActivePanelTerminal(activeThreadRef);
   };
   const toggleRightPanelStable = useStableCallback(toggleRightPanel);
   const toggleThreadPanel = () => {
@@ -290,7 +292,21 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
     [togglePreviewPanelStable],
   );
 
+  const shortcuts = {
+    "rightPanel.toggle": () => toggleRightPanel(),
+    "rightPanel.toggleMaximized": ({ event }) => {
+      if (!event.repeat) toggleRightPanelMaximized();
+    },
+    "threadPanel.toggle": () => toggleThreadPanel(),
+    "rightPanel.close": ({ event }) => {
+      if (!activeRightPanelSurface) return false;
+      if (!event.repeat) closeRightPanelSurface(activeRightPanelSurface);
+    },
+    "diff.toggle": () => onToggleDiff(),
+  } satisfies ChatShortcutCommands;
+
   return {
+    shortcuts,
     activateRightPanelSurfaceStable,
     addDeviceSurfaceStable,
     addDiffSurfaceStable,
