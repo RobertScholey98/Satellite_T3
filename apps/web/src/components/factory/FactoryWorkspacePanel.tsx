@@ -1,5 +1,5 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, FactoryAssignmentState, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { BotIcon } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
@@ -29,6 +29,7 @@ import {
 } from "./FactoryThreadStack";
 import { resolveFactoryDetailsCardPlacement } from "./factoryDetailsCardPlacement";
 import { FactoryProtectedPathAsks } from "./FactoryProtectedPathAsks";
+import { FactoryStateDot } from "./FactoryStateDot";
 import { useFactoryWorkspaceFeed, useFactoryWorkspacePlace } from "./factoryWorkspaceState";
 import {
   FACTORY_ASSIGNMENT_STATE_LABEL,
@@ -48,25 +49,6 @@ const MIN_COLUMN_HEIGHT = 220;
  * on the list item because the control owns its own colours.
  */
 const CURRENT_ROW_CLASS = "rounded-lg bg-black/[0.05] dark:bg-white/[0.08]";
-/** Every state gets a dot so the labels line up; only the states that need the user get colour. */
-const STATE_DOT_CLASS: Record<FactoryAssignmentState, string> = {
-  active: "bg-muted-foreground/45",
-  blocked: "bg-destructive",
-  "waiting-user": "bg-info",
-  stalled: "bg-muted-foreground/45",
-  retro: "bg-muted-foreground/45",
-  completed: "bg-muted-foreground/45",
-  cancelled: "bg-muted-foreground/45",
-};
-
-export function FactoryStateDot(props: { readonly state: FactoryAssignmentState }) {
-  return (
-    <span
-      aria-hidden
-      className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT_CLASS[props.state])}
-    />
-  );
-}
 /** Cards at the top right move down with the details card while the find bar is open. */
 const FIND_BAR_SLIDE_CLASS = "transition-[top] duration-150 ease-out motion-reduce:transition-none";
 

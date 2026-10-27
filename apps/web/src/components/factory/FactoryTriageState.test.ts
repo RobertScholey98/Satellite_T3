@@ -152,11 +152,11 @@ describe("proposedChangeView", () => {
     expect(view.before).toBe(
       [
         "Team: Web UI\nUse when: The ticket changes the web client.\nMay edit protected paths: no\nWorkflow:\nImplement, then review.",
-        "Lead: Default lead\nModels: claudeAgent/claude-opus-5-5 (picked per task)\nInstructions:\nOpen one pull request per change.",
+        "Lead: Default lead\nModels: claudeAgent/claude-opus-5-5 (chosen per task)\nInstructions:\nOpen one pull request per change.",
         "Member: Implementer × 2\nModels: claudeAgent/claude-opus-5-5 (in this order)\nDescription:\nImplement the change.",
       ].join("\n\n"),
     );
-    expect(view.after).toContain("Lead: Default lead\nModels: codex/gpt-5.5 (picked per task)");
+    expect(view.after).toContain("Lead: Default lead\nModels: codex/gpt-5.5 (chosen per task)");
     expect(view.after).toContain("Description:\nImplement the change, tests first.");
   });
 
@@ -193,7 +193,9 @@ describe("managerStatusActions", () => {
   });
 
   it("offers a running manager both pauses, and a retired one nothing", () => {
-    expect(labels("active")).toEqual(["Pause manager", "Pause manager and teams"]);
+    for (const state of ["onboarding", "ready", "active"] as const) {
+      expect(labels(state)).toEqual(["Pause manager", "Pause manager and teams"]);
+    }
     expect(labels("retired")).toEqual([]);
   });
 });

@@ -33,7 +33,8 @@ import {
 } from "./factoryState";
 import { factoryManagerRunningLabel } from "./FactoryPageStats";
 import { useFactoryLeadActions } from "./FactoryThreadActions";
-import { FactoryStateDot } from "./FactoryWorkspacePanel";
+import { managerStatusActions } from "./FactoryTriageState";
+import { FactoryStateDot } from "./FactoryStateDot";
 import {
   describePickupDecision,
   FACTORY_ASSIGNMENT_STATE_LABEL,
@@ -303,7 +304,7 @@ function FactoryManagerRow(props: {
     );
   };
 
-  const paused = manager.state === "manager-paused" || manager.state === "project-paused";
+  const statusActions = managerStatusActions(manager.state);
   const retireBlocked = active > 0;
   const retireItem = (
     <MenuItem
@@ -329,28 +330,20 @@ function FactoryManagerRow(props: {
       notes={pickup?.key === logKey && manager.state !== "onboarding" ? [pickup.text] : []}
       menu={
         <RowMenu label="Engineering manager actions">
-          <MenuItem
-            disabled={
-              busy ||
-              !canPause ||
-              (manager.state !== "onboarding" &&
-                manager.state !== "active" &&
-                manager.state !== "ready")
-            }
-            onClick={() => pause("manager")}
-          >
-            Pause manager
-          </MenuItem>
-          <MenuItem
-            disabled={busy || !canPause || manager.state === "project-paused"}
-            onClick={() => pause("project")}
-          >
-            Pause manager and teams
-          </MenuItem>
-          <MenuItem disabled={busy || !canResume || !paused} onClick={resume}>
-            Resume
-          </MenuItem>
-          <MenuSeparator />
+          {statusActions.map(({ action, label }) => (
+            <MenuItem
+              key={action}
+              disabled={busy || !(action === "resume" ? canResume : canPause)}
+              onClick={() =>
+                action === "resume"
+                  ? resume()
+                  : pause(action === "pause-manager" ? "manager" : "project")
+              }
+            >
+              {label}
+            </MenuItem>
+          ))}
+          {statusActions.length === 0 ? null : <MenuSeparator />}
           {retireBlocked ? (
             <Tooltip>
               <TooltipTrigger render={retireItem} />
