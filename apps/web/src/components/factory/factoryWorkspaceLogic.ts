@@ -33,7 +33,7 @@ export const FACTORY_MANAGER_STATE_LABEL: Record<FactoryManagerState, string> = 
 export const FACTORY_ASSIGNMENT_STATE_LABEL: Record<FactoryAssignmentState, string> = {
   active: "Active",
   blocked: "Blocked",
-  "waiting-user": "Waiting for you",
+  "waiting-user": "Waiting on you",
   stalled: "Stalled",
   retro: "Retro",
   completed: "Completed",
@@ -390,18 +390,4 @@ function foldPriming(
     },
     ...rest,
   ];
-}
-
-/**
- * How tall the cards under the details card may grow before they scroll. With team cards below
- * them, they leave the team column its minimum, unless that would squeeze them under it too.
- */
-export function factoryStackRoom(input: {
-  readonly room: number;
-  readonly teamsBelow: boolean;
-  readonly minimum: number;
-  readonly gap: number;
-}): number {
-  const shared = input.room - input.minimum - input.gap;
-  return input.teamsBelow && shared >= input.minimum ? shared : input.room;
 }

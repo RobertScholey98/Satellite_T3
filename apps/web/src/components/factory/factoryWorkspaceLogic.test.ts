@@ -15,7 +15,6 @@ import {
   collapseFactoryPriming,
   factoryHiddenMembers,
   factoryMemberThreadKeys,
-  factoryStackRoom,
   factoryTeamRowText,
   factoryThreadKind,
   factoryWorkspacePlace,
@@ -381,16 +380,5 @@ describe("factoryTeamRowText", () => {
       title: "Implementer",
       label: null,
     });
-  });
-});
-
-describe("factoryStackRoom", () => {
-  it("leaves the team column its minimum below the cards", () => {
-    expect(factoryStackRoom({ room: 480, teamsBelow: true, minimum: 220, gap: 12 })).toBe(248);
-  });
-
-  it("gives the cards the whole column when the teams would squeeze them too", () => {
-    expect(factoryStackRoom({ room: 400, teamsBelow: true, minimum: 220, gap: 12 })).toBe(400);
-    expect(factoryStackRoom({ room: 480, teamsBelow: false, minimum: 220, gap: 12 })).toBe(480);
   });
 });
