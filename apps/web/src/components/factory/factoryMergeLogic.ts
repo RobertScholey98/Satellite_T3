@@ -18,7 +18,7 @@ export type FactoryMergeRowStatus =
   | "checks-missing"
   | "mergeability-unknown";
 
-export const FACTORY_MERGE_STATUS_LABEL: Record<Exclude<FactoryMergeRowStatus, "ready">, string> = {
+const FACTORY_MERGE_STATUS_LABEL: Record<Exclude<FactoryMergeRowStatus, "ready">, string> = {
   "in-progress": "In progress",
   "needs-rebase": "Needs rebase",
   "checks-failing": "Checks failing",
