@@ -12,9 +12,9 @@ Open **Factory** from the bottom of the sidebar, or choose **Open factory** in t
 pool from your enabled Claude and Codex models, implementer, reviewer and verifier workers, a
 default lead and manager, and one **Standard** team.
 
-- **Model pool** is the list of models the factory may use at all, and the recovery allowance per
-  assignment. A model you add on another machine that this one can't run shows as unavailable here
-  and is skipped.
+- **Model pool** is the list of models the factory may use at all, and **Recovery** sets the
+  recovery allowance per assignment. A model you add on another machine that this one can't run
+  shows as unavailable here and is skipped.
 - **Workers** are the building blocks of teams: a name, models, and a description of what the
   worker is and does. **Leads** and **Managers** follow a fixed protocol, so they report, hand back
   and hold retros the same way; what you write for them is added on top.

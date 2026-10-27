@@ -213,7 +213,7 @@ const presetText = (preset: FactoryTeamPreset) =>
 const modelsText = (list: FactoryModelList) => {
   const named = list.models.map((model) => `${model.driver}/${model.model}`).join(", ");
   if (list.dynamic)
-    return named === "" ? "any pool model, picked per task" : `${named} (picked per task)`;
+    return named === "" ? "any pool model, chosen per task" : `${named} (chosen per task)`;
   return named === "" ? "any pool model" : `${named} (in this order)`;
 };
 
