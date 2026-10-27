@@ -243,8 +243,8 @@ function CollapsedLine(props: {
 
 function Section(props: { readonly title: string; readonly children: ReactNode }) {
   return (
-    <section className="space-y-2">
-      <h3 className="text-sm font-medium text-foreground/80">{props.title}</h3>
+    <section className="space-y-2 border-t pt-4">
+      <h3 className="text-sm font-semibold text-foreground">{props.title}</h3>
       {props.children}
     </section>
   );
@@ -334,11 +334,11 @@ function OnboardingProposalForm(props: {
   };
 
   return (
-    <div className="mx-1 space-y-5 rounded-lg border bg-card p-4 text-sm">
+    <div className="mx-1 space-y-4 rounded-lg border bg-card p-4 text-sm">
       <div className="space-y-1">
         <h2 className="text-base font-semibold">Onboarding proposal</h2>
         {proposal.summary === "" ? null : (
-          <p className="whitespace-pre-wrap text-muted-foreground">{proposal.summary}</p>
+          <p className="whitespace-pre-wrap text-xs/5 text-muted-foreground">{proposal.summary}</p>
         )}
       </div>
 
@@ -354,20 +354,24 @@ function OnboardingProposalForm(props: {
       </Section>
 
       <Section title="Pickup">
-        <Label>
+        <label className="flex items-start justify-between gap-4">
+          <span className="flex flex-col">
+            <span>Pick up tickets on its own</span>
+            {pickupUnavailable !== null ? (
+              <span className="text-xs text-muted-foreground">{pickupUnavailable}</span>
+            ) : proposal.pickup.enabled && !form.pickupEnabled ? (
+              <span className="text-xs text-muted-foreground">
+                The manager suggests turning pickup on.
+              </span>
+            ) : null}
+          </span>
           <Switch
             size="sm"
             checked={form.pickupEnabled}
             disabled={readOnly || pickupUnavailable !== null}
             onCheckedChange={(checked) => updateForm({ ...form, pickupEnabled: checked })}
           />
-          Pick up tickets on its own
-        </Label>
-        {pickupUnavailable !== null ? (
-          <p className="text-xs text-muted-foreground">{pickupUnavailable}</p>
-        ) : proposal.pickup.enabled && !form.pickupEnabled ? (
-          <p className="text-xs text-muted-foreground">The manager suggests turning pickup on.</p>
-        ) : null}
+        </label>
         {form.pickupEnabled ? (
           <>
             {boards.map((board) => (
@@ -406,52 +410,56 @@ function OnboardingProposalForm(props: {
 
       {proposal.rules.length === 0 ? null : (
         <Section title="Questions">
-          {proposal.rules.map((rule) => {
-            const answer = form.answers[rule.id] ?? { choice: OTHER_ANSWER, other: "" };
-            const setAnswer = (next: typeof answer) =>
-              updateForm({ ...form, answers: { ...form.answers, [rule.id]: next } });
-            const labelId = `factory-onboarding-${rule.id}`;
-            return (
-              <div key={rule.id} className="space-y-1.5">
-                <p id={labelId}>{rule.question}</p>
-                {rule.reason === "" ? null : (
-                  <p className="text-xs text-muted-foreground">{rule.reason}</p>
-                )}
-                <RadioGroup
-                  aria-labelledby={labelId}
-                  disabled={readOnly}
-                  value={String(answer.choice)}
-                  onValueChange={(value) =>
-                    setAnswer({
-                      ...answer,
-                      choice: value === OTHER_ANSWER ? OTHER_ANSWER : Number(value),
-                    })
-                  }
-                >
-                  {rule.options.map((option, index) => (
-                    // oxlint-disable-next-line react/no-array-index-key -- An option's index is its radio value, and options never reorder.
-                    <Label key={index}>
-                      <Radio value={String(index)} />
-                      {index === rule.recommended ? `${option} (recommended)` : option}
-                    </Label>
-                  ))}
-                  <Label>
-                    <Radio value={OTHER_ANSWER} />
-                    Other
-                  </Label>
-                </RadioGroup>
-                {answer.choice === OTHER_ANSWER ? (
-                  <Input
-                    aria-label={`Other answer: ${rule.question}`}
-                    size="sm"
+          <div className="divide-y rounded-lg border">
+            {proposal.rules.map((rule) => {
+              const answer = form.answers[rule.id] ?? { choice: OTHER_ANSWER, other: "" };
+              const setAnswer = (next: typeof answer) =>
+                updateForm({ ...form, answers: { ...form.answers, [rule.id]: next } });
+              const labelId = `factory-onboarding-${rule.id}`;
+              return (
+                <div key={rule.id} className="space-y-2 p-3">
+                  <p id={labelId} className="font-medium">
+                    {rule.question}
+                  </p>
+                  {rule.reason === "" ? null : (
+                    <p className="text-xs text-muted-foreground">{rule.reason}</p>
+                  )}
+                  <RadioGroup
+                    aria-labelledby={labelId}
                     disabled={readOnly}
-                    value={answer.other}
-                    onChange={(event) => setAnswer({ ...answer, other: event.target.value })}
-                  />
-                ) : null}
-              </div>
-            );
-          })}
+                    value={String(answer.choice)}
+                    onValueChange={(value) =>
+                      setAnswer({
+                        ...answer,
+                        choice: value === OTHER_ANSWER ? OTHER_ANSWER : Number(value),
+                      })
+                    }
+                  >
+                    {rule.options.map((option, index) => (
+                      // oxlint-disable-next-line react/no-array-index-key -- An option's index is its radio value, and options never reorder.
+                      <label key={index} className="flex items-center gap-2">
+                        <Radio value={String(index)} />
+                        {index === rule.recommended ? `${option} (recommended)` : option}
+                      </label>
+                    ))}
+                    <label className="flex items-center gap-2">
+                      <Radio value={OTHER_ANSWER} />
+                      Other
+                    </label>
+                  </RadioGroup>
+                  {answer.choice === OTHER_ANSWER ? (
+                    <Input
+                      aria-label={`Other answer: ${rule.question}`}
+                      size="sm"
+                      disabled={readOnly}
+                      value={answer.other}
+                      onChange={(event) => setAnswer({ ...answer, other: event.target.value })}
+                    />
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
         </Section>
       )}
 

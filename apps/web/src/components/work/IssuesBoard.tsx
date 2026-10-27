@@ -140,7 +140,6 @@ function BoardCardFrame({
   dragLabel,
   disabled,
   handle = true,
-  leading,
   onOpen,
   children,
 }: {
@@ -149,8 +148,6 @@ function BoardCardFrame({
   readonly disabled: boolean;
   /** Without a handle the card cannot be dragged at all. */
   readonly handle?: boolean;
-  /** Shown in the handle's slot when the card has no handle. */
-  readonly leading?: ReactNode;
   readonly onOpen: () => void;
   readonly children: ReactNode;
 }) {
@@ -169,9 +166,7 @@ function BoardCardFrame({
     >
       {/* A card that can't be dragged keeps the handle's width, so its text lines up with the rest. */}
       {!handle ? (
-        <span aria-hidden className="flex w-3.5 shrink-0 self-start text-muted-foreground">
-          {leading}
-        </span>
+        <span aria-hidden className="w-3.5 shrink-0" />
       ) : (
         <button
           type="button"
@@ -249,11 +244,13 @@ function TriageCard({
       dragLabel={`Drag finding ${draft.title}`}
       disabled={disabled}
       handle={!isFactory && draft.state === "pending"}
-      leading={isFactory ? <FactoryIcon className="size-3.5" /> : null}
       onOpen={() => onOpen(draft.id)}
     >
       <span className="flex items-center gap-2 text-xs text-muted-foreground">
-        {isFactory ? "Factory finding" : "Retro finding"}
+        <span className="flex items-center gap-1.5">
+          {isFactory ? <FactoryIcon aria-hidden className="size-3.5" /> : null}
+          {isFactory ? "Factory finding" : "Retro finding"}
+        </span>
         {draft.state === "dismissed" ? (
           <Badge size="sm" variant="outline">
             Dismissed

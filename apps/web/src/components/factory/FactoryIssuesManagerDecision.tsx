@@ -7,6 +7,7 @@ import type {
 } from "@t3tools/contracts";
 import { useEffect, useState } from "react";
 
+import { cn } from "~/lib/utils";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Badge } from "../ui/badge";
 import { factoryEnvironment, useFactoryManagers } from "./factoryState";
@@ -128,7 +129,16 @@ function ManagerDecision({
     <div className="grid gap-1">
       <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         {name}
-        <Badge variant={entry.kind === "skip" ? "outline" : "success"}>{verb}</Badge>
+        <Badge variant="outline">
+          <span
+            aria-hidden
+            className={cn(
+              "size-1.5 rounded-full",
+              entry.kind === "skip" ? "bg-muted-foreground" : "bg-success",
+            )}
+          />
+          {verb}
+        </Badge>
         <time dateTime={entry.at}>{formatDecisionDate(entry.at)}</time>
       </p>
       {reason === "" ? null : <p className="text-sm">{reason}</p>}

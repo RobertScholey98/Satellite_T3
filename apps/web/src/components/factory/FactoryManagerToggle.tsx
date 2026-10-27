@@ -3,7 +3,6 @@ import type { EnvironmentId, ProjectId, ProviderInstanceId } from "@t3tools/cont
 import { UserCogIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { cn } from "~/lib/utils";
 import { useEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { ComposerContextLabel } from "../ComposerContextLabel";
@@ -48,13 +47,11 @@ export function FactoryManagerToggle(props: {
           aria-label="Create an engineering manager"
           aria-pressed={pressed}
           disabled={disabled}
+          // Unlike Plan, the mode changes what Send does, so on reads in the action colour.
+          className="aria-pressed:text-primary dark:aria-pressed:text-primary"
           onClick={() => setFactoryManagerDraft(props.draftId, !pressed)}
         >
-          <ComposerControlIcon
-            icon={UserCogIcon}
-            size="xs"
-            className={cn(pressed && "text-primary")}
-          />
+          <ComposerControlIcon icon={UserCogIcon} size="xs" />
           {/* Named while on, like the strip's other controls, so the mode shows on the control itself. */}
           {pressed ? <ComposerContextLabel>Engineering manager</ComposerContextLabel> : null}
         </ComposerControl>
