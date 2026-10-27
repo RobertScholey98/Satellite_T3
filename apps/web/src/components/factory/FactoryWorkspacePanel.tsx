@@ -1,6 +1,7 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, FactoryAssignmentState, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
+import { BotIcon } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 
 import { observeResize } from "~/lib/observeResize";
@@ -16,6 +17,7 @@ import {
 } from "../chat/threadDetailsCardLayout";
 import { resolveThreadDetailsCardPlacement } from "../chat/threadDetailsCardPlacement";
 import { ThreadDetailsControl } from "../chat/ThreadDetailsControl";
+import { THREAD_DETAILS_PANEL_ICON_CLASS } from "../chat/threadDetailsPanelStyles";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
 import { ThreadStatusLabel } from "../ThreadStatusIndicators";
 import { ScrollArea } from "../ui/scroll-area";
@@ -46,12 +48,25 @@ const MIN_COLUMN_HEIGHT = 220;
  * on the list item because the control owns its own colours.
  */
 const CURRENT_ROW_CLASS = "rounded-lg bg-black/[0.05] dark:bg-white/[0.08]";
-/** Only the states that need the user's eye get a dot; colour is for meaning. */
-const STATE_DOT_CLASS: Partial<Record<FactoryAssignmentState, string>> = {
+/** Every state gets a dot so the labels line up; only the states that need the user get colour. */
+const STATE_DOT_CLASS: Record<FactoryAssignmentState, string> = {
+  active: "bg-muted-foreground/45",
   blocked: "bg-destructive",
-  stalled: "bg-warning",
   "waiting-user": "bg-info",
+  stalled: "bg-muted-foreground/45",
+  retro: "bg-muted-foreground/45",
+  completed: "bg-muted-foreground/45",
+  cancelled: "bg-muted-foreground/45",
 };
+
+export function FactoryStateDot(props: { readonly state: FactoryAssignmentState }) {
+  return (
+    <span
+      aria-hidden
+      className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT_CLASS[props.state])}
+    />
+  );
+}
 /** Cards at the top right move down with the details card while the find bar is open. */
 const FIND_BAR_SLIDE_CLASS = "transition-[top] duration-150 ease-out motion-reduce:transition-none";
 
@@ -264,15 +279,27 @@ export function FactoryWorkspacePanel(props: {
             </div>,
           ];
     });
-  const teamCards = view.teams.map((team) => (
-    <TeamCard
-      key={team.assignment.id}
-      environmentId={props.environmentId}
-      threadId={props.threadId}
-      team={team}
-      onOpen={open}
-    />
-  ));
+  const teamCards =
+    view.teams.length === 0
+      ? []
+      : [
+          // On the details card's text column, titled like its sections.
+          <h3
+            key="teams-heading"
+            className="-mb-1 px-4.5 text-2xs font-medium text-muted-foreground select-none"
+          >
+            Teams
+          </h3>,
+          ...view.teams.map((team) => (
+            <TeamCard
+              key={team.assignment.id}
+              environmentId={props.environmentId}
+              threadId={props.threadId}
+              team={team}
+              onOpen={open}
+            />
+          )),
+        ];
   const edge = column?.edge === "left" ? { left: GAP } : { right: GAP };
   const slide = column?.edge !== "left" && topInset > 0 ? FIND_BAR_SLIDE_CLASS : null;
   return (
@@ -338,22 +365,18 @@ function TeamCard(props: {
   readonly onOpen: (threadId: ThreadId) => void;
 }) {
   const { assignment, threads } = props.team;
+  const asks = assignment.protectedPathAsks ?? [];
   return (
     <section aria-label={assignment.title} className={`${FACTORY_CARD_CLASS} p-2`}>
       <div className="px-2.5 py-1.5 select-none">
         <Tooltip>
-          <TooltipTrigger render={<h3 className="truncate text-sm font-medium" />}>
+          <TooltipTrigger render={<h3 className="line-clamp-2 text-sm font-medium break-words" />}>
             {assignment.title}
           </TooltipTrigger>
           <TooltipPopup side="left">{assignment.title}</TooltipPopup>
         </Tooltip>
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          {STATE_DOT_CLASS[assignment.state] === undefined ? null : (
-            <span
-              aria-hidden
-              className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT_CLASS[assignment.state])}
-            />
-          )}
+          <FactoryStateDot state={assignment.state} />
           <span className="min-w-0 truncate">
             {FACTORY_ASSIGNMENT_STATE_LABEL[assignment.state]} ·{" "}
             {threads.length === 0
@@ -366,10 +389,15 @@ function TeamCard(props: {
       <FactoryProtectedPathAsks
         environmentId={props.environmentId}
         assignmentId={assignment.id}
-        asks={assignment.protectedPathAsks ?? []}
+        asks={asks}
       />
       {threads.length === 0 ? null : (
-        <ul className="m-0 flex list-none flex-col">
+        <ul
+          className={cn(
+            "m-0 flex list-none flex-col",
+            asks.length > 0 && "mt-1 border-t border-border/65 pt-1",
+          )}
+        >
           {threads.map((thread) => (
             <TeamThreadRow
               key={thread.threadId}
@@ -403,12 +431,12 @@ function TeamThreadRow(props: {
         aria-current={props.current ? "page" : undefined}
         onClick={props.onOpen}
       >
-        {/* Idle threads get a quiet dot, so every row starts on the same column. */}
+        {/* A dot only when the thread has a state; an idle one shows the agent icon instead. */}
         <span className="flex size-4 shrink-0 items-center justify-center">
           {status ? (
             <ThreadStatusLabel status={status} compact />
           ) : (
-            <span aria-hidden className="size-[7px] rounded-full bg-muted-foreground/35" />
+            <BotIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
           )}
         </span>
         <span className="min-w-0 flex-1 truncate">{text.title}</span>

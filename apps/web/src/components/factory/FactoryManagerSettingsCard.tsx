@@ -214,36 +214,43 @@ function ManagerSettings(props: {
             }
           />
         </dl>
-        {result.controlPaths.length === 0 ? (
-          <dl className="m-0">
-            <Row icon={ShieldIcon} term="Protected paths" detail="None" />
-          </dl>
-        ) : (
-          <Disclosure icon={ShieldIcon} label="Protected paths" count={result.controlPaths.length}>
-            <ul className="m-0 list-none py-1 ps-9 pe-2.5">
-              {result.controlPaths.map((entry) => (
-                <li key={entry.path} className="py-0.5 text-xs break-words">
-                  <code>{breakAtSlashes(entry.path)}</code>
-                  {entry.reason === "" ? null : (
-                    <span className="text-muted-foreground"> · {entry.reason}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </Disclosure>
-        )}
-        {result.rules.length === 0 ? null : (
-          <Disclosure icon={ScrollTextIcon} label="Project rules" count={result.rules.length}>
-            <dl className="m-0 divide-y divide-border/65 ps-9 pe-2.5">
-              {result.rules.map((rule) => (
-                <div key={rule.id} className="space-y-0.5 py-2">
-                  <dt className="text-sm font-medium text-foreground/80">{rule.question}</dt>
-                  <dd className="m-0 text-xs text-muted-foreground">{rule.answer}</dd>
-                </div>
-              ))}
+        {/* The lists open in place, so they sit apart from the settings, as the details card's groups do. */}
+        <div className="-mx-2 mt-1 border-t border-border/65 px-2 pt-1">
+          {result.controlPaths.length === 0 ? (
+            <dl className="m-0">
+              <Row icon={ShieldIcon} term="Protected paths" detail="None" />
             </dl>
-          </Disclosure>
-        )}
+          ) : (
+            <Disclosure
+              icon={ShieldIcon}
+              label="Protected paths"
+              count={result.controlPaths.length}
+            >
+              <ul className="m-0 list-none py-1 ps-9 pe-2.5">
+                {result.controlPaths.map((entry) => (
+                  <li key={entry.path} className="py-0.5 text-xs break-words">
+                    <code>{breakAtSlashes(entry.path)}</code>
+                    {entry.reason === "" ? null : (
+                      <span className="text-muted-foreground"> · {entry.reason}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </Disclosure>
+          )}
+          {result.rules.length === 0 ? null : (
+            <Disclosure icon={ScrollTextIcon} label="Project rules" count={result.rules.length}>
+              <dl className="m-0 divide-y divide-border/65 ps-9 pe-2.5">
+                {result.rules.map((rule) => (
+                  <div key={rule.id} className="space-y-0.5 py-2">
+                    <dt className="text-sm font-medium text-foreground/80">{rule.question}</dt>
+                    <dd className="m-0 text-xs text-muted-foreground">{rule.answer}</dd>
+                  </div>
+                ))}
+              </dl>
+            </Disclosure>
+          )}
+        </div>
       </section>
     );
   }
@@ -476,7 +483,7 @@ function breakAtSlashes(path: string): ReactNode {
 /** The card's title row, on the details card's text column. */
 function CardHeading(props: { readonly title: string; readonly children?: ReactNode }) {
   return (
-    <div className="flex min-h-8 items-center gap-2 ps-2.5">
+    <div className="flex min-h-8 items-center gap-2 px-2.5">
       <h3 className="min-w-0 flex-1 truncate text-sm font-semibold select-none">{props.title}</h3>
       {props.children}
     </div>

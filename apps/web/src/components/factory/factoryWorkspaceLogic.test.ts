@@ -14,6 +14,7 @@ import type { TimelineEntry } from "~/session-logic";
 import {
   collapseFactoryPriming,
   factoryHiddenMembers,
+  factoryManagerRowRunningLabel,
   factoryMemberThreadKeys,
   factoryTeamRowText,
   factoryThreadKind,
@@ -380,5 +381,14 @@ describe("factoryTeamRowText", () => {
       title: "Implementer",
       label: null,
     });
+  });
+});
+
+describe("factoryManagerRowRunningLabel", () => {
+  it("keeps an over-cap count short enough for the details row", () => {
+    expect(factoryManagerRowRunningLabel(5, 2)).toBe("5 running, cap 2");
+    expect(factoryManagerRowRunningLabel(2, 2)).toBe("2 of 2 running");
+    expect(factoryManagerRowRunningLabel(0, 3)).toBe("0 of 3 running");
+    expect(factoryManagerRowRunningLabel(4, undefined)).toBe("4 running");
   });
 });

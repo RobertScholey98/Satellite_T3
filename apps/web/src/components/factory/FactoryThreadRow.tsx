@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type {
   EnvironmentId,
+  FactoryAssignmentState,
   FactoryWorkspaceAssignment,
   FactoryWorkspaceManager,
   ThreadId,
@@ -30,12 +31,13 @@ import {
   factoryErrorMessage,
   unwrapFactoryResult,
 } from "./factoryState";
-import { factoryManagerRunningLabel } from "./FactoryPageStats";
 import { useFactoryLeadActions } from "./FactoryThreadActions";
+import { FactoryStateDot } from "./FactoryWorkspacePanel";
 import {
   describePickupDecision,
   FACTORY_ASSIGNMENT_STATE_LABEL,
   FACTORY_MANAGER_STATE_LABEL,
+  factoryManagerRowRunningLabel,
   factoryMemberLabel,
   isLiveAssignment,
   resolveFactoryThreadPlace,
@@ -90,7 +92,9 @@ function FactoryRowLayout(props: {
   readonly icon: ReactNode;
   readonly title: string;
   readonly details: ReadonlyArray<string>;
-  /** Only in the tooltip, so the row stays at most two lines. */
+  /** Marks the first detail with the state's dot, as the team cards do. */
+  readonly state?: FactoryAssignmentState;
+  /** Only in the tooltip, so the row stays short. */
   readonly notes: ReadonlyArray<string>;
   readonly menu: ReactNode;
 }) {
@@ -108,9 +112,18 @@ function FactoryRowLayout(props: {
           <span className="block truncate text-sm font-medium text-foreground/80">
             {props.title}
           </span>
-          {props.details.map((detail) => (
-            <p key={detail} className="truncate text-2xs text-muted-foreground">
-              {detail}
+          {/* Details wrap rather than truncate: the state they carry is the point of the row. */}
+          {props.details.map((detail, index) => (
+            <p
+              key={detail}
+              className="flex items-baseline gap-1.5 text-2xs break-words text-muted-foreground"
+            >
+              {index === 0 && props.state !== undefined ? (
+                <span className="flex h-[1lh] items-center">
+                  <FactoryStateDot state={props.state} />
+                </span>
+              ) : null}
+              <span className="min-w-0">{detail}</span>
             </p>
           ))}
         </TooltipTrigger>
@@ -157,16 +170,18 @@ function FactoryLeadRow(props: {
   const project = useProject(scopeProjectRef(props.environmentId, props.manager.projectId));
   const actions = useFactoryLeadActions(props.environmentId, props.threadId);
   const owner = project?.title ?? props.manager.name;
-  const title = actions.takenOver
-    ? "Taken over by you"
-    : `Lead · ${FACTORY_ASSIGNMENT_STATE_LABEL[props.assignment.state]}`;
+  const title = actions.takenOver ? "Taken over by you" : "Lead";
   const live = isLiveAssignment(props.assignment);
   return (
     <>
       <FactoryRowLayout
         icon={<FactoryIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
         title={title}
-        details={[`For the ${owner} manager`]}
+        details={[
+          FACTORY_ASSIGNMENT_STATE_LABEL[props.assignment.state],
+          `For the ${owner} manager`,
+        ]}
+        state={props.assignment.state}
         notes={["Can't merge or edit control files"]}
         menu={
           live ? (
@@ -309,7 +324,7 @@ function FactoryManagerRow(props: {
           ? hasProposal
             ? "Onboarding proposal ready for review"
             : "Waiting for its onboarding proposal"
-          : `${FACTORY_MANAGER_STATE_LABEL[manager.state]} · ${factoryManagerRunningLabel(running, cap?.cap)}`,
+          : `${FACTORY_MANAGER_STATE_LABEL[manager.state]} · ${factoryManagerRowRunningLabel(running, cap?.cap)}`,
       ]}
       notes={pickup?.key === logKey && manager.state !== "onboarding" ? [pickup.text] : []}
       menu={

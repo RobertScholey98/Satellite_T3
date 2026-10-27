@@ -3,7 +3,7 @@ import type { EnvironmentId, FactoryProtectedPathAsk } from "@t3tools/contracts"
 import { ShieldAlertIcon, ShieldCheckIcon, ShieldXIcon } from "lucide-react";
 import { useState } from "react";
 
-import { randomUUID } from "~/lib/utils";
+import { cn, randomUUID } from "~/lib/utils";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { THREAD_DETAILS_PANEL_ICON_CLASS } from "../chat/threadDetailsPanelStyles";
 import { Button } from "../ui/button";
@@ -69,7 +69,7 @@ export function FactoryProtectedPathAsks(props: {
       {props.asks
         .toSorted((left, right) => STATE_ORDER[left.state] - STATE_ORDER[right.state])
         .map((ask) => {
-          // Allow is the outline choice and Decline or Revoke the ghost one, whatever the state.
+          // Every answer is the same outline control, so a reversal weighs what the first answer did.
           const allow = (
             <Button
               variant="outline"
@@ -83,7 +83,7 @@ export function FactoryProtectedPathAsks(props: {
           );
           const refuse = (label: string) => (
             <Button
-              variant="ghost"
+              variant="outline"
               size="xs"
               disabled={disabled}
               aria-label={`${label} ${files(ask)}`}
@@ -96,7 +96,7 @@ export function FactoryProtectedPathAsks(props: {
             <li key={ask.id} className="flex gap-2.5 px-2.5 py-1.5">
               <ShieldAlertIcon
                 aria-hidden
-                className={`${THREAD_DETAILS_PANEL_ICON_CLASS} mt-0.5 text-warning`}
+                className={cn(THREAD_DETAILS_PANEL_ICON_CLASS, "mt-0.5 text-info")}
               />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-foreground/80">
@@ -123,7 +123,7 @@ export function FactoryProtectedPathAsks(props: {
               {ask.state === "allowed" ? (
                 <ShieldCheckIcon
                   aria-hidden
-                  className={`${THREAD_DETAILS_PANEL_ICON_CLASS} mt-0.5 text-success`}
+                  className={cn(THREAD_DETAILS_PANEL_ICON_CLASS, "mt-0.5 text-success")}
                 />
               ) : (
                 <ShieldXIcon aria-hidden className={`${THREAD_DETAILS_PANEL_ICON_CLASS} mt-0.5`} />

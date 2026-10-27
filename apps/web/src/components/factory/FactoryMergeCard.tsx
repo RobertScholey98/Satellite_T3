@@ -113,6 +113,8 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
   const title = row.title ?? row.repository;
   const note = factoryMergeRowNote(row);
   const ready = row.status === "ready" && !merging;
+  // Only a problem the team has to fix is red; waiting on checks is not.
+  const failing = row.status === "needs-rebase" || row.status === "checks-failing";
   return (
     <li className="flex items-start gap-2.5 rounded-lg px-2.5 py-1.5">
       <PullRequestGlyph.pullRequest
@@ -121,13 +123,15 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
           THREAD_DETAILS_PANEL_ICON_CLASS,
           "mt-0.5",
           ready && PULL_REQUEST_STATE_PRESENTATION.open.toneClassName,
+          failing && "text-destructive",
         )}
       />
-      {/* Merge sits on the status line, so the title keeps the row's full width. */}
       <div className="min-w-0 flex-1">
         <Tooltip>
           <TooltipTrigger
-            render={<p className="truncate text-sm font-medium text-foreground/80" />}
+            render={
+              <p className="line-clamp-2 text-sm font-medium break-words text-foreground/80" />
+            }
           >
             {title}
           </TooltipTrigger>
@@ -144,29 +148,15 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
             ) : null}
           </TooltipPopup>
         </Tooltip>
-        <div className="flex min-h-6 items-center gap-2">
-          <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-            {merging ? (
-              <>
-                #{row.number} · <span>Merging…</span>
-              </>
-            ) : (
-              factoryMergeRowDetail(row)
-            )}
-          </p>
-          {ready ? (
-            <Button
-              variant="outline"
-              size="xs"
-              disabled={!canWrite || actionPending}
-              aria-label={`Merge #${row.number}`}
-              onClick={() => void merge()}
-            >
-              {actionPending ? <Spinner size="xs" /> : null}
-              Merge
-            </Button>
-          ) : null}
-        </div>
+        <p className="truncate text-xs text-muted-foreground">
+          {merging ? (
+            <>
+              #{row.number} · <span>Merging…</span>
+            </>
+          ) : (
+            factoryMergeRowDetail(row)
+          )}
+        </p>
         {note === null ? null : (
           <p className="flex items-center gap-1 text-xs text-muted-foreground">
             <CircleAlertIcon
@@ -177,6 +167,20 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
           </p>
         )}
       </div>
+      {ready ? (
+        <div className="shrink-0 self-center">
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={!canWrite || actionPending}
+            aria-label={`Merge #${row.number}`}
+            onClick={() => void merge()}
+          >
+            {actionPending ? <Spinner size="xs" /> : null}
+            Merge
+          </Button>
+        </div>
+      ) : null}
     </li>
   );
 }

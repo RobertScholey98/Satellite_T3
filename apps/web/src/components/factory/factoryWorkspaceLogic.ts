@@ -74,6 +74,15 @@ export function factoryTeamRowText(
     : { title, label: memberLabel };
 }
 
+/**
+ * The manager's running count for its narrow details row, where the over-cap sentence the Factory
+ * page uses would wrap; under the cap it reads "2 of 3 running" on both.
+ */
+export function factoryManagerRowRunningLabel(running: number, cap: number | undefined): string {
+  if (cap === undefined) return `${running} running`;
+  return running > cap ? `${running} running, cap ${cap}` : `${running} of ${cap} running`;
+}
+
 export const isLiveAssignment = (assignment: Pick<FactoryWorkspaceAssignment, "state">) =>
   assignment.state !== "completed" && assignment.state !== "cancelled";
 
