@@ -196,14 +196,21 @@ export function FactoryConfigRepoSection({
                 void submitConnect();
               }}
             >
-              <Input
-                aria-label="Repo URL"
-                placeholder="git@github.com:you/repo.git"
-                value={url}
-                disabled={disabled}
-                onChange={(event) => setUrl(event.target.value)}
-              />
-              <Button type="submit" size="sm" disabled={disabled || url.trim().length === 0}>
+              <div className="w-60">
+                <Input
+                  aria-label="Repo URL"
+                  placeholder="git@github.com:you/repo.git"
+                  value={url}
+                  disabled={disabled}
+                  onChange={(event) => setUrl(event.target.value)}
+                />
+              </div>
+              <Button
+                type="submit"
+                size="sm"
+                variant="outline"
+                disabled={disabled || url.trim().length === 0}
+              >
                 Connect
               </Button>
             </form>

@@ -192,16 +192,6 @@ export function FactoryConfigShareSection({
       <SettingsRow
         title="Export"
         description="Download definitions as a zip another environment can import. Nothing outside the definitions is included."
-        control={
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={exportDisabled}
-            onClick={() => void runExport()}
-          >
-            Export
-          </Button>
-        }
       >
         <div className="flex flex-col gap-2 pt-3 pb-2.5">
           <RadioGroup
@@ -241,6 +231,16 @@ export function FactoryConfigShareSection({
               ))}
             </div>
           ) : null}
+          <div className="pt-1">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={exportDisabled}
+              onClick={() => void runExport()}
+            >
+              Export
+            </Button>
+          </div>
         </div>
       </SettingsRow>
       <SettingsRow

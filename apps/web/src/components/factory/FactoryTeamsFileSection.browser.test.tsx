@@ -114,7 +114,7 @@ it("saves a new team of worker copies with only the edited member changed", asyn
   );
   await expect.element(screen.getByText("No teams")).toBeVisible();
 
-  await userEvent.click(screen.getByRole("button", { name: "New" }));
+  await userEvent.click(screen.getByRole("button", { name: "Add team" }));
   await userEvent.type(screen.getByRole("textbox", { name: "Name" }), "QA");
   await userEvent.click(screen.getByRole("button", { name: "Choose lead" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Default lead" }));

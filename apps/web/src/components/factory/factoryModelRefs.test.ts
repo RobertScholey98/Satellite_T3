@@ -69,7 +69,7 @@ describe("factory model refs", () => {
       "Any model in the pool",
     );
     expect(summarizeFactoryModelList({ dynamic: true, models: [OPUS, GPT] }, OPTIONS)).toBe(
-      "Claude (work) · Opus 5.5, codex/gpt-6 · model chosen per task",
+      "Claude (work) · Opus 5.5, codex/gpt-6 · chosen per task",
     );
   });
 });

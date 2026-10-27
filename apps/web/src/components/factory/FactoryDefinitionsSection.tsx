@@ -141,13 +141,13 @@ export function FactoryDefinitionsSection({
           title={COPY[kind].title}
           headerAction={
             <Button
-              size="xs"
-              variant="ghost-muted"
+              size="sm"
+              variant="outline"
               disabled={disabled}
               onClick={() => setRequest({ kind, id: null, draft: EMPTY_DRAFT })}
             >
-              <PlusIcon className="size-3" />
-              New
+              <PlusIcon />
+              Add {COPY[kind].noun}
             </Button>
           }
         >

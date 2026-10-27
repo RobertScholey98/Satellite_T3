@@ -5,6 +5,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Switch } from "../ui/switch";
+import { FactoryModelLabel } from "./FactoryModelLabel";
 import type { FactoryModelOption } from "./FactoryPageConfig";
 import {
   FACTORY_MODEL_REF_FLAG_LABELS,
@@ -43,7 +44,15 @@ export function FactoryModelListEditor({
 
   return (
     <div role="group" aria-label={label} className="flex flex-col gap-2">
-      <label className="flex items-start gap-2 text-sm">
+      <label className="flex items-start justify-between gap-4 text-sm">
+        <span className="flex flex-col">
+          <span>Dynamic</span>
+          <span className="text-xs text-muted-foreground">
+            {value.dynamic
+              ? "The lead or manager picks one of these models for each task"
+              : "Runs the first available model, in this order"}
+          </span>
+        </span>
         <Switch
           size="sm"
           checked={value.dynamic}
@@ -51,14 +60,6 @@ export function FactoryModelListEditor({
           aria-label={`${label}: dynamic`}
           onCheckedChange={(dynamic) => onChange({ ...value, dynamic })}
         />
-        <span className="flex flex-col">
-          <span>Dynamic</span>
-          <span className="text-xs text-muted-foreground">
-            {value.dynamic
-              ? "The lead or manager picks per task from these"
-              : "Runs the first available model, in this order"}
-          </span>
-        </span>
       </label>
       {entries.length === 0 ? (
         <p className="text-sm text-muted-foreground">Any model in the pool</p>
@@ -67,34 +68,40 @@ export function FactoryModelListEditor({
           {entries.map((entry, index) => (
             <li
               key={factoryModelRefKey(entry.ref)}
-              className="flex items-center gap-1.5 py-1 ps-3 pe-1 text-sm"
+              className="flex items-center gap-1.5 py-0.5 ps-3 pe-0.5 text-sm"
             >
-              <span className="min-w-0 flex-1 truncate">{entry.label}</span>
+              <span className="min-w-0 flex-1">
+                <FactoryModelLabel modelRef={entry.ref} label={entry.label} />
+              </span>
               {entry.flags.map((flag) => (
                 <Badge key={flag} size="sm" variant="warning">
                   {FACTORY_MODEL_REF_FLAG_LABELS[flag]}
                 </Badge>
               ))}
+              {entries.length > 1 ? (
+                <>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost-muted"
+                    aria-label={`Move ${entry.label} up`}
+                    disabled={disabled || index === 0}
+                    onClick={() => setModels(moveFactoryModelRef(value.models, index, -1))}
+                  >
+                    <ArrowUpIcon />
+                  </Button>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost-muted"
+                    aria-label={`Move ${entry.label} down`}
+                    disabled={disabled || index === entries.length - 1}
+                    onClick={() => setModels(moveFactoryModelRef(value.models, index, 1))}
+                  >
+                    <ArrowDownIcon />
+                  </Button>
+                </>
+              ) : null}
               <Button
-                size="icon-xs"
-                variant="ghost-muted"
-                aria-label={`Move ${entry.label} up`}
-                disabled={disabled || index === 0}
-                onClick={() => setModels(moveFactoryModelRef(value.models, index, -1))}
-              >
-                <ArrowUpIcon />
-              </Button>
-              <Button
-                size="icon-xs"
-                variant="ghost-muted"
-                aria-label={`Move ${entry.label} down`}
-                disabled={disabled || index === entries.length - 1}
-                onClick={() => setModels(moveFactoryModelRef(value.models, index, 1))}
-              >
-                <ArrowDownIcon />
-              </Button>
-              <Button
-                size="icon-xs"
+                size="icon-sm"
                 variant="ghost-muted"
                 aria-label={`Remove ${entry.label}`}
                 disabled={disabled}

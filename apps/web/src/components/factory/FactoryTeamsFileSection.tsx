@@ -86,13 +86,13 @@ export function FactoryTeamsFileSection({
       title="Teams"
       headerAction={
         <Button
-          size="xs"
-          variant="ghost-muted"
+          size="sm"
+          variant="outline"
           disabled={disabled}
           onClick={() => setRequest({ id: null, title: "New team", draft: EMPTY_TEAM_DRAFT })}
         >
-          <PlusIcon className="size-3" />
-          New
+          <PlusIcon />
+          Add team
         </Button>
       }
     >
@@ -269,7 +269,13 @@ function TeamForm({
                 onChange={(event) => setTeam({ ...team, workflow: event.target.value })}
               />
             </div>
-            <label className="flex items-start gap-2 text-sm">
+            <label className="flex items-start justify-between gap-4 text-sm">
+              <span className="flex flex-col">
+                <span>May edit protected paths</span>
+                <span className="text-xs text-muted-foreground">
+                  For teams whose job is the workflow itself
+                </span>
+              </span>
               <Switch
                 size="sm"
                 checked={team.mayEditProtectedPaths}
@@ -278,17 +284,20 @@ function TeamForm({
                   setTeam({ ...team, mayEditProtectedPaths })
                 }
               />
-              <span className="flex flex-col">
-                <span>May edit protected paths</span>
-                <span className="text-xs text-muted-foreground">
-                  For teams whose job is the workflow itself
-                </span>
-              </span>
             </label>
 
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <Label>Lead</Label>
+            <div className="space-y-3 border-t pt-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-0.5">
+                  <h3 className="text-sm font-semibold text-foreground">Lead</h3>
+                  <p className="text-xs text-muted-foreground">
+                    {team.lead !== null
+                      ? "This team's own copy. Editing it here doesn't change the lead under Leads."
+                      : view.leads.length === 0
+                        ? "Add a lead under Leads first. The team keeps its own copy."
+                        : "Choose a lead to copy into this team."}
+                  </p>
+                </div>
                 <Menu>
                   <MenuTrigger
                     disabled={busy || view.leads.length === 0}
@@ -305,14 +314,8 @@ function TeamForm({
                   </MenuPopup>
                 </Menu>
               </div>
-              {team.lead === null ? (
-                <p className="text-xs text-muted-foreground">
-                  {view.leads.length === 0
-                    ? "Add a lead under Leads first. The team keeps its own copy."
-                    : "Choose a lead to copy into this team."}
-                </p>
-              ) : (
-                <div className="space-y-4 rounded-lg border p-3">
+              {team.lead === null ? null : (
+                <div className="space-y-4">
                   <div className="space-y-1.5">
                     <Label htmlFor={`${formId}-lead-name`}>Lead name</Label>
                     <Input
@@ -350,9 +353,15 @@ function TeamForm({
               )}
             </div>
 
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <Label>Members</Label>
+            <div className="space-y-3 border-t pt-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-0.5">
+                  <h3 className="text-sm font-semibold text-foreground">Members</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Members are copies. Editing a worker later doesn't change this team. A lead
+                    delegates by member name, so each name is unique in the team.
+                  </p>
+                </div>
                 <Menu>
                   <MenuTrigger
                     disabled={busy || view.workers.length === 0}
@@ -384,10 +393,6 @@ function TeamForm({
                   </MenuPopup>
                 </Menu>
               </div>
-              <p className="text-xs text-muted-foreground">
-                Members are copies. Editing a worker later doesn't change this team. A lead
-                delegates by member name, so each name is unique in the team.
-              </p>
               {members.map(({ key, member }, index) => {
                 const n = index + 1;
                 return (

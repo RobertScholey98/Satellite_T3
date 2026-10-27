@@ -56,13 +56,13 @@ function failureMessage<A, E>(result: AtomCommandResult<A, E>): string | null {
 
 const STATE_BADGES: Record<
   Exclude<FactoryManager["state"], "retired">,
-  { readonly label: string; readonly variant: "outline" | "success" }
+  { readonly label: string; readonly dot: string }
 > = {
-  onboarding: { label: "Onboarding", variant: "outline" },
-  ready: { label: "Ready", variant: "outline" },
-  active: { label: "Active", variant: "success" },
-  "manager-paused": { label: "Paused", variant: "outline" },
-  "project-paused": { label: "Paused with teams", variant: "outline" },
+  onboarding: { label: "Onboarding", dot: "bg-info" },
+  ready: { label: "Ready", dot: "bg-muted-foreground" },
+  active: { label: "Active", dot: "bg-success" },
+  "manager-paused": { label: "Paused", dot: "bg-muted-foreground" },
+  "project-paused": { label: "Paused with teams", dot: "bg-muted-foreground" },
 };
 
 /** How the factory is doing on one environment: managers, triage waiting on you, and teams. */
@@ -153,7 +153,8 @@ function FactoryManagersSection({
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="min-w-0 truncate">{manager.name}</span>
                   {state ? (
-                    <Badge size="sm" variant={state.variant}>
+                    <Badge variant="outline">
+                      <span aria-hidden className={cn("size-1.5 rounded-full", state.dot)} />
                       {state.label}
                     </Badge>
                   ) : null}
@@ -399,7 +400,7 @@ function FactoryTeamsStats({
               </SelectPopup>
             </Select>
           </div>
-          <div className="w-32">
+          <div className="w-36">
             <Select
               value={complexity ?? ALL}
               onValueChange={(next) =>
@@ -502,7 +503,7 @@ function FactoryTeamsStats({
                       {row.label}
                     </button>
                   </td>
-                  <td className="py-2.5 pl-4 text-foreground">{row.tasks}</td>
+                  <td className="py-2.5 pl-4">{row.tasks}</td>
                   <td className="py-2.5 pl-4">{formatFactoryDuration(row.medianAgentMs)}</td>
                   <td className="py-2.5 pl-4">{formatFactoryDuration(row.medianWallMs)}</td>
                   <td className="py-2.5 pl-4">{formatFactoryTokens(row.medianTokens)}</td>
