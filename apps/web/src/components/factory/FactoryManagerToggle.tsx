@@ -3,8 +3,10 @@ import type { EnvironmentId, ProjectId, ProviderInstanceId } from "@t3tools/cont
 import { UserCogIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { cn } from "~/lib/utils";
 import { useEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { ComposerContextLabel } from "../ComposerContextLabel";
 import { Toggle } from "../ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { factoryEnvironment, supportsFactory } from "./factoryState";
@@ -32,6 +34,7 @@ export function FactoryManagerToggle(props: {
   }, [on, disabled, props.draftId]);
 
   if (!available) return null;
+  const pressed = on && !disabled;
   const tooltip = canCreate
     ? "Create an engineering manager"
     : "This connection cannot create engineering managers";
@@ -44,11 +47,13 @@ export function FactoryManagerToggle(props: {
           size="xs"
           variant="ghost"
           aria-label="Create an engineering manager"
-          pressed={on && !disabled}
+          pressed={pressed}
           disabled={disabled}
-          onPressedChange={(pressed) => setFactoryManagerDraft(props.draftId, pressed)}
+          onPressedChange={(next) => setFactoryManagerDraft(props.draftId, next)}
         >
-          <UserCogIcon className="size-3.5" />
+          <UserCogIcon className={cn("size-3", pressed && "text-primary")} />
+          {/* Named while on, like the strip's other controls, so the mode shows on the control itself. */}
+          {pressed ? <ComposerContextLabel>Engineering manager</ComposerContextLabel> : null}
         </Toggle>
       </TooltipTrigger>
       <TooltipPopup>{tooltip}</TooltipPopup>

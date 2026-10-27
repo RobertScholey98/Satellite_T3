@@ -6,7 +6,7 @@ export function FactoryWorkspaceWaitingCount(props: { readonly count: number }) 
   if (count === 0) return null;
   const label = `${count} ${count === 1 ? "team waits" : "teams wait"} on you`;
   return (
-    <Badge size="sm" variant="warning" aria-label={label} title={label}>
+    <Badge size="sm" variant="info" aria-label={label} title={label}>
       {count}
     </Badge>
   );

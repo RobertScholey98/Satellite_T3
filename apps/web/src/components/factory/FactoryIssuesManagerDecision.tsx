@@ -7,17 +7,31 @@ import type {
 } from "@t3tools/contracts";
 import { useEffect, useState } from "react";
 
-import { useClientSettings } from "~/hooks/useSettings";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { formatDayAwareTimestamp } from "~/timestampFormat";
+import { Badge } from "../ui/badge";
 import { factoryEnvironment, useFactoryManagers } from "./factoryState";
-import { decisionSentence, latestTicketDecision, projectManagers } from "./FactoryTriageState";
+import {
+  decisionReason,
+  decisionVerb,
+  latestTicketDecision,
+  projectManagers,
+} from "./FactoryTriageState";
 
 /** Enough of the log to reach a ticket's last judgement on a busy manager. */
 const DECISION_LOG_LIMIT = 300;
 
+// The ticket dialog's comments use this format; the decision sits under them.
+const decisionDateTime = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+const formatDecisionDate = (iso: string) => {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : decisionDateTime.format(date);
+};
+
 /**
- * Each project manager's latest pickup or skip of a ticket, in one sentence. Start on the ticket
+ * Each project manager's latest pickup or skip of a ticket, with its reason. Start on the ticket
  * stays the override: a manual start always wins over a skip.
  */
 export function FactoryIssuesManagerDecision({
@@ -35,8 +49,8 @@ export function FactoryIssuesManagerDecision({
   if (managers.length === 0) return null;
   const named = managers.length > 1;
   return (
-    <section className="grid gap-1 border-t border-border/60 pt-3">
-      <h3 className="text-sm font-medium">{named ? "Managers" : "Manager"}</h3>
+    <section className="grid gap-2 border-t border-border/60 pt-3">
+      <h3 className="text-sm font-medium">{named ? "Manager decisions" : "Manager decision"}</h3>
       {managers.map((manager) => (
         <ManagerDecision
           key={manager.id}
@@ -64,7 +78,6 @@ function ManagerDecision({
   readonly issue: Pick<IssueRef, "host" | "repository" | "number">;
   readonly connected: boolean;
 }) {
-  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   const listLog = useAtomCommand(factoryEnvironment.listLog, { reportFailure: false });
   const managerId = manager.id;
   const { host, repository, number } = issue;
@@ -93,17 +106,34 @@ function ManagerDecision({
   }, [connected, environmentId, host, key, listLog, managerId, number, repository]);
 
   const entry = decision?.key === key ? decision.entry : null;
-  const text = entry
-    ? decisionSentence(entry, formatDayAwareTimestamp(entry.at, timestampFormat))
-    : decision?.key === key
-      ? "The manager has not judged this ticket."
-      : connected
-        ? "Loading the manager's decision…"
-        : "Reconnect to load the manager's decision.";
+  const name = named ? <span className="font-medium text-foreground">{manager.name}</span> : null;
+  if (entry === null) {
+    const text =
+      decision?.key === key
+        ? "The manager has not judged this ticket."
+        : connected
+          ? "Loading the manager's decision…"
+          : "Reconnect to load the manager's decision.";
+    return (
+      <p className="text-sm text-muted-foreground">
+        {name}
+        {name ? ": " : null}
+        {text}
+      </p>
+    );
+  }
+  const verb = decisionVerb(entry);
+  const reason = decisionReason(entry);
   return (
-    <p className="text-sm text-muted-foreground">
-      {named ? <span className="font-medium text-foreground">{manager.name}: </span> : null}
-      {text}
-    </p>
+    <div className="grid gap-1">
+      <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        {name}
+        <Badge size="sm" variant={entry.kind === "skip" ? "outline" : "success"}>
+          {verb}
+        </Badge>
+        <time dateTime={entry.at}>{formatDecisionDate(entry.at)}</time>
+      </p>
+      {reason === "" ? null : <p className="text-sm">{reason}</p>}
+    </div>
   );
 }

@@ -80,6 +80,13 @@ export function FactoryTriageDraftDialog({
   const disabled = !connected || busy;
   const change = draft.proposedChange === null ? null : proposedChangeView(draft.proposedChange);
   const isFactory = draft.scope === "factory";
+  const kindIcon = isFactory ? (
+    <FactoryIcon className="size-3.5" />
+  ) : (
+    <TicketIcon className="size-3.5" />
+  );
+  const kindLabel = isFactory ? "Factory finding" : "Retro finding";
+  const canApplyChange = pending && isFactory && change?.applicable === true && canApply;
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -155,16 +162,32 @@ export function FactoryTriageDraftDialog({
     >
       <DialogPopup className="max-w-2xl">
         <DialogHeader>
-          <p className="flex items-center gap-2 text-xs text-muted-foreground">
-            {isFactory ? <FactoryIcon className="size-3.5" /> : <TicketIcon className="size-3.5" />}
-            {isFactory ? "Factory finding" : "Retro finding"}
-            {draft.state === "pending" ? null : (
-              <Badge size="sm" variant={draft.state === "approved" ? "success" : "outline"}>
-                {draft.state === "approved" ? (isFactory ? "Accepted" : "Approved") : "Dismissed"}
-              </Badge>
-            )}
-          </p>
-          <DialogTitle>{draft.title}</DialogTitle>
+          {/* While the title is an editable field, the heading names the finding's kind instead of repeating it. */}
+          {editable ? (
+            <DialogTitle>
+              <span className="flex items-center gap-2">
+                {kindIcon}
+                {kindLabel}
+              </span>
+            </DialogTitle>
+          ) : (
+            <>
+              <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                {kindIcon}
+                {kindLabel}
+                {draft.state === "pending" ? null : (
+                  <Badge size="sm" variant={draft.state === "approved" ? "success" : "outline"}>
+                    {draft.state === "approved"
+                      ? isFactory
+                        ? "Accepted"
+                        : "Approved"
+                      : "Dismissed"}
+                  </Badge>
+                )}
+              </p>
+              <DialogTitle>{draft.title}</DialogTitle>
+            </>
+          )}
           <DialogDescription>
             {assignment
               ? `From the retro of ${assignment.title}`
@@ -273,7 +296,12 @@ export function FactoryTriageDraftDialog({
             </Button>
           ) : null}
           {pending && isFactory && managerThreadId !== null ? (
-            <Button variant="outline" disabled={busy} onClick={discuss}>
+            // Discussing is the way forward unless the change can be applied here.
+            <Button
+              variant={canApplyChange ? "outline" : "default"}
+              disabled={busy}
+              onClick={discuss}
+            >
               Discuss with manager
             </Button>
           ) : null}
@@ -282,7 +310,7 @@ export function FactoryTriageDraftDialog({
               Save
             </Button>
           ) : null}
-          {pending && isFactory && change?.applicable && canApply ? (
+          {canApplyChange ? (
             <Button disabled={disabled || !complete} onClick={() => void apply()}>
               Apply
             </Button>

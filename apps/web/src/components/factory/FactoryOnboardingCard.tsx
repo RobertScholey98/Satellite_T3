@@ -7,10 +7,18 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { Link, useNavigate, useRouter } from "@tanstack/react-router";
+import {
+  ArchiveIcon,
+  CircleCheckIcon,
+  ClipboardListIcon,
+  HistoryIcon,
+  type LucideIcon,
+  PauseIcon,
+} from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import { randomUUID } from "~/lib/utils";
+import { cn, randomUUID } from "~/lib/utils";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { SatelliteLoader } from "../SatelliteLoader";
 import { Button } from "../ui/button";
@@ -168,12 +176,16 @@ function OnboardingCardBody(props: {
   readonly onSendMessage: ((text: string) => Promise<void>) | undefined;
 }) {
   const { manager } = props;
-  if (!props.latest) return <CollapsedLine>Replaced by a later proposal</CollapsedLine>;
+  if (!props.latest) {
+    return <CollapsedLine icon={HistoryIcon}>Replaced by a later proposal below</CollapsedLine>;
+  }
   // The managers feed may still be loading; the call must not vanish from the timeline meanwhile.
-  if (manager === undefined) return <CollapsedLine>Onboarding proposal</CollapsedLine>;
+  if (manager === undefined) {
+    return <CollapsedLine icon={ClipboardListIcon}>Onboarding proposal</CollapsedLine>;
+  }
   if (manager.onboardingResult !== null) {
     return (
-      <CollapsedLine>
+      <CollapsedLine icon={CircleCheckIcon} tone="success">
         Onboarding approved
         {manager.threadId === null || manager.threadId === props.threadId ? null : (
           <>
@@ -181,7 +193,7 @@ function OnboardingCardBody(props: {
             <Link
               to="/$environmentId/$threadId"
               params={{ environmentId: props.environmentId, threadId: manager.threadId }}
-              className="underline"
+              className="text-foreground underline-offset-4 hover:underline"
             >
               Open {manager.name}'s thread
             </Link>
@@ -191,8 +203,12 @@ function OnboardingCardBody(props: {
     );
   }
   // Paused or retired before approving: nothing here can act until it resumes onboarding.
-  if (manager.state === "retired") return <CollapsedLine>Manager retired</CollapsedLine>;
-  if (manager.state !== "onboarding") return <CollapsedLine>Onboarding paused</CollapsedLine>;
+  if (manager.state === "retired") {
+    return <CollapsedLine icon={ArchiveIcon}>Manager retired</CollapsedLine>;
+  }
+  if (manager.state !== "onboarding") {
+    return <CollapsedLine icon={PauseIcon}>Onboarding paused</CollapsedLine>;
+  }
   if (manager.onboardingProposal === null) return null;
   return (
     <OnboardingProposalForm
@@ -208,14 +224,27 @@ function OnboardingCardBody(props: {
   );
 }
 
-function CollapsedLine(props: { readonly children: ReactNode }) {
-  return <p className="px-1 text-xs text-muted-foreground">{props.children}</p>;
+function CollapsedLine(props: {
+  readonly icon: LucideIcon;
+  readonly tone?: "success";
+  readonly children: ReactNode;
+}) {
+  const Icon = props.icon;
+  return (
+    <p className="flex items-center gap-1.5 px-1 text-sm text-muted-foreground">
+      <Icon
+        aria-hidden
+        className={cn("size-3.5 shrink-0", props.tone === "success" && "text-success-foreground")}
+      />
+      <span className="min-w-0">{props.children}</span>
+    </p>
+  );
 }
 
 function Section(props: { readonly title: string; readonly children: ReactNode }) {
   return (
     <section className="space-y-2">
-      <h3 className="text-xs font-medium text-muted-foreground">{props.title}</h3>
+      <h3 className="text-sm font-medium text-foreground/80">{props.title}</h3>
       {props.children}
     </section>
   );
@@ -305,10 +334,12 @@ function OnboardingProposalForm(props: {
   };
 
   return (
-    <div className="mx-1 space-y-4 rounded-lg border bg-card p-3 text-sm">
+    <div className="mx-1 space-y-5 rounded-lg border bg-card p-4 text-sm">
       <div className="space-y-1">
-        <h2 className="text-xs font-medium text-muted-foreground">Onboarding proposal</h2>
-        {proposal.summary === "" ? null : <p className="whitespace-pre-wrap">{proposal.summary}</p>}
+        <h2 className="text-base font-semibold">Onboarding proposal</h2>
+        {proposal.summary === "" ? null : (
+          <p className="whitespace-pre-wrap text-muted-foreground">{proposal.summary}</p>
+        )}
       </div>
 
       <Section title="Purpose">
@@ -473,15 +504,15 @@ function OnboardingProposalForm(props: {
 
       {proposal.findings.length === 0 ? null : (
         <Section title="Findings">
-          <ul className="space-y-1.5">
+          <ul className="divide-y rounded-lg border">
             {proposal.findings.map((finding, index) => (
               // oxlint-disable-next-line react/no-array-index-key -- Findings are a read-only list that may repeat a line and never reorders.
-              <li key={index} className="flex items-start gap-2">
+              <li key={index} className="flex items-center gap-3 py-2 ps-3 pe-2">
                 <span className="min-w-0 flex-1">{finding}</span>
                 {send ? (
                   <Button
                     size="xs"
-                    variant="outline"
+                    variant="ghost"
                     disabled={busy || asked.has(index)}
                     onClick={() => draftTicket(index, finding)}
                   >
@@ -495,7 +526,7 @@ function OnboardingProposalForm(props: {
       )}
 
       {send ? (
-        <Section title="Send back">
+        <Section title="Changes for the manager">
           <Textarea
             aria-label="Send back to the manager"
             size="sm"
@@ -505,6 +536,14 @@ function OnboardingProposalForm(props: {
             value={note}
             onChange={(event) => setNote(event.target.value)}
           />
+        </Section>
+      ) : null}
+
+      <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-4">
+        <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+          {canApprove ? blocker : "You can't approve onboarding here."}
+        </p>
+        {send ? (
           <Button
             size="sm"
             variant="outline"
@@ -513,19 +552,10 @@ function OnboardingProposalForm(props: {
           >
             Send back
           </Button>
-        </Section>
-      ) : null}
-
-      <div className="flex flex-wrap items-center gap-3">
+        ) : null}
         <Button size="sm" disabled={readOnly || blocker !== null} onClick={() => void approve()}>
           Approve
         </Button>
-        {canApprove ? null : (
-          <p className="text-xs text-muted-foreground">You can't approve onboarding here.</p>
-        )}
-        {canApprove && blocker !== null ? (
-          <p className="text-xs text-muted-foreground">{blocker}</p>
-        ) : null}
       </div>
       {(error ?? props.approveError) === null ? null : (
         <p role="alert" className="text-xs text-destructive">

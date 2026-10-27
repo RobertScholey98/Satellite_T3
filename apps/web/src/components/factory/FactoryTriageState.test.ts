@@ -9,8 +9,11 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  decisionSentence,
+  decisionReason,
+  decisionVerb,
   latestTicketDecision,
+  managerStatusActions,
+  managerStatusText,
   proposedChangeView,
   triageColumnDrafts,
 } from "./FactoryTriageState";
@@ -98,7 +101,12 @@ describe("latestTicketDecision", () => {
     ];
     const decision = latestTicketDecision(log, issue(7));
     expect(decision?.sequence).toBe(2);
-    expect(decisionSentence(decision!, "14:02")).toBe("Skipped at 14:02: too big.");
+    expect(decisionVerb(decision!)).toBe("Skipped");
+    expect(decisionReason(decision!)).toBe("Too big.");
+    expect(decisionReason(entry(5, "skip", {}, " waiting on the port "))).toBe(
+      "Waiting on the port.",
+    );
+    expect(decisionReason(entry(5, "skip", {}, ""))).toBe("");
     expect(latestTicketDecision(log, issue(9))).toBeNull();
   });
 });
@@ -172,5 +180,29 @@ describe("proposedChangeView", () => {
         "Worker: Reviewer\nModels: codex/gpt-5.5 (in this order)\nDescription:\nReview the diff.",
       applicable: true,
     });
+  });
+});
+
+describe("managerStatusActions", () => {
+  const labels = (state: Parameters<typeof managerStatusActions>[0]) =>
+    managerStatusActions(state).map((entry) => entry.label);
+
+  it("offers a paused manager only Resume and pausing its teams too", () => {
+    expect(labels("manager-paused")).toEqual(["Resume", "Also pause its teams"]);
+    expect(labels("project-paused")).toEqual(["Resume"]);
+  });
+
+  it("offers a running manager both pauses, and a retired one nothing", () => {
+    expect(labels("active")).toEqual(["Pause manager", "Pause manager and teams"]);
+    expect(labels("retired")).toEqual([]);
+  });
+});
+
+describe("managerStatusText", () => {
+  it("names a manager over its cap the way the Factory page does", () => {
+    expect(managerStatusText({ name: "Ada", state: "active" }, 6, 2)).toBe(
+      "Ada · 6 running, over its cap of 2",
+    );
+    expect(managerStatusText({ name: "Ada", state: "active" }, 1, 2)).toBe("Ada · 1 of 2 running");
   });
 });
