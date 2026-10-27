@@ -7,7 +7,7 @@ import { cn } from "~/lib/utils";
 import { useEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { ComposerContextLabel } from "../ComposerContextLabel";
-import { Toggle } from "../ui/toggle";
+import { ComposerControl, ComposerControlIcon } from "../chat/ComposerControl";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { factoryEnvironment, supportsFactory } from "./factoryState";
 import { setFactoryManagerDraft, useFactoryManagerDraft } from "./factoryWorkspaceState";
@@ -43,18 +43,21 @@ export function FactoryManagerToggle(props: {
       <TooltipTrigger
         render={<span className="inline-flex shrink-0" data-composer-context-control />}
       >
-        <Toggle
+        <ComposerControl
           size="xs"
-          variant="ghost"
           aria-label="Create an engineering manager"
-          pressed={pressed}
+          aria-pressed={pressed}
           disabled={disabled}
-          onPressedChange={(next) => setFactoryManagerDraft(props.draftId, next)}
+          onClick={() => setFactoryManagerDraft(props.draftId, !pressed)}
         >
-          <UserCogIcon className={cn("size-3", pressed && "text-primary")} />
+          <ComposerControlIcon
+            icon={UserCogIcon}
+            size="xs"
+            className={cn(pressed && "text-primary")}
+          />
           {/* Named while on, like the strip's other controls, so the mode shows on the control itself. */}
           {pressed ? <ComposerContextLabel>Engineering manager</ComposerContextLabel> : null}
-        </Toggle>
+        </ComposerControl>
       </TooltipTrigger>
       <TooltipPopup>{tooltip}</TooltipPopup>
     </Tooltip>
