@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { TriangleAlertIcon } from "lucide-react";
+import { CircleAlertIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
@@ -119,14 +119,33 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
         aria-hidden
         className={cn(
           THREAD_DETAILS_PANEL_ICON_CLASS,
-          "mt-px",
+          "mt-0.5",
           ready && PULL_REQUEST_STATE_PRESENTATION.open.toneClassName,
         )}
       />
-      <Tooltip>
-        <TooltipTrigger render={<div className="min-w-0 flex-1" />}>
-          <p className="truncate text-sm font-medium text-foreground/80">{title}</p>
-          <p className="truncate text-xs text-muted-foreground">
+      {/* Merge sits on the status line, so the title keeps the row's full width. */}
+      <div className="min-w-0 flex-1">
+        <Tooltip>
+          <TooltipTrigger
+            render={<p className="truncate text-sm font-medium text-foreground/80" />}
+          >
+            {title}
+          </TooltipTrigger>
+          <TooltipPopup side="left">
+            <p className="font-medium">{title}</p>
+            <p className="text-muted-foreground">For {row.assignmentTitle}</p>
+            {row.awaitingAnswer.length > 0 ? (
+              <p className="text-muted-foreground">
+                Waiting for your answer on the team's card: {row.awaitingAnswer.join(", ")}
+              </p>
+            ) : null}
+            {held.length > 0 ? (
+              <p className="text-muted-foreground">Held by the factory: {held.join(", ")}</p>
+            ) : null}
+          </TooltipPopup>
+        </Tooltip>
+        <div className="flex min-h-6 items-center gap-2">
+          <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
             {merging ? (
               <>
                 #{row.number} · <span>Merging…</span>
@@ -135,38 +154,29 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
               factoryMergeRowDetail(row)
             )}
           </p>
-          {note === null ? null : (
-            <p className="flex items-center gap-1 text-xs text-muted-foreground">
-              <TriangleAlertIcon aria-hidden className="size-3 shrink-0 text-warning" />
-              <span className="truncate">{note}</span>
-            </p>
-          )}
-        </TooltipTrigger>
-        <TooltipPopup side="left">
-          <p className="font-medium">{title}</p>
-          <p className="text-muted-foreground">For {row.assignmentTitle}</p>
-          {row.awaitingAnswer.length > 0 ? (
-            <p className="text-muted-foreground">
-              Waiting for your answer on the team's card: {row.awaitingAnswer.join(", ")}
-            </p>
+          {ready ? (
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={!canWrite || actionPending}
+              aria-label={`Merge #${row.number}`}
+              onClick={() => void merge()}
+            >
+              {actionPending ? <Spinner size="xs" /> : null}
+              Merge
+            </Button>
           ) : null}
-          {held.length > 0 ? (
-            <p className="text-muted-foreground">Held by the factory: {held.join(", ")}</p>
-          ) : null}
-        </TooltipPopup>
-      </Tooltip>
-      {ready ? (
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={!canWrite || actionPending}
-          aria-label={`Merge #${row.number}`}
-          onClick={() => void merge()}
-        >
-          {actionPending ? <Spinner size="xs" /> : null}
-          Merge
-        </Button>
-      ) : null}
+        </div>
+        {note === null ? null : (
+          <p className="flex items-center gap-1 text-xs text-muted-foreground">
+            <CircleAlertIcon
+              aria-hidden
+              className={cn("size-3 shrink-0", row.awaitingAnswer.length > 0 && "text-info")}
+            />
+            <span className="truncate">{note}</span>
+          </p>
+        )}
+      </div>
     </li>
   );
 }

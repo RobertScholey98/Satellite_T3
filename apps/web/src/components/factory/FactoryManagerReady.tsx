@@ -60,14 +60,15 @@ export function FactoryManagerReady(props: {
         <p className="text-xs text-muted-foreground">
           {pickup} · {plural(result.rules.length, "project rule", "project rules")}
         </p>
+        {manager.state === "ready" || result.pickup.enabled ? null : (
+          <p className="text-xs text-muted-foreground">Message the manager to get started.</p>
+        )}
       </div>
       {manager.state === "ready" ? (
         <Button size="sm" disabled={busy || !canStart} onClick={() => void start()}>
           Start picking up
         </Button>
-      ) : result.pickup.enabled ? null : (
-        <p className="text-muted-foreground">Let's get started</p>
-      )}
+      ) : null}
       {error === null ? null : (
         <p role="alert" className="text-xs text-destructive">
           {error}

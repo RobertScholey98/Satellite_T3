@@ -173,7 +173,7 @@ function ManagerSettings(props: {
     return (
       <section aria-label="Manager settings" className={`${FACTORY_CARD_CLASS} p-2`}>
         <CardHeading title="Settings">
-          <Button variant="ghost" size="xs" disabled={!canEdit} onClick={edit}>
+          <Button variant="outline" size="xs" disabled={!canEdit} onClick={edit}>
             Edit
           </Button>
         </CardHeading>

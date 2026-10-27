@@ -77,6 +77,7 @@ export function FactoryThreadRow(props: {
             icon={<UsersRoundIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
             title={`${factoryMemberLabel(place.member)} for ${place.assignment?.title ?? place.manager.name}`}
             details={[]}
+            notes={[]}
             menu={null}
           />
         )}
@@ -89,16 +90,19 @@ function FactoryRowLayout(props: {
   readonly icon: ReactNode;
   readonly title: string;
   readonly details: ReadonlyArray<string>;
+  /** Only in the tooltip, so the row stays at most two lines. */
+  readonly notes: ReadonlyArray<string>;
   readonly menu: ReactNode;
 }) {
   return (
     <li
       className={cn(
-        "group flex items-center rounded-lg py-1.5",
+        "group flex items-start rounded-lg py-1.5",
         THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS,
       )}
     >
-      <span className="inline-flex size-4 shrink-0 items-center justify-center">{props.icon}</span>
+      {/* As tall as the title line, so the icon sits on it however many lines follow. */}
+      <span className="inline-flex h-5 w-4 shrink-0 items-center justify-center">{props.icon}</span>
       <Tooltip>
         <TooltipTrigger render={<div className="min-w-0 flex-1" />}>
           <span className="block truncate text-sm font-medium text-foreground/80">
@@ -112,7 +116,7 @@ function FactoryRowLayout(props: {
         </TooltipTrigger>
         <TooltipPopup side="left">
           <p className="font-medium">{props.title}</p>
-          {props.details.map((detail) => (
+          {[...props.details, ...props.notes].map((detail) => (
             <p key={detail} className="text-muted-foreground">
               {detail}
             </p>
@@ -155,14 +159,15 @@ function FactoryLeadRow(props: {
   const owner = project?.title ?? props.manager.name;
   const title = actions.takenOver
     ? "Taken over by you"
-    : `Lead for ${owner} manager · ${FACTORY_ASSIGNMENT_STATE_LABEL[props.assignment.state]}`;
+    : `Lead · ${FACTORY_ASSIGNMENT_STATE_LABEL[props.assignment.state]}`;
   const live = isLiveAssignment(props.assignment);
   return (
     <>
       <FactoryRowLayout
         icon={<FactoryIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
         title={title}
-        details={["Can't merge or edit control files"]}
+        details={[`For the ${owner} manager`]}
+        notes={["Can't merge or edit control files"]}
         menu={
           live ? (
             <RowMenu label="Factory lead actions">
@@ -298,19 +303,15 @@ function FactoryManagerRow(props: {
   return (
     <FactoryRowLayout
       icon={<UserCogIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
-      title={FACTORY_MANAGER_STATE_LABEL[manager.state]}
+      title="Engineering manager"
       details={[
-        factoryManagerRunningLabel(running, cap?.cap),
-        ...(manager.state === "onboarding"
-          ? [
-              hasProposal
-                ? "Onboarding proposal ready for review"
-                : "Waiting for its onboarding proposal",
-            ]
-          : pickup?.key === logKey
-            ? [pickup.text]
-            : []),
+        manager.state === "onboarding"
+          ? hasProposal
+            ? "Onboarding proposal ready for review"
+            : "Waiting for its onboarding proposal"
+          : `${FACTORY_MANAGER_STATE_LABEL[manager.state]} · ${factoryManagerRunningLabel(running, cap?.cap)}`,
       ]}
+      notes={pickup?.key === logKey && manager.state !== "onboarding" ? [pickup.text] : []}
       menu={
         <RowMenu label="Engineering manager actions">
           <MenuItem
