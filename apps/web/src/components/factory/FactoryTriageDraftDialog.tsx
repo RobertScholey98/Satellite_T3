@@ -164,19 +164,14 @@ export function FactoryTriageDraftDialog({
         <DialogHeader>
           {/* While the title is an editable field, the heading names the finding's kind instead of repeating it. */}
           {editable ? (
-            <DialogTitle>
-              <span className="flex items-center gap-2">
-                {kindIcon}
-                {kindLabel}
-              </span>
-            </DialogTitle>
+            <DialogTitle>{kindLabel}</DialogTitle>
           ) : (
             <>
               <p className="flex items-center gap-2 text-xs text-muted-foreground">
                 {kindIcon}
                 {kindLabel}
                 {draft.state === "pending" ? null : (
-                  <Badge size="sm" variant={draft.state === "approved" ? "success" : "outline"}>
+                  <Badge variant={draft.state === "approved" ? "success" : "outline"}>
                     {draft.state === "approved"
                       ? isFactory
                         ? "Accepted"
@@ -286,7 +281,7 @@ export function FactoryTriageDraftDialog({
         </DialogPanel>
         <DialogFooter>
           {pending && canOperate ? (
-            <Button variant="ghost" disabled={disabled} onClick={() => void dismiss()}>
+            <Button variant="outline" disabled={disabled} onClick={() => void dismiss()}>
               Dismiss
             </Button>
           ) : null}

@@ -132,7 +132,7 @@ export function managerStatusActions(
     case "manager-paused":
       return [
         { action: "resume", label: "Resume" },
-        { action: "pause-project", label: "Also pause its teams" },
+        { action: "pause-project", label: "Pause its teams too" },
       ];
     case "project-paused":
       return [{ action: "resume", label: "Resume" }];

@@ -188,7 +188,7 @@ describe("managerStatusActions", () => {
     managerStatusActions(state).map((entry) => entry.label);
 
   it("offers a paused manager only Resume and pausing its teams too", () => {
-    expect(labels("manager-paused")).toEqual(["Resume", "Also pause its teams"]);
+    expect(labels("manager-paused")).toEqual(["Resume", "Pause its teams too"]);
     expect(labels("project-paused")).toEqual(["Resume"]);
   });
 

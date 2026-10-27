@@ -3,6 +3,7 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, FactoryManager } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronDownIcon } from "lucide-react";
+import { Fragment } from "react";
 
 import { cn, randomUUID } from "~/lib/utils";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -94,18 +95,21 @@ export function FactoryIssuesManagerStatus({
         <ChevronDownIcon aria-hidden />
       </MenuTrigger>
       <MenuPopup align="start">
-        {actions.map(({ action, label }) => (
-          <MenuItem
-            key={action}
-            disabled={!operable}
-            onClick={() =>
-              void (action === "resume"
-                ? resume()
-                : pause(action === "pause-manager" ? "manager" : "project"))
-            }
-          >
-            {label}
-          </MenuItem>
+        {actions.map(({ action, label }, index) => (
+          <Fragment key={action}>
+            {/* Resume and a further pause go opposite ways, so they don't read as one group. */}
+            {index > 0 && actions[index - 1]?.action === "resume" ? <MenuSeparator /> : null}
+            <MenuItem
+              disabled={!operable}
+              onClick={() =>
+                void (action === "resume"
+                  ? resume()
+                  : pause(action === "pause-manager" ? "manager" : "project"))
+              }
+            >
+              {label}
+            </MenuItem>
+          </Fragment>
         ))}
         {actions.length === 0 ? null : <MenuSeparator />}
         {threadId ? (

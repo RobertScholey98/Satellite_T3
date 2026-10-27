@@ -128,9 +128,7 @@ function ManagerDecision({
     <div className="grid gap-1">
       <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         {name}
-        <Badge size="sm" variant={entry.kind === "skip" ? "outline" : "success"}>
-          {verb}
-        </Badge>
+        <Badge variant={entry.kind === "skip" ? "outline" : "success"}>{verb}</Badge>
         <time dateTime={entry.at}>{formatDecisionDate(entry.at)}</time>
       </p>
       {reason === "" ? null : <p className="text-sm">{reason}</p>}

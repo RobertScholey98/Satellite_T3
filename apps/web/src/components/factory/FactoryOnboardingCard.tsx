@@ -231,7 +231,7 @@ function CollapsedLine(props: {
 }) {
   const Icon = props.icon;
   return (
-    <p className="flex items-center gap-1.5 px-1 text-sm text-muted-foreground">
+    <p className="flex items-center gap-1.5 px-1 py-2 text-sm text-muted-foreground">
       <Icon
         aria-hidden
         className={cn("size-3.5 shrink-0", props.tone === "success" && "text-success-foreground")}
@@ -508,11 +508,11 @@ function OnboardingProposalForm(props: {
             {proposal.findings.map((finding, index) => (
               // oxlint-disable-next-line react/no-array-index-key -- Findings are a read-only list that may repeat a line and never reorders.
               <li key={index} className="flex items-center gap-3 py-2 ps-3 pe-2">
-                <span className="min-w-0 flex-1">{finding}</span>
+                <span className="min-w-0 flex-1 font-normal">{finding}</span>
                 {send ? (
                   <Button
-                    size="xs"
-                    variant="ghost"
+                    size="sm"
+                    variant="outline"
                     disabled={busy || asked.has(index)}
                     onClick={() => draftTicket(index, finding)}
                   >
