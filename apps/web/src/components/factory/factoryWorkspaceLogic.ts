@@ -132,18 +132,41 @@ export function factoryHiddenMembers(
 export function unloadedFactoryMemberCount(input: {
   readonly members: ReadonlyArray<FactoryHiddenMember>;
   readonly scopes: ReadonlyArray<OlderSettledScope>;
-  readonly heldThreadKeys: ReadonlySet<string>;
+  /** Every thread the client holds, in any section. */
+  readonly heldThreads: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+  }>;
   readonly omitsOlderSettled: (environmentId: EnvironmentId) => boolean;
 }): number {
+  if (input.members.length === 0) return 0;
+  const heldKeys = new Set(
+    input.heldThreads.map((thread) =>
+      scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+    ),
+  );
   let count = 0;
   for (const member of input.members) {
-    if (input.heldThreadKeys.has(member.key)) continue;
+    if (heldKeys.has(member.key)) continue;
     const scope = input.scopes.find((each) => each.environmentId === member.environmentId);
     if (scope === undefined || !input.omitsOlderSettled(member.environmentId)) continue;
     if (scope.projectIds !== null && !scope.projectIds.includes(member.projectId)) continue;
     count += 1;
   }
   return count;
+}
+
+/** The Settled shelf's count: its local rows, plus the server's older settled threads it may list. */
+export function settledShelfCount(
+  input: Parameters<typeof unloadedFactoryMemberCount>[0] & {
+    readonly localSettled: number;
+    /** Older settled threads in scope the client does not hold, factory team threads included. */
+    readonly unloadedOlderSettled: number;
+  },
+): number {
+  return (
+    input.localSettled + Math.max(0, input.unloadedOlderSettled - unloadedFactoryMemberCount(input))
+  );
 }
 
 export type FactoryThreadPlace =

@@ -21,6 +21,7 @@ import {
   resolveFactoryThreadStack,
   resolveFactoryDetailsCardSide,
   resolveFactoryWorkspaceView,
+  settledShelfCount,
   unloadedFactoryMemberCount,
 } from "./factoryWorkspaceLogic";
 import { FACTORY_THREAD_STACK } from "./FactoryThreadStack";
@@ -28,6 +29,7 @@ import { FACTORY_THREAD_STACK } from "./FactoryThreadStack";
 const environmentId = EnvironmentId.make("local");
 const key = (threadId: string) =>
   scopedThreadKey(scopeThreadRef(environmentId, ThreadId.make(threadId)));
+const held = (threadId: string) => ({ environmentId, id: ThreadId.make(threadId) });
 
 function member(threadId: string, overrides: Partial<FactoryMember> = {}): FactoryMember {
   return {
@@ -129,7 +131,7 @@ describe("unloadedFactoryMemberCount", () => {
       unloadedFactoryMemberCount({
         members: factoryHiddenMembers(teams),
         scopes: allProjects,
-        heldThreadKeys: new Set([key("lead")]),
+        heldThreads: [held("lead")],
         omitsOlderSettled: () => true,
       }),
     ).toBe(2);
@@ -140,7 +142,7 @@ describe("unloadedFactoryMemberCount", () => {
       unloadedFactoryMemberCount({
         members: factoryHiddenMembers(teams),
         scopes: allProjects,
-        heldThreadKeys: new Set(),
+        heldThreads: [],
         omitsOlderSettled: () => true,
         ...input,
       });
@@ -149,6 +151,34 @@ describe("unloadedFactoryMemberCount", () => {
     expect(counted({ scopes: [{ environmentId, projectIds: [ProjectId.make("project")] }] })).toBe(
       3,
     );
+  });
+});
+
+describe("settledShelfCount", () => {
+  const teams = feed({
+    managers: [manager("manager-1", "active")],
+    members: [member("lead", { role: "lead" }), member("implementer")],
+  });
+  const count = (input: Partial<Parameters<typeof settledShelfCount>[0]>) =>
+    settledShelfCount({
+      localSettled: 4,
+      unloadedOlderSettled: 5,
+      members: factoryHiddenMembers(teams),
+      scopes: [{ environmentId, projectIds: null }],
+      heldThreads: [held("lead")],
+      omitsOlderSettled: () => true,
+      ...input,
+    });
+
+  it("adds the server's older settled threads but not the team threads among them", () => {
+    // The held lead is not in the server's count; the unheld implementer is, and is never listed.
+    expect(count({})).toBe(8);
+    expect(count({ heldThreads: [held("lead"), held("implementer")] })).toBe(9);
+    expect(count({ members: [] })).toBe(9);
+  });
+
+  it("never takes team threads below the local rows", () => {
+    expect(count({ unloadedOlderSettled: 0 })).toBe(4);
   });
 });
 

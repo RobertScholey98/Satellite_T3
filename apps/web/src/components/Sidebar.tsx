@@ -229,7 +229,7 @@ import {
   type SidebarProviderEntry,
   type SidebarSweepAction,
 } from "./sidebar/SidebarThreadRow";
-import { unloadedFactoryMemberCount } from "./factory/factoryWorkspaceLogic";
+import { settledShelfCount } from "./factory/factoryWorkspaceLogic";
 import {
   useFactoryHiddenMembers,
   useFactoryMemberThreadKeys,
@@ -444,16 +444,15 @@ function useSidebarThreads(input: {
   });
   const listedSettledThreads = settledThreads.filter(olderSettledShelf.isListed);
   useOlderSettledShelfGrowth(olderSettledShelf, listedSettledThreads);
-  const unloadedFactoryMembers = unloadedFactoryMemberCount({
+  const settledCount = settledShelfCount({
+    localSettled: settledThreads.length,
+    unloadedOlderSettled: olderSettledShelf.unloadedCount(partition.visibleThreads),
     members: factoryHiddenMembers,
     scopes: shelfScopes,
-    heldThreadKeys: new Set(threads.map(threadShellKey)),
+    heldThreads: threads,
     omitsOlderSettled: (environmentId) =>
       olderSettledShelf.environments.get(environmentId)?.older != null,
   });
-  const settledCount =
-    settledThreads.length +
-    Math.max(0, olderSettledShelf.unloadedCount(partition.visibleThreads) - unloadedFactoryMembers);
   const visibleSettledThreads = (() => {
     const visible = listedSettledThreads.slice(0, settledVisibleCount);
     if (
