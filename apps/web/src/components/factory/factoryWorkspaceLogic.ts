@@ -126,8 +126,9 @@ export function factoryHiddenMembers(
 
 /**
  * Team threads the server counts as older settled but the sidebar never lists, to take off the
- * Settled shelf's count. The shell holds every thread but the older settled ones, so a hidden
- * member's thread the client does not hold is one of those.
+ * Settled shelf's count. The shell holds every unarchived thread but the older settled ones, so a
+ * hidden member's thread the client does not hold is taken as one of those. An archived live
+ * member's thread is the exception: the server never counted it, and nothing here can tell.
  */
 export function unloadedFactoryMemberCount(input: {
   readonly members: ReadonlyArray<FactoryHiddenMember>;
