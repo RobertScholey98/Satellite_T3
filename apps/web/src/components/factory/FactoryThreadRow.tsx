@@ -31,13 +31,13 @@ import {
   factoryErrorMessage,
   unwrapFactoryResult,
 } from "./factoryState";
+import { factoryManagerRunningLabel } from "./FactoryPageStats";
 import { useFactoryLeadActions } from "./FactoryThreadActions";
 import { FactoryStateDot } from "./FactoryWorkspacePanel";
 import {
   describePickupDecision,
   FACTORY_ASSIGNMENT_STATE_LABEL,
   FACTORY_MANAGER_STATE_LABEL,
-  factoryManagerRowRunningLabel,
   factoryMemberLabel,
   isLiveAssignment,
   resolveFactoryThreadPlace,
@@ -324,7 +324,7 @@ function FactoryManagerRow(props: {
           ? hasProposal
             ? "Onboarding proposal ready for review"
             : "Waiting for its onboarding proposal"
-          : `${FACTORY_MANAGER_STATE_LABEL[manager.state]} · ${factoryManagerRowRunningLabel(running, cap?.cap)}`,
+          : `${FACTORY_MANAGER_STATE_LABEL[manager.state]} · ${factoryManagerRunningLabel(running, cap?.cap)}`,
       ]}
       notes={pickup?.key === logKey && manager.state !== "onboarding" ? [pickup.text] : []}
       menu={

@@ -28,14 +28,20 @@ export function median(values: ReadonlyArray<number>): number {
   return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
 
-/** One row per team, busiest first; teams staffed without a preset group under Custom, last. */
+/**
+ * One row per team, busiest first; teams staffed without a preset group under Custom, last. Team
+ * names are often lowercase file ids, so each label starts with a capital like "Custom" does.
+ */
 export function factoryTeamRows(result: FactoryStatsResult): ReadonlyArray<FactoryTeamRow> {
   return result.teams
     .map((team) => {
       const assignments = result.assignments.filter((assignment) => assignment.team === team.team);
       return {
         ...team,
-        label: team.team === CUSTOM_TEAM ? "Custom" : team.team,
+        label:
+          team.team === CUSTOM_TEAM
+            ? "Custom"
+            : `${team.team[0]?.toUpperCase() ?? ""}${team.team.slice(1)}`,
         medianWaitingMs: median(assignments.map((assignment) => assignment.waitingUserMs)),
         assignments,
       };
@@ -107,11 +113,10 @@ export function factoryStatsSinceDay(days: number | null, now: number): string |
 
 /**
  * A manager's live assignments against its cap. Work only starts under the cap, but a cap lowered
- * under running work leaves the count above it, which "6 of 2 running" would garble.
+ * under running work leaves the count above it, which "6 of 2 running" would garble. Short enough
+ * for the narrow details row, which shows it too.
  */
 export function factoryManagerRunningLabel(running: number, cap: number | undefined): string {
   if (cap === undefined) return `${running} running`;
-  return running > cap
-    ? `${running} running, over its cap of ${cap}`
-    : `${running} of ${cap} running`;
+  return running > cap ? `${running} running, cap ${cap}` : `${running} of ${cap} running`;
 }

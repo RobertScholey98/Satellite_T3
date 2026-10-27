@@ -52,14 +52,14 @@ const team = (name: string, tasks: number): FactoryTeamStats => ({
 });
 
 describe("factoryTeamRows", () => {
-  it("puts the busiest team first, custom teams last, and their own assignments under each", () => {
+  it("puts the busiest team first, custom teams last, capitalised, with their own assignments", () => {
     const rows = factoryTeamRows({
-      teams: [team("custom", 5), team("Solo", 1), team("Standard", 3)],
+      teams: [team("custom", 5), team("solo", 1), team("Standard", 3)],
       assignments: [
         assignment("a", "Standard", { waitingUserMs: 1_000 }),
         assignment("b", "custom"),
         assignment("c", "Standard", { waitingUserMs: 3_000 }),
-        assignment("d", "Solo"),
+        assignment("d", "solo"),
       ],
     });
     expect(rows.map((row) => row.label)).toEqual(["Standard", "Solo", "Custom"]);
@@ -107,7 +107,7 @@ describe("factoryManagerRunningLabel", () => {
   it("counts running work against the cap, and says when the count is over it", () => {
     expect(factoryManagerRunningLabel(0, 3)).toBe("0 of 3 running");
     expect(factoryManagerRunningLabel(2, 2)).toBe("2 of 2 running");
-    expect(factoryManagerRunningLabel(6, 2)).toBe("6 running, over its cap of 2");
+    expect(factoryManagerRunningLabel(6, 2)).toBe("6 running, cap 2");
     expect(factoryManagerRunningLabel(4, undefined)).toBe("4 running");
   });
 });

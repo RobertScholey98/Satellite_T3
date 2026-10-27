@@ -201,7 +201,7 @@ describe("managerStatusActions", () => {
 describe("managerStatusText", () => {
   it("names a manager over its cap the way the Factory page does", () => {
     expect(managerStatusText({ name: "Ada", state: "active" }, 6, 2)).toBe(
-      "Ada · 6 running, over its cap of 2",
+      "Ada · 6 running, cap 2",
     );
     expect(managerStatusText({ name: "Ada", state: "active" }, 1, 2)).toBe("Ada · 1 of 2 running");
   });
