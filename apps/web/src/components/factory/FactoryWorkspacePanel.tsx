@@ -1,6 +1,7 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
+import { BotIcon } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 
 import { observeResize } from "~/lib/observeResize";
@@ -16,9 +17,11 @@ import {
 } from "../chat/threadDetailsCardLayout";
 import { resolveThreadDetailsCardPlacement } from "../chat/threadDetailsCardPlacement";
 import { ThreadDetailsControl } from "../chat/ThreadDetailsControl";
+import { THREAD_DETAILS_PANEL_ICON_CLASS } from "../chat/threadDetailsPanelStyles";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
 import { ThreadStatusLabel } from "../ThreadStatusIndicators";
 import { ScrollArea } from "../ui/scroll-area";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   FACTORY_CARD_CLASS,
   FACTORY_THREAD_STACK,
@@ -26,9 +29,12 @@ import {
 } from "./FactoryThreadStack";
 import { resolveFactoryDetailsCardPlacement } from "./factoryDetailsCardPlacement";
 import { FactoryProtectedPathAsks } from "./FactoryProtectedPathAsks";
+import { FactoryStateDot } from "./FactoryStateDot";
 import { useFactoryWorkspaceFeed, useFactoryWorkspacePlace } from "./factoryWorkspaceState";
 import {
+  FACTORY_ASSIGNMENT_STATE_LABEL,
   factoryMemberLabel,
+  factoryTeamRowText,
   factoryThreadKind,
   resolveFactoryThreadStack,
   resolveFactoryWorkspaceView,
@@ -176,8 +182,10 @@ export function FactoryWorkspacePanel(props: {
   const aboveTop = column?.top ?? GAP + topInset;
   const detailsTop = aboveTop + stack.detailsTopInset;
   const belowTop = detailsTop + (detailsHeight > 0 ? detailsHeight + GAP : 0);
-  // The cards below scroll within what is left of the canvas, so the measured height below, and
-  // with it the reported obstacle, is the column's visible bottom.
+  // On the right the cards under the details card and the team cards scroll as one column, so no
+  // card slides under another. The cards scroll within what is left of the canvas, so the measured
+  // height below, and with it the reported obstacle, is the column's visible bottom.
+  const teamsInColumn = column?.edge === "right";
   const belowRoom = Math.max(0, (canvas?.container.height ?? 0) - belowTop - GAP);
   const stackBottom =
     column === null
@@ -190,19 +198,18 @@ export function FactoryWorkspacePanel(props: {
             ? detailsTop - GAP
             : null;
 
-  const teamsTop =
-    column?.edge === "right" ? (stackBottom ?? column.top - GAP) + GAP : (placement?.y ?? 0);
+  // With the cards in the gutter, the team cards keep a column of their own on the right.
+  const teamsTop = placement?.y ?? 0;
   const teamsHeight = canvas ? canvas.container.height - teamsTop - GAP : 0;
   const teamsVisible =
-    placement !== null && (view?.teams.length ?? 0) > 0 && teamsHeight >= MIN_COLUMN_HEIGHT;
+    !teamsInColumn &&
+    placement !== null &&
+    (view?.teams.length ?? 0) > 0 &&
+    teamsHeight >= MIN_COLUMN_HEIGHT;
 
   // On the right an open details card reports itself, and the cards around it share its edge.
   const stacked = side === "right" && detailsOpen && placement !== null;
-  const rightBottom = teamsVisible
-    ? teamsTop + teamsHeight
-    : column?.edge === "right"
-      ? stackBottom
-      : null;
+  const rightBottom = teamsInColumn ? stackBottom : teamsVisible ? teamsTop + teamsHeight : null;
   // Alone, the cards are reported even when the lane then falls below its minimum width: a
   // narrower chat reads better than one running under them.
   const aloneObstacle =
@@ -254,6 +261,27 @@ export function FactoryWorkspacePanel(props: {
             </div>,
           ];
     });
+  const teamCards =
+    view.teams.length === 0
+      ? []
+      : [
+          // On the details card's text column, titled like its sections.
+          <h3
+            key="teams-heading"
+            className="-mb-1 px-4.5 text-2xs font-medium text-muted-foreground select-none"
+          >
+            Teams
+          </h3>,
+          ...view.teams.map((team) => (
+            <TeamCard
+              key={team.assignment.id}
+              environmentId={props.environmentId}
+              threadId={props.threadId}
+              team={team}
+              onOpen={open}
+            />
+          )),
+        ];
   const edge = column?.edge === "left" ? { left: GAP } : { right: GAP };
   const slide = column?.edge !== "left" && topInset > 0 ? FIND_BAR_SLIDE_CLASS : null;
   return (
@@ -272,14 +300,22 @@ export function FactoryWorkspacePanel(props: {
           {renderEntries(stack.above)}
         </nav>
       ) : null}
-      {column !== null && stack.below.length > 0 ? (
+      {column !== null && (stack.below.length > 0 || (teamsInColumn && teamCards.length > 0)) ? (
         <div
           ref={setBelow}
           className={cn("absolute z-20", slide)}
           style={{ ...edge, top: belowTop, width: THREAD_DETAILS_CARD_WIDTH, maxHeight: belowRoom }}
+          data-factory-workspace-panel
         >
           <ScrollArea scrollFade className="max-h-[inherit]">
-            <div className="flex flex-col gap-3">{renderEntries(stack.below)}</div>
+            <div className="flex flex-col gap-3">
+              {renderEntries(stack.below)}
+              {teamsInColumn && teamCards.length > 0 ? (
+                <aside aria-label="Manager teams" className="contents">
+                  {teamCards}
+                </aside>
+              ) : null}
+            </div>
           </ScrollArea>
         </div>
       ) : null}
@@ -296,17 +332,7 @@ export function FactoryWorkspacePanel(props: {
           data-factory-workspace-panel
         >
           <ScrollArea scrollFade className="h-full">
-            <div className="flex flex-col gap-3">
-              {view.teams.map((team) => (
-                <TeamCard
-                  key={team.assignment.id}
-                  environmentId={props.environmentId}
-                  threadId={props.threadId}
-                  team={team}
-                  onOpen={open}
-                />
-              ))}
-            </div>
+            <div className="flex flex-col gap-3">{teamCards}</div>
           </ScrollArea>
         </aside>
       ) : null}
@@ -321,28 +347,51 @@ function TeamCard(props: {
   readonly onOpen: (threadId: ThreadId) => void;
 }) {
   const { assignment, threads } = props.team;
+  const asks = assignment.protectedPathAsks ?? [];
   return (
-    <section aria-label={assignment.title} className={FACTORY_CARD_CLASS}>
-      <h3 className="line-clamp-2 px-3.5 pt-3 pb-1 text-2xs font-medium text-muted-foreground select-none">
-        {assignment.title}
-      </h3>
-      <ul className="m-0 flex list-none flex-col px-2 pb-2">
-        {threads.map((thread) => (
-          <TeamThreadRow
-            key={thread.threadId}
-            environmentId={props.environmentId}
-            threadId={thread.threadId}
-            label={factoryMemberLabel(thread)}
-            current={thread.threadId === props.threadId}
-            onOpen={() => props.onOpen(thread.threadId)}
-          />
-        ))}
-      </ul>
+    <section aria-label={assignment.title} className={`${FACTORY_CARD_CLASS} p-2`}>
+      <div className="px-2.5 py-1.5 select-none">
+        <Tooltip>
+          <TooltipTrigger render={<h3 className="line-clamp-2 text-sm font-medium break-words" />}>
+            {assignment.title}
+          </TooltipTrigger>
+          <TooltipPopup side="left">{assignment.title}</TooltipPopup>
+        </Tooltip>
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <FactoryStateDot state={assignment.state} />
+          <span className="min-w-0 truncate">
+            {FACTORY_ASSIGNMENT_STATE_LABEL[assignment.state]} ·{" "}
+            {threads.length === 0
+              ? "No threads yet"
+              : `${threads.length} ${threads.length === 1 ? "thread" : "threads"}`}
+          </span>
+        </p>
+      </div>
+      {/* Asks wait on the user, so they come before the threads that raised them. */}
       <FactoryProtectedPathAsks
         environmentId={props.environmentId}
         assignmentId={assignment.id}
-        asks={assignment.protectedPathAsks ?? []}
+        asks={asks}
       />
+      {threads.length === 0 ? null : (
+        <ul
+          className={cn(
+            "m-0 flex list-none flex-col",
+            asks.length > 0 && "mt-1 border-t border-border/65 pt-1",
+          )}
+        >
+          {threads.map((thread) => (
+            <TeamThreadRow
+              key={thread.threadId}
+              environmentId={props.environmentId}
+              threadId={thread.threadId}
+              label={factoryMemberLabel(thread)}
+              current={thread.threadId === props.threadId}
+              onOpen={() => props.onOpen(thread.threadId)}
+            />
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
@@ -356,7 +405,7 @@ function TeamThreadRow(props: {
 }) {
   const shell = useThreadShell(scopeThreadRef(props.environmentId, props.threadId));
   const status = shell ? resolveThreadStatusPill({ thread: shell }) : null;
-  const title = shell?.title ?? "Thread";
+  const text = factoryTeamRowText(shell?.title, props.label);
   return (
     <li className={props.current ? CURRENT_ROW_CLASS : undefined}>
       <ThreadDetailsControl
@@ -364,12 +413,18 @@ function TeamThreadRow(props: {
         aria-current={props.current ? "page" : undefined}
         onClick={props.onOpen}
       >
-        {/* Held open so an idle thread's title keeps the same left edge as a working one's. */}
-        <span className="flex size-3.5 shrink-0 items-center justify-center">
-          {status ? <ThreadStatusLabel status={status} compact /> : null}
+        {/* A dot only when the thread has a state; an idle one shows the agent icon instead. */}
+        <span className="flex size-4 shrink-0 items-center justify-center">
+          {status ? (
+            <ThreadStatusLabel status={status} compact />
+          ) : (
+            <BotIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+          )}
         </span>
-        <span className="min-w-0 flex-1 truncate">{title}</span>
-        <span className="shrink-0 text-2xs text-muted-foreground">{props.label}</span>
+        <span className="min-w-0 flex-1 truncate">{text.title}</span>
+        {text.label === null ? null : (
+          <span className="shrink-0 text-xs font-normal text-muted-foreground">{text.label}</span>
+        )}
       </ThreadDetailsControl>
     </li>
   );

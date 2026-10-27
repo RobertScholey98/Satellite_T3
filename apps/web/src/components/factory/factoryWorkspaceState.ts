@@ -38,10 +38,12 @@ import {
   type FactoryMergeRow,
 } from "./factoryMergeLogic";
 import {
+  factoryHiddenMembers,
   factoryMemberThreadKeys,
   factoryWorkspacePlace,
   isLiveAssignment,
   resolveFactoryWorkspaceView,
+  type FactoryHiddenMember,
   type FactoryWorkspacePlace,
 } from "./factoryWorkspaceLogic";
 
@@ -104,6 +106,12 @@ const memberThreadKeysAtom = Atom.make((get) => {
     ? previous
     : next;
 }).pipe(Atom.withLabel("web-factory-member-thread-keys"));
+
+const hiddenMembersAtom = Atom.make((get) => {
+  const next = factoryHiddenMembers(get(workspaceFeedsAtom));
+  const previous = Option.getOrNull(get.self<ReadonlyArray<FactoryHiddenMember>>());
+  return previous !== null && JSON.stringify(previous) === JSON.stringify(next) ? previous : next;
+}).pipe(Atom.withLabel("web-factory-hidden-members"));
 
 const managerWaitingAtom = Atom.family((threadKey: string) =>
   Atom.make((get) => {
@@ -215,6 +223,11 @@ export function useFactoryWorkspaceFeed(
 /** Scoped keys of lead and team threads that belong in a manager's workspace, not the sidebar. */
 export function useFactoryMemberThreadKeys(): ReadonlySet<string> {
   return useAtomValue(memberThreadKeysAtom);
+}
+
+/** The threads `useFactoryMemberThreadKeys` hides, with their projects, for the Settled count. */
+export function useFactoryHiddenMembers(): ReadonlyArray<FactoryHiddenMember> {
+  return useAtomValue(hiddenMembersAtom);
 }
 
 /** Assignments waiting on the user, for a manager's thread; 0 for any other thread. */

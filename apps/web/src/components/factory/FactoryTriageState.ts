@@ -15,6 +15,8 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { factoryManagerRunningLabel } from "./FactoryPageStats";
+
 /** The Retro triage column's droppable id; no remote column can have it. */
 export const RETRO_TRIAGE_COLUMN_ID = "satellite:retro-triage";
 
@@ -97,9 +99,52 @@ export function managerStatusText(
     case "retired":
       return `${name} retired`;
     case "active":
-      return cap === null
-        ? `${name} · ${running} running`
-        : `${name} · ${running} of ${cap} running`;
+      return `${name} · ${factoryManagerRunningLabel(running, cap ?? undefined)}`;
+  }
+}
+
+/** The status dot's meaning: working, waiting to start, or stopped. */
+export function managerStatusTone(state: FactoryManager["state"]): "success" | "info" | "muted" {
+  switch (state) {
+    case "active":
+    case "ready":
+      return "success";
+    case "onboarding":
+      return "info";
+    case "manager-paused":
+    case "project-paused":
+    case "retired":
+      return "muted";
+  }
+}
+
+export type ManagerStatusAction = "pause-manager" | "pause-project" | "resume";
+
+/**
+ * The status menu's state changes, offering only what changes something: a paused manager can
+ * resume or also pause its teams; a manager paused with its teams can only resume, and the server
+ * refuses to pause a retired one.
+ */
+export function managerStatusActions(
+  state: FactoryManager["state"],
+): ReadonlyArray<{ readonly action: ManagerStatusAction; readonly label: string }> {
+  switch (state) {
+    case "manager-paused":
+      return [
+        { action: "resume", label: "Resume" },
+        { action: "pause-project", label: "Pause its teams too" },
+      ];
+    case "project-paused":
+      return [{ action: "resume", label: "Resume" }];
+    case "retired":
+      return [];
+    case "onboarding":
+    case "ready":
+    case "active":
+      return [
+        { action: "pause-manager", label: "Pause manager" },
+        { action: "pause-project", label: "Pause manager and teams" },
+      ];
   }
 }
 
@@ -128,20 +173,16 @@ export function latestTicketDecision(
   );
 }
 
-const sentence = (text: string) => {
-  const trimmed = text.trim();
-  if (trimmed === "") return "";
-  // "Skipped at 14:02: changes the layout." reads as one sentence; "API" stays as written.
-  const lowered = /^[A-Z][a-z]/.test(trimmed)
-    ? trimmed.charAt(0).toLowerCase() + trimmed.slice(1)
-    : trimmed;
-  return /[.!?]$/.test(lowered) ? lowered : `${lowered}.`;
-};
+export function decisionVerb(entry: FactoryLogEntry): "Skipped" | "Picked up" {
+  return entry.kind === "skip" ? "Skipped" : "Picked up";
+}
 
-export function decisionSentence(entry: FactoryLogEntry, time: string): string {
-  const verb = entry.kind === "skip" ? "Skipped" : "Picked up";
-  const reason = sentence(entry.reason);
-  return reason === "" ? `${verb} at ${time}.` : `${verb} at ${time}: ${reason}`;
+/** The decision's reason as a sentence of its own, or "" when the manager gave none. */
+export function decisionReason(entry: FactoryLogEntry): string {
+  const trimmed = entry.reason.trim();
+  if (trimmed === "") return "";
+  const capital = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+  return /[.!?]$/.test(capital) ? capital : `${capital}.`;
 }
 
 /** One line per non-empty line of the text, for acceptance criteria edited as a list. */
@@ -172,7 +213,7 @@ const presetText = (preset: FactoryTeamPreset) =>
 const modelsText = (list: FactoryModelList) => {
   const named = list.models.map((model) => `${model.driver}/${model.model}`).join(", ");
   if (list.dynamic)
-    return named === "" ? "any pool model, picked per task" : `${named} (picked per task)`;
+    return named === "" ? "any pool model, chosen per task" : `${named} (chosen per task)`;
   return named === "" ? "any pool model" : `${named} (in this order)`;
 };
 

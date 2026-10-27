@@ -8,7 +8,7 @@ import type {
 } from "@t3tools/contracts";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { Link } from "@tanstack/react-router";
-import { MoreHorizontalIcon } from "lucide-react";
+import { ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
@@ -17,8 +17,15 @@ import { useProjects } from "~/state/entities";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { SettingsRow, SettingsSection } from "../settings/settingsLayout";
 import { UsageShareBar } from "../usage/UsageShareBar";
@@ -35,6 +42,7 @@ import { effectiveManagerCap } from "./factoryManagerSettings.logic";
 import {
   type FactoryTeamRow,
   factoryAssignmentTokens,
+  factoryManagerRunningLabel,
   factoryRoleTokenSegments,
   factoryStatsSinceDay,
   factoryTeamRows,
@@ -55,13 +63,13 @@ function failureMessage<A, E>(result: AtomCommandResult<A, E>): string | null {
 
 const STATE_BADGES: Record<
   Exclude<FactoryManager["state"], "retired">,
-  { readonly label: string; readonly variant: "info" | "success" | "warning" }
+  { readonly label: string; readonly dot: string }
 > = {
-  onboarding: { label: "Onboarding", variant: "info" },
-  ready: { label: "Ready", variant: "info" },
-  active: { label: "Active", variant: "success" },
-  "manager-paused": { label: "Paused", variant: "warning" },
-  "project-paused": { label: "Paused with teams", variant: "warning" },
+  onboarding: { label: "Onboarding", dot: "bg-info" },
+  ready: { label: "Ready", dot: "bg-muted-foreground" },
+  active: { label: "Active", dot: "bg-success" },
+  "manager-paused": { label: "Paused", dot: "bg-muted-foreground" },
+  "project-paused": { label: "Paused with teams", dot: "bg-muted-foreground" },
 };
 
 /** How the factory is doing on one environment: managers, triage waiting on you, and teams. */
@@ -152,7 +160,8 @@ function FactoryManagersSection({
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="min-w-0 truncate">{manager.name}</span>
                   {state ? (
-                    <Badge size="sm" variant={state.variant}>
+                    <Badge variant="outline">
+                      <span aria-hidden className={cn("size-1.5 rounded-full", state.dot)} />
                       {state.label}
                     </Badge>
                   ) : null}
@@ -160,9 +169,7 @@ function FactoryManagersSection({
               }
               description={[
                 projectTitle(manager.projectId),
-                cap === undefined
-                  ? `${manager.activeAssignments} running`
-                  : `${manager.activeAssignments} of ${cap} running`,
+                factoryManagerRunningLabel(manager.activeAssignments, cap),
                 manager.waitingOnYou > 0 ? `${manager.waitingOnYou} waiting on you` : null,
               ]
                 .filter((part) => part !== null)
@@ -171,7 +178,7 @@ function FactoryManagersSection({
                 <>
                   {manager.threadId ? (
                     <Button
-                      size="xs"
+                      size="sm"
                       variant="outline"
                       render={
                         <Link
@@ -187,7 +194,7 @@ function FactoryManagersSection({
                     <MenuTrigger
                       aria-label={`${manager.name} actions`}
                       disabled={busy === manager.id}
-                      render={<Button size="icon-xs" variant="ghost-muted" />}
+                      render={<Button size="icon-sm" variant="ghost-muted" />}
                     >
                       <MoreHorizontalIcon className="size-3.5" />
                     </MenuTrigger>
@@ -304,7 +311,7 @@ function FactoryTriageSection({
             description={count === 1 ? "1 Retro triage card" : `${count} Retro triage cards`}
             control={
               <Button
-                size="xs"
+                size="sm"
                 variant="outline"
                 render={<Link to="/issues" search={{ environmentId, projectId, mode: "board" }} />}
               >
@@ -326,6 +333,53 @@ const PERIODS = [
 ] as const;
 
 const ALL = "all";
+
+const COMPLEXITY_OPTIONS = [
+  { value: ALL, label: "Any size" },
+  { value: "small", label: "Small" },
+  { value: "medium", label: "Medium" },
+  { value: "large", label: "Large" },
+];
+
+/** A content-width filter, built like the scope pickers on upstream's Settings pages. */
+function FactoryFilterMenu({
+  ariaLabel,
+  value,
+  options,
+  onChange,
+}: {
+  readonly ariaLabel: string;
+  readonly value: string;
+  readonly options: ReadonlyArray<{ readonly value: string; readonly label: string }>;
+  readonly onChange: (next: string) => void;
+}) {
+  const label = options.find((option) => option.value === value)?.label ?? options[0]!.label;
+  return (
+    <Menu>
+      <MenuTrigger
+        aria-label={`${ariaLabel}: ${label}`}
+        render={<Button variant="outline" size="sm" />}
+        className="min-w-0 max-w-56"
+      >
+        <span className="min-w-0 truncate">{label}</span>
+        <ChevronDownIcon
+          aria-hidden
+          strokeWidth={1.75}
+          className="-me-0.5 size-3.5 shrink-0 text-muted-foreground opacity-70"
+        />
+      </MenuTrigger>
+      <MenuPopup align="end">
+        <MenuRadioGroup value={value} onValueChange={(next) => onChange(next as string)}>
+          {options.map((option) => (
+            <MenuRadioItem key={option.value} value={option.value}>
+              {option.label}
+            </MenuRadioItem>
+          ))}
+        </MenuRadioGroup>
+      </MenuPopup>
+    </Menu>
+  );
+}
 
 function FactoryTeamsStats({
   environmentId,
@@ -376,48 +430,25 @@ function FactoryTeamsStats({
   const selected = rows.find((row) => row.team === selectedTeam) ?? null;
 
   return (
-    <section className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-3 sm:px-4">
-        <h2 className="text-sm font-normal text-foreground/70">Teams</h2>
-        <div className="flex flex-wrap items-center gap-2">
-          <Select
+    <SettingsSection
+      title="Teams"
+      headerAction={
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <FactoryFilterMenu
+            ariaLabel="Project"
             value={projectId ?? ALL}
-            onValueChange={(next) => setProjectId(next === ALL ? null : (next as ProjectId))}
-          >
-            <SelectTrigger size="xs" aria-label="Project">
-              <SelectValue>
-                {(value: string) => (value === ALL ? "All projects" : projectTitle(value))}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              <SelectItem value={ALL}>All projects</SelectItem>
-              {projects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  {project.title}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-          <Select
+            options={[
+              { value: ALL, label: "All projects" },
+              ...projects.map((project) => ({ value: project.id as string, label: project.title })),
+            ]}
+            onChange={(next) => setProjectId(next === ALL ? null : (next as ProjectId))}
+          />
+          <FactoryFilterMenu
+            ariaLabel="Complexity"
             value={complexity ?? ALL}
-            onValueChange={(next) =>
-              setComplexity(next === ALL ? null : (next as FactoryComplexity))
-            }
-          >
-            <SelectTrigger size="xs" aria-label="Complexity">
-              <SelectValue>
-                {(value: string) =>
-                  value === ALL ? "Any size" : `${value[0]!.toUpperCase()}${value.slice(1)}`
-                }
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              <SelectItem value={ALL}>Any size</SelectItem>
-              <SelectItem value="small">Small</SelectItem>
-              <SelectItem value="medium">Medium</SelectItem>
-              <SelectItem value="large">Large</SelectItem>
-            </SelectPopup>
-          </Select>
+            options={COMPLEXITY_OPTIONS}
+            onChange={(next) => setComplexity(next === ALL ? null : (next as FactoryComplexity))}
+          />
           <ToggleGroup
             aria-label="Period"
             variant="segmented"
@@ -434,25 +465,28 @@ function FactoryTeamsStats({
             ))}
           </ToggleGroup>
         </div>
-      </div>
-      <p className="px-3 text-xs text-muted-foreground sm:px-4">
-        Medians per finished assignment; recoveries and review rounds are averages. Token totals
-        across providers are approximate.
-      </p>
-      {error?.key === filterKey ? (
-        <p role="alert" className="px-3 text-sm text-destructive sm:px-4">
-          {error.message}
+      }
+    >
+      <div className="space-y-1 px-3 py-3 sm:px-4">
+        <p className="text-xs text-muted-foreground">
+          Medians per finished assignment; recoveries and review rounds are averages. Token totals
+          across providers are approximate.
         </p>
-      ) : null}
+        {error?.key === filterKey ? (
+          <p role="alert" className="text-sm text-destructive">
+            {error.message}
+          </p>
+        ) : null}
+      </div>
       <div
-        className="overflow-x-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className="overflow-x-auto px-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-4"
         role="region"
         aria-label="Team stats"
         tabIndex={0}
       >
         <table className="w-full text-sm whitespace-nowrap">
           <thead>
-            <tr className="border-b border-border text-right text-xs text-muted-foreground">
+            <tr className="border-b border-border/50 text-right text-xs text-muted-foreground">
               <th className="w-full py-2 text-left font-normal">Team</th>
               <th className="py-2 pl-4 font-normal">Tasks</th>
               <th className="py-2 pl-4 font-normal">Agent time</th>
@@ -464,7 +498,7 @@ function FactoryTeamsStats({
               <th className="py-2 pl-4 font-normal">Review rounds</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-border/50">
             {result === null ? (
               <tr>
                 <td colSpan={9} className="py-6 text-center text-muted-foreground">
@@ -482,7 +516,7 @@ function FactoryTeamsStats({
                 <tr
                   key={row.team}
                   className={cn(
-                    "relative border-b border-border/50 text-right text-muted-foreground tabular-nums transition-colors hover:bg-muted/50 has-focus-visible:bg-muted/50",
+                    "relative text-right text-muted-foreground tabular-nums transition-colors hover:bg-muted/50 has-focus-visible:bg-muted/50",
                     row.team === selected?.team && "bg-muted/50",
                   )}
                 >
@@ -491,12 +525,12 @@ function FactoryTeamsStats({
                       type="button"
                       aria-pressed={row.team === selected?.team}
                       onClick={() => setSelectedTeam(row.team === selected?.team ? null : row.team)}
-                      className="text-left text-foreground outline-none after:absolute after:inset-0"
+                      className="text-left font-medium text-foreground outline-none after:absolute after:inset-0"
                     >
                       {row.label}
                     </button>
                   </td>
-                  <td className="py-2.5 pl-4 text-foreground">{row.tasks}</td>
+                  <td className="py-2.5 pl-4">{row.tasks}</td>
                   <td className="py-2.5 pl-4">{formatFactoryDuration(row.medianAgentMs)}</td>
                   <td className="py-2.5 pl-4">{formatFactoryDuration(row.medianWallMs)}</td>
                   <td className="py-2.5 pl-4">{formatFactoryTokens(row.medianTokens)}</td>
@@ -517,7 +551,7 @@ function FactoryTeamsStats({
           projectTitle={projectTitle}
         />
       ) : null}
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -532,7 +566,7 @@ function FactoryTeamDetail({
 }) {
   const assignments = useFactoryAssignments(environmentId);
   return (
-    <div className="flex flex-col gap-4 px-3 sm:px-4">
+    <div className="flex flex-col gap-4 px-3 py-3 sm:px-4">
       <UsageShareBar
         label={`${row.label}: tokens by role`}
         segments={factoryRoleTokenSegments(row.assignments)}

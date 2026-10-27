@@ -8,12 +8,27 @@ import {
   issueReadyColumnIds,
   type ProjectId,
 } from "@t3tools/contracts";
-import { XIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  GaugeIcon,
+  InboxIcon,
+  type LucideIcon,
+  ScrollTextIcon,
+  ShieldIcon,
+  TargetIcon,
+  UsersRoundIcon,
+  XIcon,
+} from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { randomUUID } from "~/lib/utils";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { issuesEnvironment } from "../work/issuesState";
+import { ThreadDetailsControl } from "../chat/ThreadDetailsControl";
+import {
+  THREAD_DETAILS_PANEL_CHEVRON_CLASS,
+  THREAD_DETAILS_PANEL_ICON_CLASS,
+} from "../chat/threadDetailsPanelStyles";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { Input } from "../ui/input";
@@ -109,11 +124,14 @@ function ManagerSettings(props: {
         : `${column.title} on ${column.boardTitle}`;
   const shown = draft === null ? result : managerSettingsResult(result, draft);
   const cap = environmentCap === undefined ? null : effectiveManagerCap(shown, environmentCap);
+  const capText =
+    cap === null
+      ? String(shown.concurrencyCap)
+      : `Runs up to ${cap.cap} at once${cap.limitedByEnvironment ? `; the environment's cap of ${cap.cap} is the lower one.` : "."}`;
   const capNote =
     cap === null ? null : (
-      <p className="text-2xs text-muted-foreground">
-        Runs up to {cap.cap} at once
-        {cap.limitedByEnvironment ? `; the environment's cap of ${cap.cap} is the lower one.` : "."}
+      <p className="text-xs text-muted-foreground">
+        {capText}
         {draft !== null && running > shown.concurrencyCap
           ? ` ${running} are running now: lowering the cap cancels none of them, and new work waits for room.`
           : null}
@@ -148,63 +166,91 @@ function ManagerSettings(props: {
   };
 
   if (draft === null) {
+    const pickupLabels =
+      result.pickup.labels.length === 0
+        ? "Any label"
+        : `Labels: ${result.pickup.labels.join(", ")}`;
     return (
-      <section aria-label="Manager settings" className={`${FACTORY_CARD_CLASS} space-y-2 p-3.5`}>
-        <div className="flex items-center gap-2">
-          <h3 className="flex-1 text-2xs font-medium text-muted-foreground select-none">
-            Settings
-          </h3>
-          <Button variant="ghost" size="xs" disabled={!canEdit} onClick={edit}>
+      <section aria-label="Manager settings" className={`${FACTORY_CARD_CLASS} p-2`}>
+        <CardHeading title="Settings">
+          <Button variant="outline" size="xs" disabled={!canEdit} onClick={edit}>
             Edit
           </Button>
-        </div>
+        </CardHeading>
         {paused ? (
-          <p className="text-2xs text-muted-foreground">
+          <p className="px-2.5 pb-1 text-xs text-muted-foreground">
             Paused. Changes you save apply when the manager resumes.
           </p>
         ) : null}
-        <dl className="space-y-1.5 text-xs">
-          {result.purpose === "" ? null : <Row term="Purpose">{result.purpose}</Row>}
-          <Row term="Pickup">
-            {result.pickup.enabled ? result.pickup.columns.map(columnLabel).join(", ") : "Off"}
-            {result.pickup.enabled ? (
-              <span className="block text-muted-foreground">
-                {result.pickup.labels.length === 0
-                  ? "Any label"
-                  : `Labels: ${result.pickup.labels.join(", ")}`}
-                {result.pickup.guidance === "" ? null : ` · ${result.pickup.guidance}`}
-              </span>
-            ) : null}
-          </Row>
-          <Row term="Concurrency cap">
-            {result.concurrencyCap}
-            {capNote}
-          </Row>
-          <Row term="Teams">
-            {result.teamIds.length === 0
-              ? "All teams"
-              : result.teamIds
-                  .map((id) => teams.find((team) => team.id === id)?.name ?? id)
-                  .join(", ")}
-          </Row>
-          <Row term="Protected paths">
-            {result.controlPaths.length === 0
-              ? "None"
-              : result.controlPaths.map((entry) => (
-                  <span key={entry.path} className="block">
-                    <code className="break-all">{entry.path}</code>
+        <dl className="m-0">
+          {result.purpose === "" ? null : (
+            <Row icon={TargetIcon} term="Purpose" detail={result.purpose} />
+          )}
+          <Row
+            icon={InboxIcon}
+            term="Pickup"
+            detail={
+              result.pickup.enabled
+                ? [
+                    result.pickup.columns.map(columnLabel).join(", "),
+                    pickupLabels,
+                    result.pickup.guidance,
+                  ]
+                    .filter((part) => part !== "")
+                    .join(" · ")
+                : "Off"
+            }
+          />
+          <Row icon={GaugeIcon} term="Concurrency cap" detail={capText} />
+          <Row
+            icon={UsersRoundIcon}
+            term="Teams"
+            detail={
+              result.teamIds.length === 0
+                ? "All teams"
+                : result.teamIds
+                    .map((id) => teams.find((team) => team.id === id)?.name ?? id)
+                    .join(", ")
+            }
+          />
+        </dl>
+        {/* The lists open in place, so they sit apart from the settings, as the details card's groups do. */}
+        <div className="-mx-2 mt-1 border-t border-border/65 px-2 pt-1">
+          {result.controlPaths.length === 0 ? (
+            <dl className="m-0">
+              <Row icon={ShieldIcon} term="Protected paths" detail="None" />
+            </dl>
+          ) : (
+            <Disclosure
+              icon={ShieldIcon}
+              label="Protected paths"
+              count={result.controlPaths.length}
+            >
+              <ul className="m-0 list-none py-1 ps-9 pe-2.5">
+                {result.controlPaths.map((entry) => (
+                  <li key={entry.path} className="py-0.5 text-xs break-words">
+                    <code>{breakAtSlashes(entry.path)}</code>
                     {entry.reason === "" ? null : (
                       <span className="text-muted-foreground"> · {entry.reason}</span>
                     )}
-                  </span>
+                  </li>
                 ))}
-          </Row>
-          {result.rules.map((rule) => (
-            <Row key={rule.id} term={rule.question}>
-              {rule.answer}
-            </Row>
-          ))}
-        </dl>
+              </ul>
+            </Disclosure>
+          )}
+          {result.rules.length === 0 ? null : (
+            <Disclosure icon={ScrollTextIcon} label="Project rules" count={result.rules.length}>
+              <dl className="m-0 divide-y divide-border/65 ps-9 pe-2.5">
+                {result.rules.map((rule) => (
+                  <div key={rule.id} className="space-y-0.5 py-2">
+                    <dt className="text-sm font-medium text-foreground/80">{rule.question}</dt>
+                    <dd className="m-0 text-xs text-muted-foreground">{rule.answer}</dd>
+                  </div>
+                ))}
+              </dl>
+            </Disclosure>
+          )}
+        </div>
       </section>
     );
   }
@@ -224,7 +270,7 @@ function ManagerSettings(props: {
   };
   return (
     <section aria-label="Manager settings" className={`${FACTORY_CARD_CLASS} space-y-3 p-3.5`}>
-      <h3 className="text-2xs font-medium text-muted-foreground select-none">Settings</h3>
+      <h3 className="text-sm font-semibold select-none">Settings</h3>
       <Field title="Purpose">
         <Textarea
           aria-label="Purpose"
@@ -422,11 +468,65 @@ function ManagerSettings(props: {
   );
 }
 
-function Row(props: { readonly term: string; readonly children: ReactNode }) {
+/** Lets a long path wrap after a slash rather than mid-name. */
+function breakAtSlashes(path: string): ReactNode {
+  const pieces: ReactNode[] = [];
+  let prefix: string | null = null;
+  for (const part of path.split("/")) {
+    if (prefix !== null) pieces.push(<wbr key={prefix} />);
+    pieces.push(prefix === null ? part : `/${part}`);
+    prefix = prefix === null ? part : `${prefix}/${part}`;
+  }
+  return pieces;
+}
+
+/** The card's title row, on the details card's text column. */
+function CardHeading(props: { readonly title: string; readonly children?: ReactNode }) {
+  return (
+    <div className="flex min-h-8 items-center gap-2 px-2.5">
+      <h3 className="min-w-0 flex-1 truncate text-sm font-semibold select-none">{props.title}</h3>
+      {props.children}
+    </div>
+  );
+}
+
+/** A setting on the details card's row anatomy: icon, label, and its value below. */
+function Row(props: { readonly icon: LucideIcon; readonly term: string; readonly detail: string }) {
+  const Icon = props.icon;
+  return (
+    <div className="flex gap-2.5 px-2.5 py-1.5">
+      <Icon aria-hidden className={`${THREAD_DETAILS_PANEL_ICON_CLASS} mt-px`} />
+      <div className="min-w-0 flex-1">
+        <dt className="text-sm font-medium text-foreground/80">{props.term}</dt>
+        <dd className="m-0 text-xs text-muted-foreground">{props.detail}</dd>
+      </div>
+    </div>
+  );
+}
+
+/** A long setting folded to a count, opened in place like the details card's agent groups. */
+function Disclosure(props: {
+  readonly icon: LucideIcon;
+  readonly label: string;
+  readonly count: number;
+  readonly children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const Icon = props.icon;
   return (
     <div>
-      <dt className="text-2xs text-muted-foreground">{props.term}</dt>
-      <dd className="m-0 text-foreground/80">{props.children}</dd>
+      <ThreadDetailsControl aria-expanded={open} onClick={() => setOpen(!open)}>
+        <Icon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+        <span className="min-w-0 flex-1 truncate">{props.label}</span>
+        <span className="shrink-0 text-xs font-normal tabular-nums text-muted-foreground">
+          {props.count}
+        </span>
+        <ChevronDownIcon
+          aria-hidden
+          className={`${THREAD_DETAILS_PANEL_CHEVRON_CLASS} ${open ? "" : "-rotate-90"}`}
+        />
+      </ThreadDetailsControl>
+      {open ? props.children : null}
     </div>
   );
 }
@@ -434,7 +534,7 @@ function Row(props: { readonly term: string; readonly children: ReactNode }) {
 function Field(props: { readonly title: string; readonly children: ReactNode }) {
   return (
     <div className="space-y-1.5">
-      <h4 className="text-xs font-medium text-muted-foreground">{props.title}</h4>
+      <h4 className="text-sm font-medium text-foreground/80">{props.title}</h4>
       {props.children}
     </div>
   );

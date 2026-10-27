@@ -18,7 +18,7 @@ export type FactoryMergeRowStatus =
   | "checks-missing"
   | "mergeability-unknown";
 
-export const FACTORY_MERGE_STATUS_LABEL: Record<Exclude<FactoryMergeRowStatus, "ready">, string> = {
+const FACTORY_MERGE_STATUS_LABEL: Record<Exclude<FactoryMergeRowStatus, "ready">, string> = {
   "in-progress": "In progress",
   "needs-rebase": "Needs rebase",
   "checks-failing": "Checks failing",
@@ -176,4 +176,20 @@ export function factoryMergeConfirmText(row: FactoryMergeRow): string | null {
     ...(held.length === 0 ? [] : [`The factory is holding it for: ${held.join(", ")}.`]),
     "Merging overrides the hold.",
   ].join("\n");
+}
+
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+/** The row's second line: its number and why it can or cannot merge yet. */
+export const factoryMergeRowDetail = (row: FactoryMergeRow) =>
+  `#${row.number} · ${row.status === "ready" ? "Ready to merge" : FACTORY_MERGE_STATUS_LABEL[row.status]}`;
+
+/**
+ * One line for the protected paths a pull request changes, or null when it changes none. An ask
+ * waiting on the user outranks the factory's own hold, since only the user can clear it.
+ */
+export function factoryMergeRowNote(row: FactoryMergeRow): string | null {
+  if (row.protectedPaths.length === 0) return null;
+  const paths = plural(row.protectedPaths.length, "protected path", "protected paths");
+  return row.awaitingAnswer.length > 0 ? `Waiting on you · ${paths}` : `Held · ${paths}`;
 }

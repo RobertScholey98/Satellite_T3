@@ -1,11 +1,15 @@
 import { useAtomValue } from "@effect/atom-react";
+import { CircleAlertIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 
 import { requestConfirmDialog } from "~/confirmDialog";
+import { cn } from "~/lib/utils";
 import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useUiStateStore } from "~/uiStateStore";
+import { THREAD_DETAILS_PANEL_ICON_CLASS } from "../chat/threadDetailsPanelStyles";
+import { PULL_REQUEST_STATE_PRESENTATION, PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { resolvePullRequestMergeMethod } from "../pullRequest/pullRequestDetail.logic";
 import {
   usePullRequestActionRunner,
@@ -13,10 +17,12 @@ import {
 } from "../pullRequest/usePullRequestActions";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
-  FACTORY_MERGE_STATUS_LABEL,
   factoryMergeConfirmText,
   factoryMergeHeldPaths,
+  factoryMergeRowDetail,
+  factoryMergeRowNote,
   type FactoryMergeRow,
 } from "./factoryMergeLogic";
 import { FACTORY_CARD_CLASS } from "./FactoryThreadStack";
@@ -34,11 +40,11 @@ export function FactoryMergeCard(props: {
   const rows = useFactoryMergeRows(props.environmentId, props.managerId);
   if (rows.length === 0) return null;
   return (
-    <section aria-label="Pull requests to merge" className={FACTORY_CARD_CLASS}>
-      <h3 className="px-3.5 pt-3 pb-1 text-2xs font-medium text-muted-foreground select-none">
+    <section aria-label="Pull requests to merge" className={`${FACTORY_CARD_CLASS} p-2`}>
+      <h3 className="flex min-h-8 items-center px-2.5 text-sm font-semibold select-none">
         Pull requests
       </h3>
-      <ul className="m-0 flex list-none flex-col gap-1 px-2 pb-2">
+      <ul className="m-0 flex list-none flex-col">
         {rows.map((row) => (
           <MergeRow key={row.key} environmentId={props.environmentId} row={row} />
         ))}
@@ -104,41 +110,77 @@ function MergeRow(props: { readonly environmentId: EnvironmentId; readonly row: 
     }
     await perform("merge");
   };
+  const title = row.title ?? row.repository;
+  const note = factoryMergeRowNote(row);
+  const ready = row.status === "ready" && !merging;
+  // Only a problem the team has to fix is red; waiting on checks is not.
+  const failing = row.status === "needs-rebase" || row.status === "checks-failing";
   return (
-    <li className="flex items-center gap-2 rounded-lg px-1.5 py-1">
+    <li className="flex items-start gap-2.5 rounded-lg px-2.5 py-1.5">
+      <PullRequestGlyph.pullRequest
+        aria-hidden
+        className={cn(
+          THREAD_DETAILS_PANEL_ICON_CLASS,
+          "mt-0.5",
+          ready && PULL_REQUEST_STATE_PRESENTATION.open.toneClassName,
+          failing && "text-destructive",
+        )}
+      />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-xs font-medium text-foreground/80">
-          <span className="text-muted-foreground">#{row.number}</span> {row.title ?? row.repository}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <p className="line-clamp-2 text-sm font-medium break-words text-foreground/80" />
+            }
+          >
+            {title}
+          </TooltipTrigger>
+          <TooltipPopup side="left">
+            <p className="font-medium">{title}</p>
+            <p className="text-muted-foreground">For {row.assignmentTitle}</p>
+            {row.awaitingAnswer.length > 0 ? (
+              <p className="text-muted-foreground">
+                Waiting for your answer on the team's card: {row.awaitingAnswer.join(", ")}
+              </p>
+            ) : null}
+            {held.length > 0 ? (
+              <p className="text-muted-foreground">Held by the factory: {held.join(", ")}</p>
+            ) : null}
+          </TooltipPopup>
+        </Tooltip>
+        <p className="truncate text-xs text-muted-foreground">
+          {merging ? (
+            <>
+              #{row.number} · <span>Merging…</span>
+            </>
+          ) : (
+            factoryMergeRowDetail(row)
+          )}
         </p>
-        <p className="truncate text-2xs text-muted-foreground">{row.assignmentTitle}</p>
-        {row.awaitingAnswer.length > 0 ? (
-          <p className="text-2xs text-warning-foreground">
-            Protected paths waiting for your answer on the team's card:{" "}
-            {row.awaitingAnswer.join(", ")}
+        {note === null ? null : (
+          <p className="flex items-center gap-1 text-xs text-muted-foreground">
+            <CircleAlertIcon
+              aria-hidden
+              className={cn("size-3 shrink-0", row.awaitingAnswer.length > 0 && "text-info")}
+            />
+            <span className="truncate">{note}</span>
           </p>
-        ) : null}
-        {held.length > 0 ? (
-          <p className="text-2xs text-warning-foreground">Protected paths: {held.join(", ")}</p>
-        ) : null}
+        )}
       </div>
-      {merging ? (
-        <span className="shrink-0 text-2xs text-muted-foreground">Merging…</span>
-      ) : row.status === "ready" ? (
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={!canWrite || actionPending}
-          aria-label={`Merge #${row.number}`}
-          onClick={() => void merge()}
-        >
-          {actionPending ? <Spinner size="xs" /> : null}
-          Merge
-        </Button>
-      ) : (
-        <span className="shrink-0 text-2xs text-muted-foreground">
-          {FACTORY_MERGE_STATUS_LABEL[row.status]}
-        </span>
-      )}
+      {ready ? (
+        <div className="shrink-0 self-center">
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={!canWrite || actionPending}
+            aria-label={`Merge #${row.number}`}
+            onClick={() => void merge()}
+          >
+            {actionPending ? <Spinner size="xs" /> : null}
+            Merge
+          </Button>
+        </div>
+      ) : null}
     </li>
   );
 }

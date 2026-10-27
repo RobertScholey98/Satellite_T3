@@ -9,22 +9,17 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { useAtomCommand } from "~/state/use-atom-command";
-import { Button } from "../ui/button";
-import {
-  NumberField,
-  NumberFieldDecrement,
-  NumberFieldGroup,
-  NumberFieldIncrement,
-  NumberFieldInput,
-} from "../ui/number-field";
 import { SettingResetButton, SettingsRow, SettingsSection } from "../settings/settingsLayout";
 import { issuesEnvironment } from "../work/issuesState";
 import { FactoryConfigRepoSection } from "./FactoryConfigRepoSection";
 import { FactoryConfigShareSection } from "./FactoryConfigShareSection";
+import { FactoryCountField } from "./FactoryCountField";
 import { FactoryDefinitionsSection } from "./FactoryDefinitionsSection";
 import { FactoryInstancePreferences } from "./FactoryInstancePreferences";
 import type { FactoryModelOption } from "./FactoryPageConfig";
 import { FactoryPoolSection } from "./FactoryPoolSection";
+import { factorySectionSaveState } from "./factorySectionSave.logic";
+import { FactorySectionSaveActions } from "./FactorySectionSaveActions";
 import { FactoryTeamsFileSection } from "./FactoryTeamsFileSection";
 import { factoryEnvironment, factoryErrorMessage, unwrapFactoryResult } from "./factoryState";
 
@@ -129,17 +124,17 @@ export function FactoryPageConfiguration({
     <>
       <div className="flex flex-col gap-2 px-3 sm:px-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-base text-muted-foreground">Settings for {environmentLabel}</p>
-          <div className="flex items-center gap-2">
-            {draft !== null ? (
-              <Button size="sm" variant="ghost" disabled={saving} onClick={() => setDraft(null)}>
-                Discard
-              </Button>
-            ) : null}
-            <Button size="sm" disabled={disabled || draft === null} onClick={() => void save()}>
-              {saving ? "Saving…" : "Save"}
-            </Button>
-          </div>
+          <p className="text-sm text-muted-foreground">
+            Pickup and Behaviour apply to {environmentLabel}. The sections below save to the factory
+            config, each on its own.
+          </p>
+          <FactorySectionSaveActions
+            state={factorySectionSaveState(view?.environment ?? null, draft, saving)}
+            label="Save pickup and behaviour"
+            disabled={!canEdit}
+            onSave={() => void save()}
+            onDiscard={() => setDraft(null)}
+          />
         </div>
         {!canEdit ? (
           <p role="status" className="text-sm text-muted-foreground">
@@ -182,7 +177,7 @@ export function FactoryPageConfiguration({
               description="How many assignments run at once on this environment, across every project. Each manager's own limit, and which tickets it picks up, are set during onboarding."
               resetAction={resetFor("concurrencyCap", "concurrent assignments")}
               control={
-                <FactoryNumberControl
+                <FactoryCountField
                   label="Concurrent assignments"
                   value={config.concurrencyCap}
                   min={1}
@@ -236,44 +231,5 @@ export function FactoryPageConfiguration({
       <FactoryConfigRepoSection environmentId={environmentId} canEdit={canEdit} />
       <FactoryConfigShareSection environmentId={environmentId} canEdit={canEdit} />
     </>
-  );
-}
-
-function FactoryNumberControl({
-  label,
-  value,
-  min,
-  max,
-  disabled,
-  onChange,
-}: {
-  readonly label: string;
-  readonly value: number;
-  readonly min: number;
-  readonly max: number;
-  readonly disabled: boolean;
-  readonly onChange: (value: number) => void;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <NumberField
-        value={value}
-        min={min}
-        max={max}
-        size="sm"
-        className="w-32"
-        disabled={disabled}
-        onValueChange={(next) => {
-          if (next === null || !Number.isFinite(next)) return;
-          onChange(Math.min(max, Math.max(min, Math.round(next))));
-        }}
-      >
-        <NumberFieldGroup>
-          <NumberFieldDecrement aria-label={`Decrease ${label}`} />
-          <NumberFieldInput aria-label={label} />
-          <NumberFieldIncrement aria-label={`Increase ${label}`} />
-        </NumberFieldGroup>
-      </NumberField>
-    </div>
   );
 }

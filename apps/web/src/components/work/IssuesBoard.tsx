@@ -140,7 +140,6 @@ function BoardCardFrame({
   dragLabel,
   disabled,
   handle = true,
-  tinted = false,
   onOpen,
   children,
 }: {
@@ -149,8 +148,6 @@ function BoardCardFrame({
   readonly disabled: boolean;
   /** Without a handle the card cannot be dragged at all. */
   readonly handle?: boolean;
-  /** Factory findings are about the workflow, not the project, and look it. */
-  readonly tinted?: boolean;
   readonly onOpen: () => void;
   readonly children: ReactNode;
 }) {
@@ -165,14 +162,12 @@ function BoardCardFrame({
         transform: CSS.Translate.toString(transform),
         opacity: isDragging ? 0.5 : 1,
       }}
-      className={cn(
-        "flex gap-1 rounded-lg border p-3",
-        tinted
-          ? "border-info/32 bg-info/8 hover:bg-info/16"
-          : "border-border/60 bg-card/40 hover:bg-accent/40",
-      )}
+      className="flex gap-1 rounded-lg border border-border/60 bg-card/40 p-3 hover:bg-accent/40"
     >
-      {handle ? (
+      {/* A card that can't be dragged keeps the handle's width, so its text lines up with the rest. */}
+      {!handle ? (
+        <span aria-hidden className="w-3.5 shrink-0" />
+      ) : (
         <button
           type="button"
           {...listeners}
@@ -182,7 +177,7 @@ function BoardCardFrame({
         >
           <GripVerticalIcon className="size-3.5" />
         </button>
-      ) : null}
+      )}
       <button
         type="button"
         onClick={onOpen}
@@ -249,12 +244,13 @@ function TriageCard({
       dragLabel={`Drag finding ${draft.title}`}
       disabled={disabled}
       handle={!isFactory && draft.state === "pending"}
-      tinted={isFactory}
       onOpen={() => onOpen(draft.id)}
     >
       <span className="flex items-center gap-2 text-xs text-muted-foreground">
-        {isFactory ? <FactoryIcon className="size-3.5" /> : null}
-        {isFactory ? "Factory finding" : "Retro finding"}
+        <span className="flex items-center gap-1.5">
+          {isFactory ? <FactoryIcon aria-hidden className="size-3.5" /> : null}
+          {isFactory ? "Factory finding" : "Retro finding"}
+        </span>
         {draft.state === "dismissed" ? (
           <Badge size="sm" variant="outline">
             Dismissed

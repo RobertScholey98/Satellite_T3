@@ -1264,8 +1264,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     prBadge === null &&
     diff === null &&
     !isRemote &&
-    runningTerminalIds.length === 0 &&
-    factoryWaitingCount === 0;
+    runningTerminalIds.length === 0;
 
   return (
     <li
@@ -1468,6 +1467,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
                   Regenerating title
+                </span>
+              ) : null}
+              {metaLineEmpty && factoryWaitingCount > 0 ? (
+                <span className="hidden shrink-0 redesign:inline-flex">
+                  <FactoryWorkspaceWaitingCount count={factoryWaitingCount} />
                 </span>
               ) : null}
               {metaLineEmpty ? (

@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type {
   EnvironmentId,
+  FactoryAssignmentState,
   FactoryWorkspaceAssignment,
   FactoryWorkspaceManager,
   ThreadId,
@@ -30,7 +31,10 @@ import {
   factoryErrorMessage,
   unwrapFactoryResult,
 } from "./factoryState";
+import { factoryManagerRunningLabel } from "./FactoryPageStats";
 import { useFactoryLeadActions } from "./FactoryThreadActions";
+import { managerStatusActions } from "./FactoryTriageState";
+import { FactoryStateDot } from "./FactoryStateDot";
 import {
   describePickupDecision,
   FACTORY_ASSIGNMENT_STATE_LABEL,
@@ -75,7 +79,8 @@ export function FactoryThreadRow(props: {
           <FactoryRowLayout
             icon={<UsersRoundIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
             title={`${factoryMemberLabel(place.member)} for ${place.assignment?.title ?? place.manager.name}`}
-            detail={null}
+            details={[]}
+            notes={[]}
             menu={null}
           />
         )}
@@ -87,29 +92,49 @@ export function FactoryThreadRow(props: {
 function FactoryRowLayout(props: {
   readonly icon: ReactNode;
   readonly title: string;
-  readonly detail: string | null;
+  readonly details: ReadonlyArray<string>;
+  /** Marks the first detail with the state's dot, as the team cards do. */
+  readonly state?: FactoryAssignmentState;
+  /** Only in the tooltip, so the row stays short. */
+  readonly notes: ReadonlyArray<string>;
   readonly menu: ReactNode;
 }) {
   return (
     <li
       className={cn(
-        "group flex items-center rounded-lg py-1.5",
+        "group flex items-start rounded-lg py-1.5",
         THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS,
       )}
     >
-      <span className="inline-flex size-4 shrink-0 items-center justify-center">{props.icon}</span>
+      {/* As tall as the title line, so the icon sits on it however many lines follow. */}
+      <span className="inline-flex h-5 w-4 shrink-0 items-center justify-center">{props.icon}</span>
       <Tooltip>
         <TooltipTrigger render={<div className="min-w-0 flex-1" />}>
           <span className="block truncate text-sm font-medium text-foreground/80">
             {props.title}
           </span>
-          {props.detail === null ? null : (
-            <p className="truncate text-2xs text-muted-foreground">{props.detail}</p>
-          )}
+          {/* Details wrap rather than truncate: the state they carry is the point of the row. */}
+          {props.details.map((detail, index) => (
+            <p
+              key={detail}
+              className="flex items-baseline gap-1.5 text-2xs break-words text-muted-foreground"
+            >
+              {index === 0 && props.state !== undefined ? (
+                <span className="flex h-[1lh] items-center">
+                  <FactoryStateDot state={props.state} />
+                </span>
+              ) : null}
+              <span className="min-w-0">{detail}</span>
+            </p>
+          ))}
         </TooltipTrigger>
         <TooltipPopup side="left">
           <p className="font-medium">{props.title}</p>
-          {props.detail === null ? null : <p className="text-muted-foreground">{props.detail}</p>}
+          {[...props.details, ...props.notes].map((detail) => (
+            <p key={detail} className="text-muted-foreground">
+              {detail}
+            </p>
+          ))}
         </TooltipPopup>
       </Tooltip>
       {props.menu}
@@ -146,16 +171,19 @@ function FactoryLeadRow(props: {
   const project = useProject(scopeProjectRef(props.environmentId, props.manager.projectId));
   const actions = useFactoryLeadActions(props.environmentId, props.threadId);
   const owner = project?.title ?? props.manager.name;
-  const title = actions.takenOver
-    ? "Taken over by you"
-    : `Lead for ${owner} manager · ${FACTORY_ASSIGNMENT_STATE_LABEL[props.assignment.state]}`;
+  const title = actions.takenOver ? "Taken over by you" : "Lead";
   const live = isLiveAssignment(props.assignment);
   return (
     <>
       <FactoryRowLayout
         icon={<FactoryIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
         title={title}
-        detail="Can't merge or edit control files"
+        details={[
+          FACTORY_ASSIGNMENT_STATE_LABEL[props.assignment.state],
+          `For the ${owner} manager`,
+        ]}
+        state={props.assignment.state}
+        notes={["Can't merge or edit control files"]}
         menu={
           live ? (
             <RowMenu label="Factory lead actions">
@@ -276,8 +304,7 @@ function FactoryManagerRow(props: {
     );
   };
 
-  const paused = manager.state === "manager-paused" || manager.state === "project-paused";
-  const capText = cap === null ? "" : ` of ${cap.cap}`;
+  const statusActions = managerStatusActions(manager.state);
   const retireBlocked = active > 0;
   const retireItem = (
     <MenuItem
@@ -292,40 +319,31 @@ function FactoryManagerRow(props: {
   return (
     <FactoryRowLayout
       icon={<UserCogIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
-      title={`${FACTORY_MANAGER_STATE_LABEL[manager.state]} · ${running}${capText} running`}
-      detail={
+      title="Engineering manager"
+      details={[
         manager.state === "onboarding"
           ? hasProposal
             ? "Onboarding proposal ready for review"
             : "Waiting for its onboarding proposal"
-          : pickup?.key === logKey
-            ? pickup.text
-            : null
-      }
+          : `${FACTORY_MANAGER_STATE_LABEL[manager.state]} · ${factoryManagerRunningLabel(running, cap?.cap)}`,
+      ]}
+      notes={pickup?.key === logKey && manager.state !== "onboarding" ? [pickup.text] : []}
       menu={
         <RowMenu label="Engineering manager actions">
-          <MenuItem
-            disabled={
-              busy ||
-              !canPause ||
-              (manager.state !== "onboarding" &&
-                manager.state !== "active" &&
-                manager.state !== "ready")
-            }
-            onClick={() => pause("manager")}
-          >
-            Pause manager
-          </MenuItem>
-          <MenuItem
-            disabled={busy || !canPause || manager.state === "project-paused"}
-            onClick={() => pause("project")}
-          >
-            Pause manager and teams
-          </MenuItem>
-          <MenuItem disabled={busy || !canResume || !paused} onClick={resume}>
-            Resume
-          </MenuItem>
-          <MenuSeparator />
+          {statusActions.map(({ action, label }) => (
+            <MenuItem
+              key={action}
+              disabled={busy || !(action === "resume" ? canResume : canPause)}
+              onClick={() =>
+                action === "resume"
+                  ? resume()
+                  : pause(action === "pause-manager" ? "manager" : "project")
+              }
+            >
+              {label}
+            </MenuItem>
+          ))}
+          {statusActions.length === 0 ? null : <MenuSeparator />}
           {retireBlocked ? (
             <Tooltip>
               <TooltipTrigger render={retireItem} />

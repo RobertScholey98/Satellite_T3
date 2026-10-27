@@ -1,7 +1,8 @@
-import { CopyIcon, PencilIcon, Trash2Icon } from "lucide-react";
+import { CopyIcon, MoreHorizontalIcon, Trash2Icon } from "lucide-react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
 import { Button } from "../ui/button";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 
 export async function confirmFactoryDelete(message: string): Promise<boolean> {
   return (
@@ -10,7 +11,7 @@ export async function confirmFactoryDelete(message: string): Promise<boolean> {
   );
 }
 
-/** Edit, Duplicate and Delete for one definition row. */
+/** Edit for one definition row, with Duplicate and Delete behind its menu. */
 export function FactoryDefinitionActions({
   name,
   disabled,
@@ -25,34 +26,36 @@ export function FactoryDefinitionActions({
   readonly onDelete: () => void;
 }) {
   return (
-    <div className="flex items-center gap-0.5">
+    <div className="flex items-center gap-1">
       <Button
-        size="icon-xs"
-        variant="ghost-muted"
+        size="sm"
+        variant="ghost"
         aria-label={`Edit ${name}`}
         disabled={disabled}
         onClick={onEdit}
       >
-        <PencilIcon />
+        Edit
       </Button>
-      <Button
-        size="icon-xs"
-        variant="ghost-muted"
-        aria-label={`Duplicate ${name}`}
-        disabled={disabled}
-        onClick={onDuplicate}
-      >
-        <CopyIcon />
-      </Button>
-      <Button
-        size="icon-xs"
-        variant="ghost-destructive"
-        aria-label={`Delete ${name}`}
-        disabled={disabled}
-        onClick={onDelete}
-      >
-        <Trash2Icon />
-      </Button>
+      <Menu>
+        <MenuTrigger
+          aria-label={`${name} actions`}
+          disabled={disabled}
+          render={<Button size="icon-sm" variant="ghost-muted" />}
+        >
+          <MoreHorizontalIcon />
+        </MenuTrigger>
+        <MenuPopup align="end">
+          <MenuItem onClick={onDuplicate}>
+            <CopyIcon />
+            Duplicate
+          </MenuItem>
+          <MenuSeparator />
+          <MenuItem variant="destructive" onClick={onDelete}>
+            <Trash2Icon />
+            Delete
+          </MenuItem>
+        </MenuPopup>
+      </Menu>
     </div>
   );
 }

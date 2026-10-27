@@ -360,6 +360,12 @@ export function DraftHeroHeadline({
           )}
         </h1>
       )}
+      {/* The composer keeps its generic placeholder, so say what the message is for here. */}
+      {namingManager && hasResolvedProject && !isScratchDraft ? (
+        <p className="mt-2 text-muted-foreground text-sm">
+          The message you send becomes the manager's name.
+        </p>
+      ) : null}
       {scratchWorkspaceRoot === null ? null : (
         <p className="mt-2 flex h-6 w-full items-center justify-center text-sm">
           {isScratchDraft ? projectSelector : orStartWithoutProject}

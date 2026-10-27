@@ -1,4 +1,5 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
 import type {
   EnvironmentId,
   FactoryAssignmentState,
@@ -9,6 +10,7 @@ import type {
   FactoryWorkspaceFeed,
   FactoryWorkspaceManager,
   MessageId,
+  ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
 import type { TimelineEntry } from "~/session-logic";
@@ -31,7 +33,7 @@ export const FACTORY_MANAGER_STATE_LABEL: Record<FactoryManagerState, string> = 
 export const FACTORY_ASSIGNMENT_STATE_LABEL: Record<FactoryAssignmentState, string> = {
   active: "Active",
   blocked: "Blocked",
-  "waiting-user": "Waiting for you",
+  "waiting-user": "Waiting on you",
   stalled: "Stalled",
   retro: "Retro",
   completed: "Completed",
@@ -53,6 +55,25 @@ export const factoryMemberLabel = (member: {
   readonly memberName?: string;
 }) => member.memberName ?? FACTORY_ROLE_LABEL[member.role];
 
+// The server titles lead threads "Factory: <ticket>"; inside a team card the prefix says nothing.
+const LEAD_THREAD_TITLE_PREFIX = "Factory: ";
+
+/**
+ * A team card row: the thread's title, with its member label beside it. A thread this client has
+ * not loaded has no title, so its member label stands in and is not repeated.
+ */
+export function factoryTeamRowText(
+  threadTitle: string | undefined,
+  memberLabel: string,
+): { readonly title: string; readonly label: string | null } {
+  const title = threadTitle?.startsWith(LEAD_THREAD_TITLE_PREFIX)
+    ? threadTitle.slice(LEAD_THREAD_TITLE_PREFIX.length)
+    : threadTitle;
+  return title === undefined || title.trim() === ""
+    ? { title: memberLabel, label: null }
+    : { title, label: memberLabel };
+}
+
 export const isLiveAssignment = (assignment: Pick<FactoryWorkspaceAssignment, "state">) =>
   assignment.state !== "completed" && assignment.state !== "cancelled";
 
@@ -68,17 +89,85 @@ export function factoryMemberThreadKeys(
   feeds: ReadonlyMap<EnvironmentId, FactoryWorkspaceFeed>,
 ): Set<string> {
   const keys = new Set<string>();
+  for (const { key } of factoryHiddenMembers(feeds)) keys.add(key);
+  return keys;
+}
+
+export interface FactoryHiddenMember {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly key: string;
+}
+
+/** The threads `factoryMemberThreadKeys` hides, each with its manager's project. */
+export function factoryHiddenMembers(
+  feeds: ReadonlyMap<EnvironmentId, FactoryWorkspaceFeed>,
+): Array<FactoryHiddenMember> {
+  const hidden: Array<FactoryHiddenMember> = [];
   for (const [environmentId, feed] of feeds) {
-    const liveManagers = new Set(
-      feed.managers.filter((manager) => manager.state !== "retired").map((manager) => manager.id),
+    const liveManagers = new Map(
+      feed.managers
+        .filter((manager) => manager.state !== "retired")
+        .map((manager) => [manager.id, manager] as const),
     );
     for (const member of feed.members) {
       if (member.role === "manager" || member.endedAt !== null) continue;
-      if (!liveManagers.has(member.managerId)) continue;
-      keys.add(scopedThreadKey(scopeThreadRef(environmentId, member.threadId)));
+      const manager = liveManagers.get(member.managerId);
+      if (manager === undefined) continue;
+      hidden.push({
+        environmentId,
+        projectId: manager.projectId,
+        key: scopedThreadKey(scopeThreadRef(environmentId, member.threadId)),
+      });
     }
   }
-  return keys;
+  return hidden;
+}
+
+/**
+ * Team threads the server counts as older settled but the sidebar never lists, to take off the
+ * Settled shelf's count. The shell holds every unarchived thread but the older settled ones, so a
+ * hidden member's thread the client does not hold is taken as one of those. An archived live
+ * member's thread is the exception: the server never counted it, and nothing here can tell.
+ */
+export function unloadedFactoryMemberCount(input: {
+  readonly members: ReadonlyArray<FactoryHiddenMember>;
+  readonly scopes: ReadonlyArray<OlderSettledScope>;
+  /** Every thread the client holds, in any section. */
+  readonly heldThreads: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+  }>;
+  readonly omitsOlderSettled: (environmentId: EnvironmentId) => boolean;
+}): number {
+  if (input.members.length === 0) return 0;
+  const heldKeys = new Set(
+    input.heldThreads.map((thread) =>
+      scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+    ),
+  );
+  let count = 0;
+  for (const member of input.members) {
+    if (heldKeys.has(member.key)) continue;
+    const scope = input.scopes.find((each) => each.environmentId === member.environmentId);
+    if (scope === undefined || !input.omitsOlderSettled(member.environmentId)) continue;
+    if (scope.projectIds !== null && !scope.projectIds.includes(member.projectId)) continue;
+    count += 1;
+  }
+  return count;
+}
+
+/** The Settled shelf's count: its local rows, plus the server's older settled threads it may list. */
+export function settledShelfCount(
+  input: Parameters<typeof unloadedFactoryMemberCount>[0] & {
+    readonly localSettled: number;
+    /** Older settled threads in scope the client does not hold, factory team threads included. */
+    readonly unloadedOlderSettled: number;
+  },
+): number {
+  return (
+    input.localSettled + Math.max(0, input.unloadedOlderSettled - unloadedFactoryMemberCount(input))
+  );
 }
 
 export type FactoryThreadPlace =

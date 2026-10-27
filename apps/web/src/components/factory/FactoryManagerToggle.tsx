@@ -5,7 +5,8 @@ import { useEffect, useState } from "react";
 
 import { useEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { Toggle } from "../ui/toggle";
+import { ComposerContextLabel } from "../ComposerContextLabel";
+import { ComposerControl, ComposerControlIcon } from "../chat/ComposerControl";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { factoryEnvironment, supportsFactory } from "./factoryState";
 import { setFactoryManagerDraft, useFactoryManagerDraft } from "./factoryWorkspaceState";
@@ -32,6 +33,7 @@ export function FactoryManagerToggle(props: {
   }, [on, disabled, props.draftId]);
 
   if (!available) return null;
+  const pressed = on && !disabled;
   const tooltip = canCreate
     ? "Create an engineering manager"
     : "This connection cannot create engineering managers";
@@ -40,16 +42,19 @@ export function FactoryManagerToggle(props: {
       <TooltipTrigger
         render={<span className="inline-flex shrink-0" data-composer-context-control />}
       >
-        <Toggle
+        <ComposerControl
           size="xs"
-          variant="ghost"
           aria-label="Create an engineering manager"
-          pressed={on && !disabled}
+          aria-pressed={pressed}
           disabled={disabled}
-          onPressedChange={(pressed) => setFactoryManagerDraft(props.draftId, pressed)}
+          // Unlike Plan, the mode changes what Send does, so on reads in the action colour.
+          className="aria-pressed:text-primary dark:aria-pressed:text-primary"
+          onClick={() => setFactoryManagerDraft(props.draftId, !pressed)}
         >
-          <UserCogIcon className="size-3.5" />
-        </Toggle>
+          <ComposerControlIcon icon={UserCogIcon} size="xs" />
+          {/* Named while on, like the strip's other controls, so the mode shows on the control itself. */}
+          {pressed ? <ComposerContextLabel>Engineering manager</ComposerContextLabel> : null}
+        </ComposerControl>
       </TooltipTrigger>
       <TooltipPopup>{tooltip}</TooltipPopup>
     </Tooltip>

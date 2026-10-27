@@ -13,18 +13,23 @@ import { describe, expect, it } from "vite-plus/test";
 import type { TimelineEntry } from "~/session-logic";
 import {
   collapseFactoryPriming,
+  factoryHiddenMembers,
   factoryMemberThreadKeys,
+  factoryTeamRowText,
   factoryThreadKind,
   factoryWorkspacePlace,
   resolveFactoryThreadStack,
   resolveFactoryDetailsCardSide,
   resolveFactoryWorkspaceView,
+  settledShelfCount,
+  unloadedFactoryMemberCount,
 } from "./factoryWorkspaceLogic";
 import { FACTORY_THREAD_STACK } from "./FactoryThreadStack";
 
 const environmentId = EnvironmentId.make("local");
 const key = (threadId: string) =>
   scopedThreadKey(scopeThreadRef(environmentId, ThreadId.make(threadId)));
+const held = (threadId: string) => ({ environmentId, id: ThreadId.make(threadId) });
 
 function member(threadId: string, overrides: Partial<FactoryMember> = {}): FactoryMember {
   return {
@@ -106,6 +111,74 @@ describe("factoryMemberThreadKeys", () => {
       }),
     );
     expect([...keys]).toEqual([key("paused-team")]);
+  });
+});
+
+describe("unloadedFactoryMemberCount", () => {
+  const teams = feed({
+    managers: [manager("manager-1", "active")],
+    members: [
+      member("lead", { role: "lead" }),
+      member("implementer"),
+      member("reviewer", { role: "reviewer" }),
+      member("ended", { endedAt: "2026-10-01T00:00:00.000Z" }),
+    ],
+  });
+  const allProjects = [{ environmentId, projectIds: null }];
+
+  it("counts the team threads the shell left out, which the Settled shelf would never list", () => {
+    expect(
+      unloadedFactoryMemberCount({
+        members: factoryHiddenMembers(teams),
+        scopes: allProjects,
+        heldThreads: [held("lead")],
+        omitsOlderSettled: () => true,
+      }),
+    ).toBe(2);
+  });
+
+  it("counts nothing outside the scope or where the shell left nothing out", () => {
+    const counted = (input: Partial<Parameters<typeof unloadedFactoryMemberCount>[0]>) =>
+      unloadedFactoryMemberCount({
+        members: factoryHiddenMembers(teams),
+        scopes: allProjects,
+        heldThreads: [],
+        omitsOlderSettled: () => true,
+        ...input,
+      });
+    expect(counted({ scopes: [{ environmentId, projectIds: [ProjectId.make("other")] }] })).toBe(0);
+    expect(counted({ omitsOlderSettled: () => false })).toBe(0);
+    expect(counted({ scopes: [{ environmentId, projectIds: [ProjectId.make("project")] }] })).toBe(
+      3,
+    );
+  });
+});
+
+describe("settledShelfCount", () => {
+  const teams = feed({
+    managers: [manager("manager-1", "active")],
+    members: [member("lead", { role: "lead" }), member("implementer")],
+  });
+  const count = (input: Partial<Parameters<typeof settledShelfCount>[0]>) =>
+    settledShelfCount({
+      localSettled: 4,
+      unloadedOlderSettled: 5,
+      members: factoryHiddenMembers(teams),
+      scopes: [{ environmentId, projectIds: null }],
+      heldThreads: [held("lead")],
+      omitsOlderSettled: () => true,
+      ...input,
+    });
+
+  it("adds the server's older settled threads but not the team threads among them", () => {
+    // The held lead is not in the server's count; the unheld implementer is, and is never listed.
+    expect(count({})).toBe(8);
+    expect(count({ heldThreads: [held("lead"), held("implementer")] })).toBe(9);
+    expect(count({ members: [] })).toBe(9);
+  });
+
+  it("never takes team threads below the local rows", () => {
+    expect(count({ unloadedOlderSettled: 0 })).toBe(4);
   });
 });
 
@@ -321,5 +394,21 @@ describe("collapseFactoryPriming", () => {
   it("folds nothing when the priming is outside the loaded window", () => {
     const windowed = [message("ask", "user", "What is on the board?"), work("read")];
     expect(collapseFactoryPriming(windowed, primingId)).toBe(windowed);
+  });
+});
+
+describe("factoryTeamRowText", () => {
+  it("drops the lead thread's Factory prefix and keeps the member label beside it", () => {
+    expect(factoryTeamRowText("Factory: fix(web): sidebar rows", "Lead")).toEqual({
+      title: "fix(web): sidebar rows",
+      label: "Lead",
+    });
+  });
+
+  it("names a thread this client has not loaded by its member label, once", () => {
+    expect(factoryTeamRowText(undefined, "Implementer")).toEqual({
+      title: "Implementer",
+      label: null,
+    });
   });
 });

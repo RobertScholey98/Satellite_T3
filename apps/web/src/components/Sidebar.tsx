@@ -229,7 +229,11 @@ import {
   type SidebarProviderEntry,
   type SidebarSweepAction,
 } from "./sidebar/SidebarThreadRow";
-import { useFactoryMemberThreadKeys } from "./factory/factoryWorkspaceState";
+import { settledShelfCount } from "./factory/factoryWorkspaceLogic";
+import {
+  useFactoryHiddenMembers,
+  useFactoryMemberThreadKeys,
+} from "./factory/factoryWorkspaceState";
 import { SidebarDraftBlock } from "./sidebar/SidebarDraftBlock";
 import {
   SidebarDragBoundary,
@@ -385,6 +389,7 @@ function useSidebarThreads(input: {
     routeRowThreadKey,
   } = input;
   const factoryMemberThreadKeys = useFactoryMemberThreadKeys();
+  const factoryHiddenMembers = useFactoryHiddenMembers();
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
   const inboxReturnsVersion = useSyncExternalStore(
     inboxReturns.subscribe,
@@ -431,15 +436,23 @@ function useSidebarThreads(input: {
   const { pinnedThreads, activeThreads, workingThreads, snoozedThreads, settledThreads } =
     partition;
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
+  const shelfScopes = olderSettledScopes([...serverConfigs.keys()], scopedProjectKeys);
   const olderSettledShelf = useOlderSettledShelf({
-    scopes: olderSettledScopes([...serverConfigs.keys()], scopedProjectKeys),
+    scopes: shelfScopes,
     expanded: settledShelfExpanded,
     visibleCount: settledVisibleCount,
   });
   const listedSettledThreads = settledThreads.filter(olderSettledShelf.isListed);
   useOlderSettledShelfGrowth(olderSettledShelf, listedSettledThreads);
-  const settledCount =
-    settledThreads.length + olderSettledShelf.unloadedCount(partition.visibleThreads);
+  const settledCount = settledShelfCount({
+    localSettled: settledThreads.length,
+    unloadedOlderSettled: olderSettledShelf.unloadedCount(partition.visibleThreads),
+    members: factoryHiddenMembers,
+    scopes: shelfScopes,
+    heldThreads: threads,
+    omitsOlderSettled: (environmentId) =>
+      olderSettledShelf.environments.get(environmentId)?.older != null,
+  });
   const visibleSettledThreads = (() => {
     const visible = listedSettledThreads.slice(0, settledVisibleCount);
     if (

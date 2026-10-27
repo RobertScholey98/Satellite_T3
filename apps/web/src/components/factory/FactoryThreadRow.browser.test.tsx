@@ -103,9 +103,8 @@ it("takes over a managed lead's thread and then reads as taken over", async () =
   await using screen = await render(
     <FactoryThreadRow environmentId={environmentId} threadId={leadThreadId} />,
   );
-  await expect
-    .element(screen.getByText("Lead for Atlas manager · Waiting for you"))
-    .toBeInTheDocument();
+  await expect.element(screen.getByText("Lead", { exact: true })).toBeInTheDocument();
+  await expect.element(screen.getByText("For the Atlas manager")).toBeInTheDocument();
 
   await screen.getByRole("button", { name: "Factory lead actions" }).click();
   await page.getByRole("menuitem", { name: "Take over" }).click();

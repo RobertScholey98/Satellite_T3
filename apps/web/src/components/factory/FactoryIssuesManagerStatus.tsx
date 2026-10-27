@@ -2,8 +2,9 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, FactoryManager } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
+import { ChevronDownIcon } from "lucide-react";
 
-import { randomUUID } from "~/lib/utils";
+import { cn, randomUUID } from "~/lib/utils";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { Button } from "../ui/button";
@@ -16,10 +17,15 @@ import {
   useFactoryAssignments,
   useFactoryManagerCap,
 } from "./factoryState";
-import { managerStatusText, runningAssignmentCount } from "./FactoryTriageState";
+import {
+  managerStatusActions,
+  managerStatusText,
+  managerStatusTone,
+  runningAssignmentCount,
+} from "./FactoryTriageState";
 
 /**
- * The project manager's state beside the board's sync status, in the same muted text. It opens the
+ * The project manager's state beside the board's sync status, with a state dot. It opens the
  * manager's controls: pause, resume, its thread, and the factory settings.
  */
 export function FactoryIssuesManagerStatus({
@@ -39,7 +45,8 @@ export function FactoryIssuesManagerStatus({
 
   const cap = useFactoryManagerCap(environmentId, manager.id);
 
-  const paused = manager.state === "manager-paused" || manager.state === "project-paused";
+  const tone = managerStatusTone(manager.state);
+  const actions = managerStatusActions(manager.state);
   const perform = async (title: string, request: () => Promise<unknown>) => {
     try {
       await request();
@@ -72,27 +79,35 @@ export function FactoryIssuesManagerStatus({
   return (
     <Menu>
       <MenuTrigger
-        render={<Button size="micro" variant="ghost-muted" aria-label={`${manager.name} status`} />}
+        render={<Button size="xs" variant="outline" aria-label={`${manager.name} status`} />}
       >
+        <span
+          aria-hidden
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            tone === "success" && "bg-success",
+            tone === "info" && "bg-info",
+            tone === "muted" && "bg-muted-foreground/60",
+          )}
+        />
         {managerStatusText(manager, running, cap === null ? null : cap.cap)}
+        <ChevronDownIcon aria-hidden />
       </MenuTrigger>
       <MenuPopup align="start">
-        {paused ? null : (
-          <MenuItem disabled={!operable} onClick={() => void pause("manager")}>
-            Pause manager
+        {actions.map(({ action, label }) => (
+          <MenuItem
+            key={action}
+            disabled={!operable}
+            onClick={() =>
+              void (action === "resume"
+                ? resume()
+                : pause(action === "pause-manager" ? "manager" : "project"))
+            }
+          >
+            {label}
           </MenuItem>
-        )}
-        {manager.state === "project-paused" ? null : (
-          <MenuItem disabled={!operable} onClick={() => void pause("project")}>
-            Pause manager and teams
-          </MenuItem>
-        )}
-        {paused ? (
-          <MenuItem disabled={!operable} onClick={() => void resume()}>
-            Resume
-          </MenuItem>
-        ) : null}
-        <MenuSeparator />
+        ))}
+        {actions.length === 0 ? null : <MenuSeparator />}
         {threadId ? (
           <MenuItem
             onClick={() =>

@@ -100,7 +100,9 @@ it("starts pickup for a ready manager and drops the button once it is active", a
   await expect
     .element(screen.getByRole("button", { name: "Start picking up" }))
     .not.toBeInTheDocument();
-  await expect.element(screen.getByText("Let's get started")).not.toBeInTheDocument();
+  await expect
+    .element(screen.getByText("Message the manager to get started."))
+    .not.toBeInTheDocument();
 });
 
 it("tells the user to get started when pickup is off", async () => {
@@ -108,7 +110,7 @@ it("tells the user to get started when pickup is off", async () => {
   await using screen = await render(ready());
 
   await expect.element(screen.getByText("Pickup off · 2 project rules")).toBeVisible();
-  await expect.element(screen.getByText("Let's get started")).toBeVisible();
+  await expect.element(screen.getByText("Message the manager to get started.")).toBeVisible();
   await expect
     .element(screen.getByRole("button", { name: "Start picking up" }))
     .not.toBeInTheDocument();
