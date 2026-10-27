@@ -287,35 +287,35 @@ function TeamForm({
             </label>
 
             <div className="space-y-3 border-t pt-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="space-y-0.5">
-                  <h3 className="text-sm font-semibold text-foreground">Lead</h3>
-                  <p className="text-xs text-muted-foreground">
-                    {team.lead !== null
-                      ? "This team's own copy. Editing it here doesn't change the lead under Leads."
-                      : view.leads.length === 0
-                        ? "Add a lead under Leads first. The team keeps its own copy."
-                        : "Choose a lead to copy into this team."}
-                  </p>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-4">
+                  <h3 className="text-base font-semibold text-foreground">Lead</h3>
+                  <Menu>
+                    <MenuTrigger
+                      disabled={busy || view.leads.length === 0}
+                      render={<Button size="sm" variant="outline" />}
+                    >
+                      {team.lead === null ? "Choose lead" : "Use another lead…"}
+                    </MenuTrigger>
+                    <MenuPopup align="end">
+                      {view.leads.map((lead) => (
+                        <MenuItem key={lead.id} onClick={() => setTeam({ ...team, lead })}>
+                          {lead.name}
+                        </MenuItem>
+                      ))}
+                    </MenuPopup>
+                  </Menu>
                 </div>
-                <Menu>
-                  <MenuTrigger
-                    disabled={busy || view.leads.length === 0}
-                    render={<Button size="sm" variant="outline" />}
-                  >
-                    {team.lead === null ? "Choose lead" : "Use another lead…"}
-                  </MenuTrigger>
-                  <MenuPopup align="end">
-                    {view.leads.map((lead) => (
-                      <MenuItem key={lead.id} onClick={() => setTeam({ ...team, lead })}>
-                        {lead.name}
-                      </MenuItem>
-                    ))}
-                  </MenuPopup>
-                </Menu>
+                <p className="text-xs text-muted-foreground">
+                  {team.lead !== null
+                    ? "This team's own copy. Editing it here doesn't change the lead under Leads."
+                    : view.leads.length === 0
+                      ? "Add a lead under Leads first. The team keeps its own copy."
+                      : "Choose a lead to copy into this team."}
+                </p>
               </div>
               {team.lead === null ? null : (
-                <div className="space-y-4">
+                <div className="space-y-4 rounded-lg border p-3">
                   <div className="space-y-1.5">
                     <Label htmlFor={`${formId}-lead-name`}>Lead name</Label>
                     <Input
@@ -325,17 +325,15 @@ function TeamForm({
                       onChange={(event) => setLead({ name: event.target.value })}
                     />
                   </div>
-                  <div className="space-y-2">
-                    <Label>Lead models</Label>
-                    <FactoryModelListEditor
-                      label="Lead models"
-                      value={team.lead.models}
-                      pool={pool}
-                      modelOptions={modelOptions}
-                      disabled={busy}
-                      onChange={(models) => setLead({ models })}
-                    />
-                  </div>
+                  <FactoryModelListEditor
+                    label="Lead models"
+                    showLabel
+                    value={team.lead.models}
+                    pool={pool}
+                    modelOptions={modelOptions}
+                    disabled={busy}
+                    onChange={(models) => setLead({ models })}
+                  />
                   <div className="space-y-1.5">
                     <Label htmlFor={`${formId}-lead-instructions`}>Added instructions</Label>
                     <p className="text-xs text-muted-foreground">

@@ -166,13 +166,11 @@ export function FactoryPage() {
             <WorkspacePageContainer width="wide">{unavailable}</WorkspacePageContainer>
           </ScrollArea>
         ) : tab === "dashboard" ? (
-          <ScrollArea className="min-h-0 flex-1">
-            <WorkspacePageContainer width="wide">
-              <FactoryPageDashboard key={environmentId} environmentId={environmentId} />
-            </WorkspacePageContainer>
-          </ScrollArea>
+          <SettingsPageContainer width="wide">
+            <FactoryPageDashboard key={environmentId} environmentId={environmentId} />
+          </SettingsPageContainer>
         ) : (
-          <SettingsPageContainer>
+          <SettingsPageContainer width="wide">
             <FactoryPageConfiguration
               key={environmentId}
               environmentId={environmentId}

@@ -67,7 +67,7 @@ const COPY: Record<
     noun: "worker",
     empty: "No workers yet. A team copies its members from these.",
     bodyLabel: "Description",
-    bodyHint: "What this worker is and does: its whole brief",
+    bodyHint: "The brief this worker receives",
   },
   lead: {
     title: "Leads",
@@ -309,17 +309,15 @@ function DefinitionForm({
                 onChange={(event) => setDraft({ ...draft, name: event.target.value })}
               />
             </div>
-            <div className="space-y-2">
-              <Label>Models</Label>
-              <FactoryModelListEditor
-                label="Models"
-                value={draft.models}
-                pool={pool}
-                modelOptions={modelOptions}
-                disabled={disabled || saving}
-                onChange={(models) => setDraft({ ...draft, models })}
-              />
-            </div>
+            <FactoryModelListEditor
+              label="Models"
+              showLabel
+              value={draft.models}
+              pool={pool}
+              modelOptions={modelOptions}
+              disabled={disabled || saving}
+              onChange={(models) => setDraft({ ...draft, models })}
+            />
             <div className="space-y-1.5">
               <Label htmlFor={`${formId}-body`}>{copy.bodyLabel}</Label>
               <p className="text-xs text-muted-foreground">{copy.bodyHint}</p>

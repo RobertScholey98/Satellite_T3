@@ -124,9 +124,9 @@ export function FactoryPageConfiguration({
     <>
       <div className="flex flex-col gap-2 px-3 sm:px-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-xs text-muted-foreground">
-            Pickup and Behaviour save to {environmentLabel}. Each section below them saves to the
-            factory config on its own.
+          <p className="text-sm text-muted-foreground">
+            Pickup and Behaviour apply to {environmentLabel}. The sections below save to the factory
+            config, each on its own.
           </p>
           <FactorySectionSaveActions
             state={factorySectionSaveState(view?.environment ?? null, draft, saving)}

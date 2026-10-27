@@ -3,6 +3,7 @@ import { ArrowDownIcon, ArrowUpIcon, PlusIcon, XIcon } from "lucide-react";
 
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Label } from "../ui/label";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Switch } from "../ui/switch";
 import { FactoryModelLabel } from "./FactoryModelLabel";
@@ -20,6 +21,7 @@ import {
  */
 export function FactoryModelListEditor({
   label,
+  showLabel = false,
   value,
   pool,
   modelOptions,
@@ -27,6 +29,7 @@ export function FactoryModelListEditor({
   onChange,
 }: {
   readonly label: string;
+  readonly showLabel?: boolean;
   readonly value: FactoryModelList;
   readonly pool: ReadonlyArray<FactoryModelRef>;
   readonly modelOptions: ReadonlyArray<FactoryModelOption>;
@@ -44,23 +47,26 @@ export function FactoryModelListEditor({
 
   return (
     <div role="group" aria-label={label} className="flex flex-col gap-2">
-      <label className="flex items-start justify-between gap-4 text-sm">
-        <span className="flex flex-col">
-          <span>Dynamic</span>
+      <div className="flex items-start justify-between gap-4">
+        <span className="flex min-w-0 flex-col gap-1">
+          {showLabel ? <Label render={<span />}>{label}</Label> : null}
           <span className="text-xs text-muted-foreground">
             {value.dynamic
-              ? "The lead or manager picks one of these models for each task"
+              ? "The lead or manager picks one for each task"
               : "Runs the first available model, in this order"}
           </span>
         </span>
-        <Switch
-          size="sm"
-          checked={value.dynamic}
-          disabled={disabled}
-          aria-label={`${label}: dynamic`}
-          onCheckedChange={(dynamic) => onChange({ ...value, dynamic })}
-        />
-      </label>
+        <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+          Dynamic
+          <Switch
+            size="sm"
+            checked={value.dynamic}
+            disabled={disabled}
+            aria-label={`${label}: dynamic`}
+            onCheckedChange={(dynamic) => onChange({ ...value, dynamic })}
+          />
+        </label>
+      </div>
       {entries.length === 0 ? (
         <p className="text-sm text-muted-foreground">Any model in the pool</p>
       ) : (

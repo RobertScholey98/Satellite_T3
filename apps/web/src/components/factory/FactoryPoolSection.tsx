@@ -73,13 +73,37 @@ export function FactoryPoolSection({
         id="factory-model-pool-file"
         title="Model pool"
         headerAction={
-          <FactorySectionSaveActions
-            state={pool.state}
-            label="Save pool"
-            disabled={disabled}
-            onSave={() => void pool.save((modelPool) => save({ modelPool }))}
-            onDiscard={pool.discard}
-          />
+          <div className="flex items-center gap-2">
+            <FactorySectionSaveActions
+              state={pool.state}
+              label="Save pool"
+              disabled={disabled}
+              onSave={() => void pool.save((modelPool) => save({ modelPool }))}
+              onDiscard={pool.discard}
+            />
+            {modelPool !== null ? (
+              <Menu>
+                <MenuTrigger
+                  aria-label="Add a model to the pool"
+                  disabled={disabled || addable.length === 0}
+                  render={<Button size="sm" variant="outline" />}
+                >
+                  <PlusIcon />
+                  Add model
+                </MenuTrigger>
+                <MenuPopup align="end">
+                  {addable.map((option) => (
+                    <MenuItem
+                      key={factoryModelRefKey(factoryModelRefFromOption(option))}
+                      onClick={() => pool.change([...modelPool, factoryModelRefFromOption(option)])}
+                    >
+                      {option.label}
+                    </MenuItem>
+                  ))}
+                </MenuPopup>
+              </Menu>
+            ) : null}
+          </div>
         }
       >
         {view === null ? (
@@ -116,30 +140,6 @@ export function FactoryPoolSection({
             <SettingsRow
               title="Models"
               description="Workers, leads, managers and teams can only add models from the pool. A model removed here stays in the lists that name it, flagged as not in the pool, and delegation skips it."
-              control={
-                <Menu>
-                  <MenuTrigger
-                    aria-label="Add a model to the pool"
-                    disabled={disabled || addable.length === 0}
-                    render={<Button size="sm" variant="outline" />}
-                  >
-                    <PlusIcon />
-                    Add model
-                  </MenuTrigger>
-                  <MenuPopup align="end">
-                    {addable.map((option) => (
-                      <MenuItem
-                        key={factoryModelRefKey(factoryModelRefFromOption(option))}
-                        onClick={() =>
-                          pool.change([...modelPool, factoryModelRefFromOption(option)])
-                        }
-                      >
-                        {option.label}
-                      </MenuItem>
-                    ))}
-                  </MenuPopup>
-                </Menu>
-              }
             />
             {modelPool.length === 0 ? (
               <SettingsRow

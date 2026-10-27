@@ -29,7 +29,7 @@ export function FactoryDefinitionActions({
     <div className="flex items-center gap-1">
       <Button
         size="sm"
-        variant="outline"
+        variant="ghost"
         aria-label={`Edit ${name}`}
         disabled={disabled}
         onClick={onEdit}

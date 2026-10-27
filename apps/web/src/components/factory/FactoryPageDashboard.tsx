@@ -8,7 +8,7 @@ import type {
 } from "@t3tools/contracts";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { Link } from "@tanstack/react-router";
-import { MoreHorizontalIcon } from "lucide-react";
+import { ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
@@ -17,8 +17,15 @@ import { useProjects } from "~/state/entities";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { SettingsRow, SettingsSection } from "../settings/settingsLayout";
 import { UsageShareBar } from "../usage/UsageShareBar";
@@ -327,6 +334,53 @@ const PERIODS = [
 
 const ALL = "all";
 
+const COMPLEXITY_OPTIONS = [
+  { value: ALL, label: "Any size" },
+  { value: "small", label: "Small" },
+  { value: "medium", label: "Medium" },
+  { value: "large", label: "Large" },
+];
+
+/** A content-width filter, built like the scope pickers on upstream's Settings pages. */
+function FactoryFilterMenu({
+  ariaLabel,
+  value,
+  options,
+  onChange,
+}: {
+  readonly ariaLabel: string;
+  readonly value: string;
+  readonly options: ReadonlyArray<{ readonly value: string; readonly label: string }>;
+  readonly onChange: (next: string) => void;
+}) {
+  const label = options.find((option) => option.value === value)?.label ?? options[0]!.label;
+  return (
+    <Menu>
+      <MenuTrigger
+        aria-label={`${ariaLabel}: ${label}`}
+        render={<Button variant="outline" size="sm" />}
+        className="min-w-0 max-w-56"
+      >
+        <span className="min-w-0 truncate">{label}</span>
+        <ChevronDownIcon
+          aria-hidden
+          strokeWidth={1.75}
+          className="-me-0.5 size-3.5 shrink-0 text-muted-foreground opacity-70"
+        />
+      </MenuTrigger>
+      <MenuPopup align="end">
+        <MenuRadioGroup value={value} onValueChange={(next) => onChange(next as string)}>
+          {options.map((option) => (
+            <MenuRadioItem key={option.value} value={option.value}>
+              {option.label}
+            </MenuRadioItem>
+          ))}
+        </MenuRadioGroup>
+      </MenuPopup>
+    </Menu>
+  );
+}
+
 function FactoryTeamsStats({
   environmentId,
   projects,
@@ -380,48 +434,21 @@ function FactoryTeamsStats({
       title="Teams"
       headerAction={
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <div className="w-40">
-            <Select
-              value={projectId ?? ALL}
-              onValueChange={(next) => setProjectId(next === ALL ? null : (next as ProjectId))}
-            >
-              <SelectTrigger size="sm" aria-label="Project">
-                <SelectValue>
-                  {(value: string) => (value === ALL ? "All projects" : projectTitle(value))}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem value={ALL}>All projects</SelectItem>
-                {projects.map((project) => (
-                  <SelectItem key={project.id} value={project.id}>
-                    {project.title}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          </div>
-          <div className="w-36">
-            <Select
-              value={complexity ?? ALL}
-              onValueChange={(next) =>
-                setComplexity(next === ALL ? null : (next as FactoryComplexity))
-              }
-            >
-              <SelectTrigger size="sm" aria-label="Complexity">
-                <SelectValue>
-                  {(value: string) =>
-                    value === ALL ? "Any size" : `${value[0]!.toUpperCase()}${value.slice(1)}`
-                  }
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem value={ALL}>Any size</SelectItem>
-                <SelectItem value="small">Small</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="large">Large</SelectItem>
-              </SelectPopup>
-            </Select>
-          </div>
+          <FactoryFilterMenu
+            ariaLabel="Project"
+            value={projectId ?? ALL}
+            options={[
+              { value: ALL, label: "All projects" },
+              ...projects.map((project) => ({ value: project.id as string, label: project.title })),
+            ]}
+            onChange={(next) => setProjectId(next === ALL ? null : (next as ProjectId))}
+          />
+          <FactoryFilterMenu
+            ariaLabel="Complexity"
+            value={complexity ?? ALL}
+            options={COMPLEXITY_OPTIONS}
+            onChange={(next) => setComplexity(next === ALL ? null : (next as FactoryComplexity))}
+          />
           <ToggleGroup
             aria-label="Period"
             variant="segmented"
